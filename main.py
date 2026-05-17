@@ -26,8 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ضع التوكن الخاص بك هنا أو اتركه ليسحب من متغيرات البيئة في Render
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+# تم دمج التوكن الخاص بك هنا بنجاح للتشغيل الفوري
+TELEGRAM_TOKEN = "8935169680:AAEo1yzskX1HQHchv_0mt9BvEc1bzZ9fdhU"
 
 # إعداد منصة التداول عبر CCXT (وضع القراءة العامة لجلب البيانات)
 exchange = ccxt.binance({
@@ -100,7 +100,7 @@ def init_db():
 
 init_db()
 
-# دوان مساعدة لقاعدة البيانات
+# دوال مساعدة لقاعدة البيانات
 def get_user_setting(user_id, key, default):
     conn = sqlite3.connect('trading_system.db')
     cursor = conn.cursor()
@@ -146,7 +146,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "==================================================\n"
         "📊 AI TRADING SYSTEM - CORE ENGINE v3.0\n"
         "==================================================\n"
-        "المنظومة متصلة الآن بسيرفرات التداول الفورية وآمنة جغرافياً.\n"
+        "المنظومة متصلة الآن بسيرفرات التداول الفورية وجاهزة للعمل.\n"
         "الرجاء اختيار الإجراء المطلوب من لوحة التحكم التفاعلية:",
         reply_markup=main_menu_keyboard()
     )
@@ -354,7 +354,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         metrics = analyze_market_metrics(df)
         
         if metrics is None:
-            await update.message.reply_text("❌ فشل في جلب بيانات العملة. تأكد من كتابة الرمز بشكل صحيح (مثل BTCUSDT) ومن استقرار الـ API.", reply_markup=main_menu_keyboard())
+            await update.message.reply_text("❌ فشل في جلب بيانات العملة. تأكد من كتابة الرمز بشكل صحيح (مثل BTCUSDT).", reply_markup=main_menu_keyboard())
             return
             
         df, regime, market_score = metrics
@@ -420,7 +420,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 10. REAL-TIME SIGNAL TRACKER PIPELINE
 # ==================================================
 async def background_signal_tracker():
-    """ فحص فوري كل 30-60 ثانية لحالة الأسعار للتأكد من ضرب الأهداف أو الستوب """
+    """ فحص فوري كل 45 ثانية لحالة الأسعار للتأكد من ضرب الأهداف أو الستوب """
     while True:
         try:
             conn = sqlite3.connect('trading_system.db')
@@ -460,10 +460,6 @@ async def background_signal_tracker():
 # APPLICATION INITIALIZATION & STARTUP
 # ==================================================
 def main():
-    if TELEGRAM_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
-        print("❌ CRITICAL ERROR: Please provide a valid Telegram Token.")
-        return
-
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
@@ -474,7 +470,7 @@ def main():
     loop = asyncio.get_event_loop()
     loop.create_task(background_signal_tracker())
 
-    print("🚀 AI Trading Engine deployment complete on Frankfurt region server. Bot is live...")
+    print("🚀 AI Trading Engine deployment complete. Bot is live...")
     application.run_polling()
 
 if __name__ == '__main__':
