@@ -100,7 +100,7 @@ def init_db():
 
 init_db()
 
-# دوال مساعدة لقاعدة البيانات (تم إصلاحها لضمان التوافق التام ومنع الأخطاء)
+# دوال مساعدة لقاعدة البيانات
 def get_user_setting(user_id, key, default):
     conn = sqlite3.connect('trading_system.db')
     cursor = conn.cursor()
@@ -153,7 +153,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = STATE_IDLE
     await update.message.reply_text(
         "==================================================\n"
-        "📊 AI TRADING SYSTEM - CORE ENGINE v3.0\n"
+        "📊 AI TRADING SYSTEM - CORE ENGINE v3.1\n"
         "==================================================\n"
         "المنظومة متصلة الآن بسيرفرات التداول الفورية وجاهزة للعمل.\n"
         "الرجاء اختيار الإجراء المطلوب من لوحة التحكم التفاعلية:",
@@ -398,55 +398,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================
 # 10. REAL-TIME SIGNAL TRACKER PIPELINE
 # ==================================================
-async def background_signal_tracker():
-    while True:
-        try:
-            conn = sqlite3.connect('trading_system.db')
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, symbol, entry, sl, tp FROM trades WHERE status='TRACKING'")
-            open_trades = cursor.fetchall()
-            
-            for t_id, symbol, entry, sl, tp in open_trades:
-                try:
-                    ticker = exchange.fetch_ticker(symbol)
-                    current_price = ticker['last']
+async def background_signal_tracker(context: ContextTypes.DEFAULT_TYPE):
+    """ تم تحويلها لتعمل بشكل آمن متزامن مع أحداث المكتبة الفورية """
+    try:
+        conn = sqlite3.connect('trading_system.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, symbol, entry, sl, tp FROM trades WHERE status='TRACKING'")
+        open_trades = cursor.fetchall()
+        
+        for t_id, symbol, entry, sl, tp in open_trades:
+            try:
+                ticker = exchange.fetch_ticker(symbol)
+                current_price = ticker['last']
+                
+                status_update = None
+                pnl = 0.0
+                
+                if current_price >= tp:
+                    status_update = "CLOSED"
+                    pnl = abs(tp - entry)
+                elif current_price <= sl:
+                    status_update = "CLOSED"
+                    pnl = -abs(entry - sl)
                     
-                    status_update = None
-                    pnl = 0.0
-                    
-                    if current_price >= tp:
-                        status_update = "CLOSED"
-                        pnl = abs(tp - entry)
-                    elif current_price <= sl:
-                        status_update = "CLOSED"
-                        pnl = -abs(entry - sl)
-                        
-                    if status_update:
-                        cursor.execute("UPDATE trades SET status=?, exit_price=?, pnl=? WHERE id=?", (status_update, current_price, pnl, t_id))
-                        logger.info(f"🏆 Tracker Engine closed trade for {symbol} with PNL: {pnl}")
-                except Exception as ex:
-                    logger.error(f"Error checking single asset live ticker {symbol}: {ex}")
-                    
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.error(f"Error inside background loop process: {e}")
-            
-        await asyncio.sleep(45)
+                if status_update:
+                    cursor.execute("UPDATE trades SET status=?, exit_price=?, pnl=? WHERE id=?", (status_update, current_price, pnl, t_id))
+                    logger.info(f"🏆 Tracker Engine closed trade for {symbol} with PNL: {pnl}")
+            except Exception as ex:
+                logger.error(f"Error checking single asset live ticker {symbol}: {ex}")
+                
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error inside background loop process: {e}")
 
 # ==================================================
 # APPLICATION INITIALIZATION & STARTUP
 # ==================================================
 def main():
+    # بناء التطبيق بالطريقة الرسمية والآمنة لبايثون 3.11 فما فوق
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # تشغيل محرك الفحص والتعقب في الخلفية كأولوية تزامنية مستقلة
-    loop = asyncio.get_event_loop()
-    loop.create_task(background_signal_tracker())
+    # حل المشكلة الحرج: تشغيل دالة التعقب كـ Job متكرر كل 45 ثانية بشكل آمن مدمج بالـ Loop الأصلي للمكتبة
+    job_queue = application.job_queue
+    job_queue.run_repeating(background_signal_tracker, interval=45, first=10)
 
     print("🚀 AI Trading Engine deployment complete. Bot is live...")
     application.run_polling()
