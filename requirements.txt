@@ -1,0 +1,8 @@
+ccxt
+pandas
+numpy
+ta
+sqlalchemy
+psycopg2-binary
+python-telegram-bot
+python-dotenv
