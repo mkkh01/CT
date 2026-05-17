@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# تم دمج التوكن الخاص بك هنا بنجاح للتشغيل الفوري
+# التوكن الخاص بك مدمج وجاهز
 TELEGRAM_TOKEN = "8935169680:AAEo1yzskX1HQHchv_0mt9BvEc1bzZ9fdhU"
 
 # إعداد منصة التداول عبر CCXT (وضع القراءة العامة لجلب البيانات)
@@ -100,11 +100,14 @@ def init_db():
 
 init_db()
 
-# دوال مساعدة لقاعدة البيانات
+# دوال مساعدة لقاعدة البيانات (تم إصلاحها لضمان التوافق التام ومنع الأخطاء)
 def get_user_setting(user_id, key, default):
     conn = sqlite3.connect('trading_system.db')
     cursor = conn.cursor()
-    cursor.execute(f'SELECT {key} FROM settings WHERE user_id = ?', (user_id,))
+    if key == 'capital':
+        cursor.execute('SELECT capital FROM settings WHERE user_id = ?', (user_id,))
+    else:
+        cursor.execute('SELECT risk_level FROM settings WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else default
@@ -112,10 +115,16 @@ def get_user_setting(user_id, key, default):
 def update_user_setting(user_id, key, value):
     conn = sqlite3.connect('trading_system.db')
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO settings (user_id, f"{key}") VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET "{key}" = excluded."{key}"
-    '''.replace(f'f"{key}"', key).replace(f'"{key}"', key))
+    if key == 'capital':
+        cursor.execute('''
+            INSERT INTO settings (user_id, capital) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET capital = excluded.capital
+        ''', (user_id, float(value)))
+    else:
+        cursor.execute('''
+            INSERT INTO settings (user_id, risk_level) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET risk_level = excluded.risk_level
+        ''', (user_id, str(value)))
     conn.commit()
     conn.close()
 
@@ -155,7 +164,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 4. MARKET REGIME & 5. STRATEGY ENGINE & 6,7 SCORING
 # ==================================================
 async def fetch_and_clean_data(symbol):
-    """ جلب البيانات وتحويلها مباشرة إلى هيكل بيانات Pandas طبقاً للبند 3 """
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=200)
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -169,14 +177,12 @@ def analyze_market_metrics(df):
     if df is None or len(df) < 50:
         return None
     
-    # حساب المؤشرات الفنية الأساسية
     df['ema20'] = ta.trend.ema_indicator(df['close'], window=20)
     df['ema50'] = ta.trend.ema_indicator(df['close'], window=50)
     df['ema200'] = ta.trend.ema_indicator(df['close'], window=200)
     df['rsi'] = ta.momentum.rsi(df['close'], window=14)
     df['atr'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14)
     
-    # البولنجر باند لقياس التوسع والتقلب
     indicator_bb = ta.volatility.BollingerBands(close=df['close'], window=20, window_dev=2)
     df['bb_h'] = indicator_bb.bollinger_hband()
     df['bb_l'] = indicator_bb.bollinger_lband()
@@ -185,7 +191,6 @@ def analyze_market_metrics(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # 4. MARKET REGIME LOGIC (HARD RULES)
     regime = "RANGING"
     if last['atr'] > df['atr'].mean() and last['bb_w'] > prev['bb_w']:
         regime = "HIGH_VOLATILITY"
@@ -194,12 +199,10 @@ def analyze_market_metrics(df):
     elif (abs(last['ema20'] - last['ema50']) / last['close']) < 0.005 and last['volume'] < df['volume'].mean():
         regime = "RANGING"
     
-    # فحص الهبوط المفاجئ (Panic Drop > 5%)
     short_pct = (df['close'].iloc[-5] - last['close']) / df['close'].iloc[-5]
     if short_pct > 0.05:
         regime = "PANIC"
 
-    # حساب الـ Market Score الافتراضي (0-100)
     market_score = 65 
     if regime == "TRENDING UP": market_score += 20
     if regime == "PANIC": market_score -= 30
@@ -213,29 +216,17 @@ def run_strategies(df, regime):
     prev = df.iloc[-2]
     avg_volume = df['volume'].mean()
     
-    # استرداد الأوزان الحركية لـ Shadow Engine
-    conn = sqlite3.connect('trading_system.db')
-    cursor = conn.cursor()
-    weights = {}
-    cursor.execute('SELECT strategy, weight FROM strategy_weights')
-    for s, w in cursor.fetchall(): weights[s] = w
-    conn.close()
-
-    # القوانين الصارمة للـ 5. STRATEGY LOGIC
-    # A) TREND FOLLOWING
     if (last['ema20'] > last['ema50'] > last['ema200'] and 
         50 <= last['rsi'] <= 70 and last['volume'] > prev['volume'] and 
         last['close'] > last['ema20']):
         return "BUY", "Trend Following", last['ema50'], last['close'] + (1.5 * (last['close'] - last['ema50'])), "Pullback to EMA20 aligned with trend"
         
-    # B) BREAKOUT STRATEGY
     resistance = df['high'].iloc[-20:-1].max()
     if last['close'] > resistance and last['volume'] > (avg_volume * 1.3):
         sl = last['close'] - (2 * last['atr'])
         tp = last['close'] + (resistance - df['low'].iloc[-20:-1].min())
         return "BUY", "Breakout", sl, tp, "Volume spike confirmed breakout above resistance"
 
-    # C) RANGE REVERSAL
     support = df['low'].iloc[-20:-1].min()
     resistance_r = df['high'].iloc[-20:-1].max()
     if last['rsi'] < 30 and abs(last['close'] - support) / last['close'] < 0.01:
@@ -243,9 +234,6 @@ def run_strategies(df, regime):
     
     return "NO TRADE", "None", 0, 0, "No Strategy rules matched current candle status."
 
-# ==================================================
-# 6. HARD KILL SWITCH FILTER & 7. SCORING ENGINE
-# ==================================================
 def evaluate_signal(symbol, df, regime, raw_direction, strategy, sl, tp, market_score):
     global SAFE_MODE
     if SAFE_MODE:
@@ -257,7 +245,6 @@ def evaluate_signal(symbol, df, regime, raw_direction, strategy, sl, tp, market_
     last = df.iloc[-1]
     total_volume_usdt = last['close'] * last['volume']
     
-    # 6. SIGNAL FILTER (HARD KILL SWITCH)
     if total_volume_usdt < 2000000:
         return "NO TRADE", "REJECTED: Volume < 2,000,000 USDT (Weak Liquidity)"
     if market_score < 60:
@@ -265,7 +252,6 @@ def evaluate_signal(symbol, df, regime, raw_direction, strategy, sl, tp, market_
     if regime == "PANIC":
         return "NO TRADE", "REJECTED: Market is in PANIC mode."
         
-    # 7. SCORING ENGINE (FINAL DECISION)
     final_score = 50 
     if regime == "TRENDING UP": final_score += 20
     if last['rsi'] > 50: final_score += 15
@@ -320,7 +306,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"⚠️ تم تعديل وضع الأمان المتقدم للسيولة الفورية.", reply_markup=main_menu_keyboard())
         
     elif data == "shadow_stats":
-        # 9. SHADOW ENGINE STATS OUTPUT
         conn = sqlite3.connect('trading_system.db')
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*), SUM(pnl) FROM trades WHERE status='CLOSED'")
@@ -330,7 +315,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"🧠 **SHADOW ENGINE STATS:**\n\n- إجمالي صفقات المحاكاة التاريخية: {total}\n- صافي الأرباح المحققة: {total_pnl:.2f} USDT\n- التكيف الإحصائي: نشط وتلقائي بالكامل.", reply_markup=main_menu_keyboard())
 
     elif data == "daily_report":
-        # 12. REPORT ENGINE PREVIEW
         await query.edit_message_text("📊 **REPORT ENGINE (24H OUTPUT):**\n\nلا توجد صفقات مغلقة كافية خلال الـ 24 ساعة الماضية لتوليد تقرير إحصائي كامل. سيتم البث تلقائياً عند اكتمال الدورة.", reply_markup=main_menu_keyboard())
 
     elif data == "main_menu" or data == "rescan_market":
@@ -349,7 +333,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = STATE_IDLE
         await update.message.reply_text(f"⏳ جاري سحب بيانات {text} وتحليل الأنماط الفنية الفورية...")
         
-        # 13. SYSTEM FLOW (FULL PIPELINE EXECUTION)
         df = await fetch_and_clean_data(text)
         metrics = analyze_market_metrics(df)
         
@@ -362,7 +345,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         final_decision, filter_reason = evaluate_signal(text, df, regime, raw_direction, strategy, sl, tp, market_score)
         
         if final_decision == "BUY":
-            # 8. RISK ENGINE CALCULATIONS
             capital = get_user_setting(user_id, 'capital', 1000.0)
             risk_str = get_user_setting(user_id, 'risk_level', 'MEDIUM')
             risk_pct = 0.01 if risk_str == 'MEDIUM' else (0.005 if risk_str == 'LOW' else 0.02)
@@ -371,7 +353,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sl_distance = abs(entry_price - sl)
             position_size = (capital * risk_pct) / sl_distance if sl_distance > 0 else 0
             
-            # تسجيل الصفقة للتتبع والـ Shadow Engine
             conn = sqlite3.connect('trading_system.db')
             cursor = conn.cursor()
             cursor.execute('''
@@ -381,7 +362,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
             conn.close()
 
-            # 15. FINAL OUTPUT FORMAT (TELEGRAM MESSAGE)
             response = (
                 f"📊 **SIGNAL DETECTED**\n\n"
                 f"**Symbol:** {text}\n"
@@ -397,7 +377,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(response, reply_markup=main_menu_keyboard())
         else:
-            # حالة الـ NO TRADE المحددة بالبند 6
             await update.message.reply_text(
                 f"🚫 **OUTPUT: NO TRADE**\n\n"
                 f"**Symbol:** {text}\n"
@@ -420,7 +399,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 10. REAL-TIME SIGNAL TRACKER PIPELINE
 # ==================================================
 async def background_signal_tracker():
-    """ فحص فوري كل 45 ثانية لحالة الأسعار للتأكد من ضرب الأهداف أو الستوب """
     while True:
         try:
             conn = sqlite3.connect('trading_system.db')
