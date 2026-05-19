@@ -4,8 +4,8 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from config import TELEGRAM_TOKEN
 from database import init_db
 from bot.handlers import start_cmd, button_handler
-from core.whale_tracker import WhaleTracker
-from keep_alive import keep_alive  # استدعاء خادم الويب
+from Core.whale_tracker import WhaleTracker  # تم التعديل هنا إلى Core
+from keep_alive import keep_alive
 
 async def start_background_tasks():
     """تشغيل المهام الخلفية مثل رادار الحيتان"""
