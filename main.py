@@ -16,7 +16,7 @@ from Core.trade_monitor import TradeMonitor
 from sqlalchemy import select
 
 async def start_background_tasks(app):
-    """تشغيل المهام الخلفية (الرادار ومراقب الصفقات)"""
+    """تشغيل المهام الخلفية عند إقلاع البوت"""
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(TrackedCoin.symbol))
         symbols = result.scalars().all()
@@ -34,37 +34,33 @@ async def start_background_tasks(app):
     
     print(f"🔄 المهام الخلفية تعمل لـ {len(symbols)} عملة.")
 
-async def main():
+async def post_init(app: Application):
+    """تُستدعى تلقائياً بواسطة المكتبة فور تشغيل البوت لتشغيل المهام الحرة"""
+    await start_background_tasks(app)
+
+def main():
     print("🚀 جاري إقلاع النظام المطور V3...")
-    await init_db()
     
-    # بناء التطبيق
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    # إنشاء حلقة الحدث وتشغيل بناء قاعدة البيانات الأساسي
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(init_db())
+    
+    # بناء التطبيق مع دالة التفعيل التلقائي للمهام الخلفية
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
     # إضافة الموجهات والـ handlers
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    # تشغيل المهام الخلفية عند بدء تشغيل البوت مباشرة بطريقة آمنة
-    await start_background_tasks(app)
+    print("✅ النظام V3 جاهز تماماً للعمل المستقر!")
     
-    print("✅ النظام V3 يعمل الآن بكامل طاقته تلقائياً!")
-    
-    # التشغيل القياسي الآمن الذي يمنع التعارض ويغلق الجلسات القديمة تلقائياً
-    async with app:
-        await app.updater.start_polling()
-        await app.start()
-        # الانتظار بشكل آمن يمنع تجمد السيرفر وتكرار العمليات
-        while True:
-            await asyncio.sleep(3600)
+    # التشغيل القياسي الحاسم لإنهاء قنوات التضارب والعقد العالقة
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     try:
-        # إعداد بيئة التشغيل لأنظمة الأيوسنكرونوس المتقدمة
-        if sys.platform == 'win32':
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-            
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         print("\n🛑 توقف النظام.")
