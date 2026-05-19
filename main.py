@@ -1,10 +1,10 @@
 # main.py
 import asyncio
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from config import TELEGRAM_TOKEN
 from database import init_db
-from bot.handlers import start_cmd, button_handler
-from Core.whale_tracker import WhaleTracker  # تم التعديل هنا إلى Core
+from bot.handlers import start_cmd, button_handler, text_handler
+from Core.whale_tracker import WhaleTracker
 from keep_alive import keep_alive
 
 async def start_background_tasks():
@@ -29,8 +29,11 @@ async def main():
     
     # 3. تهيئة وتشغيل بوت التليجرام
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # ربط الأوامر والأزرار والنصوص
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
     print("✅ النظام يعمل بكامل طاقته! اذهب إلى تليجرام وأرسل /start")
     
