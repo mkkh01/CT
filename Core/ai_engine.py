@@ -3,9 +3,15 @@ import pandas as pd
 import xgboost as xgb
 from database import AsyncSessionLocal, PaperTrade, UserConfig
 from sqlalchemy import select
+
+# --- التعديل الدقيق للاستدعاءات ---
+# risk_manager في الداخل (نستخدم Core.)
 from Core.risk_manager import RiskManager
-from Core.macro_data import MacroAnalyzer
-from Core.strategies import SpotStrategies
+
+# macro_data و strategies في الخارج (بدون Core.)
+from macro_data import MacroAnalyzer
+from strategies import SpotStrategies
+# -----------------------------------
 
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
