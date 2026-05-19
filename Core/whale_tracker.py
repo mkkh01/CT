@@ -2,17 +2,35 @@
 import asyncio
 import json
 import websockets
-from config import WHALE_MIN_VALUE
+import requests
 
 class WhaleTracker:
     def __init__(self):
         self.active_streams = {}
+        self.volume_cache = {}
+
+    def get_24h_volume(self, symbol: str) -> float:
+        """جلب حجم التداول اليومي للعملة لتحديد حجم الحوت ديناميكياً"""
+        if symbol in self.volume_cache:
+            return self.volume_cache[symbol]
+            
+        try:
+            url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol.upper()}"
+            res = requests.get(url).json()
+            vol = float(res['quoteVolume'])
+            self.volume_cache[symbol] = vol
+            return vol
+        except:
+            return 1000000.0 # قيمة افتراضية
 
     async def track_symbol(self, symbol: str):
-        """مراقبة الصفقات اللحظية لعملة معينة لاكتشاف الحيتان"""
         uri = f"wss://stream.binance.com:9443/ws/{symbol.lower()}@aggTrade"
         
-        print(f"📡 بدء رادار الحيتان لعملة: {symbol}")
+        # الحوت هو من يشتري بـ 0.5% من سيولة اليوم في صفقة واحدة
+        daily_vol = self.get_24h_volume(symbol)
+        dynamic_whale_threshold = daily_vol * 0.005 
+        
+        print(f"📡 رادار {symbol} يعمل | حد الحوت: ${dynamic_whale_threshold:,.2f}")
         
         async with websockets.connect(uri) as ws:
             self.active_streams[symbol] = ws
@@ -21,24 +39,12 @@ class WhaleTracker:
                     data = await ws.recv()
                     trade = json.loads(data)
                     
-                    price = float(trade['p'])
-                    quantity = float(trade['q'])
-                    is_buyer_maker = trade['m'] # True = Sell, False = Buy
+                    trade_value = float(trade['p']) * float(trade['q'])
+                    is_buyer_maker = trade['m']
                     
-                    trade_value = price * quantity
-                    
-                    # اكتشاف الحوت (Dynamic Threshold يمكن إضافته هنا)
-                    if trade_value >= WHALE_MIN_VALUE:
+                    if trade_value >= dynamic_whale_threshold:
                         action = "🔴 بيع" if is_buyer_maker else "🟢 شراء"
-                        print(f"🐋 [حوت تم رصده] {symbol} | {action} | القيمة: ${trade_value:,.2f} | السعر: {price}")
-                        
-                        # هنا سيتم إرسال الإشارة للذكاء الاصطناعي لاحقاً
-                        
+                        print(f"🐋 [حوت ديناميكي] {symbol} | {action} | القيمة: ${trade_value:,.2f}")
             except Exception as e:
-                print(f"⚠️ انقطع الاتصال لـ {symbol}: {e}")
+                print(f"⚠️ انقطع الاتصال لـ {symbol}")
                 del self.active_streams[symbol]
-
-    async def start_tracking(self, symbols_list: list):
-        """تشغيل الرادار لعدة عملات في نفس الوقت"""
-        tasks = [self.track_symbol(sym) for sym in symbols_list]
-        await asyncio.gather(*tasks)
