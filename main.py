@@ -38,25 +38,33 @@ async def main():
     print("🚀 جاري إقلاع النظام المطور V3...")
     await init_db()
     
+    # بناء التطبيق
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # إضافة الموجهات والـ handlers
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    await app.initialize()
+    # تشغيل المهام الخلفية عند بدء تشغيل البوت مباشرة بطريقة آمنة
     await start_background_tasks(app)
     
-    await app.start()
-    await app.updater.start_polling()
+    print("✅ النظام V3 يعمل الآن بكامل طاقته تلقائياً!")
     
-    print("✅ النظام V3 يعمل الآن بكامل طاقته!")
-    
-    while True:
-        await asyncio.sleep(3600)
+    # التشغيل القياسي الآمن الذي يمنع التعارض ويغلق الجلسات القديمة تلقائياً
+    async with app:
+        await app.updater.start_polling()
+        await app.start()
+        # الانتظار بشكل آمن يمنع تجمد السيرفر وتكرار العمليات
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     try:
+        # إعداد بيئة التشغيل لأنظمة الأيوسنكرونوس المتقدمة
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🛑 توقف النظام.")
