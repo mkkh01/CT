@@ -1,55 +1,49 @@
-# core/ai_engine.py
+# Core/ai_engine.py
 import pandas as pd
 import xgboost as xgb
 from database import AsyncSessionLocal, PaperTrade
-from core.risk_manager import RiskManager
-from core.macro_data import MacroAnalyzer
-from core.strategies import SpotStrategies
+from Core.risk_manager import RiskManager      # تم التعديل هنا
+from Core.macro_data import MacroAnalyzer      # تم التعديل هنا
+from Core.strategies import SpotStrategies     # تم التعديل هنا
 
 class AIEngine:
     def __init__(self):
         self.risk_manager = RiskManager()
         self.macro = MacroAnalyzer()
         self.strategies = SpotStrategies()
-        # نموذج الذكاء الاصطناعي (جاهز للتدريب على البيانات التاريخية)
+        # نموذج الذكاء الاصطناعي
         self.model = xgb.XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.1)
 
     async def analyze_and_trade(self, symbol: str, current_price: float, atr: float, capital: float, whale_action: str = None):
         """
         تحليل شامل للسوق واتخاذ قرار التداول
         """
-        # 1. جلب حالة الأسواق العالمية
         regime = self.macro.get_market_regime()
         fng = self.macro.get_fear_and_greed()
         
-        confidence = 50.0  # نقطة البداية المحايدة
+        confidence = 50.0  
         signal = "HOLD"
 
-        # 2. تأثير الماكرو (الدولار وناسداك)
         if regime == "RISK_OFF":
-            confidence -= 20.0  # بيئة خطرة للكريبتو
+            confidence -= 20.0  
         elif regime == "RISK_ON":
-            confidence += 20.0  # بيئة ممتازة
+            confidence += 20.0  
 
-        # 3. تأثير مؤشر الخوف والطمع (شراء الخوف وبيع الطمع)
-        if fng < 25: # رعب شديد (فرصة تجميع)
+        if fng < 25: 
             confidence += 15.0
-        elif fng > 75: # طمع شديد (خطر تصحيح)
+        elif fng > 75: 
             confidence -= 15.0
 
-        # 4. تأثير الحيتان (السيولة الذكية)
         if whale_action == "BUY":
             confidence += 25.0
         elif whale_action == "SELL":
             confidence -= 25.0
 
-        # 5. اتخاذ القرار النهائي
         if confidence >= 80.0:
             signal = "BUY"
         elif confidence <= 20.0:
             signal = "SELL"
 
-        # 6. التنفيذ إذا كانت هناك إشارة قوية
         if signal != "HOLD":
             await self.execute_paper_trade(symbol, signal, current_price, atr, capital, confidence)
             
