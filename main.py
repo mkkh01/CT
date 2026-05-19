@@ -1,11 +1,19 @@
 # main.py
+import os
+import sys
+
+# 1. تشغيل الخادم الوهمي فوراً في أول ثانية لإرضاء منصة Render
+from keep_alive import keep_alive
+keep_alive()
+print("✅ تم فتح المنفذ بنجاح! جاري تحميل مكتبات الذكاء الاصطناعي الثقيلة (قد يستغرق دقيقة)...")
+
+# 2. الآن نقوم باستيراد باقي المكتبات براحة تامة
 import asyncio
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, Watchlist
 from bot.handlers import start_cmd, button_handler, text_handler
 from Core.whale_tracker import WhaleTracker
-from keep_alive import keep_alive
 from sqlalchemy import select
 
 async def start_background_tasks(bot):
@@ -25,7 +33,6 @@ async def start_background_tasks(bot):
 
 async def main():
     print("🚀 جاري إقلاع النظام المتقدم...")
-    keep_alive()
     await init_db()
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
