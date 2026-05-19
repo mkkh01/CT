@@ -119,10 +119,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config = user_config.scalars().first()
             if config:
                 config.system_status = "running"
-                await session.commit()
-                await query.edit_message_text("▶️ تم تشغيل النظام بنجاح!", reply_markup=get_main_menu())
             else:
-                await query.edit_message_text("⚠️ خطأ: لم يتم العثور على إعدادات المستخدم.", reply_markup=get_main_menu())
+                # إنشاء الإعدادات تلقائياً بحالة التشغيل إن لم تكن موجودة
+                config = UserConfig(user_id=ADMIN_ID, system_status="running")
+                session.add(config)
+                
+            await session.commit()
+            await query.edit_message_text("▶️ تم تشغيل النظام بنجاح وبدأ البحث عن الصفقات!", reply_markup=get_main_menu())
 
     elif data == 'stop_sys':
         async with AsyncSessionLocal() as session:
@@ -130,10 +133,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config = user_config.scalars().first()
             if config:
                 config.system_status = "stopped"
-                await session.commit()
-                await query.edit_message_text("⏸️ تم إيقاف النظام بنجاح!", reply_markup=get_main_menu())
             else:
-                await query.edit_message_text("⚠️ خطأ: لم يتم العثور على إعدادات المستخدم.", reply_markup=get_main_menu())
+                # إنشاء الإعدادات تلقائياً بحالة الإيقاف إن لم تكن موجودة
+                config = UserConfig(user_id=ADMIN_ID, system_status="stopped")
+                session.add(config)
+                
+            await session.commit()
+            await query.edit_message_text("⏸️ تم إيقاف النظام بنجاح!", reply_markup=get_main_menu())
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update): return
@@ -156,8 +162,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ أدخل رقماً صحيحاً.")
 
     elif state == 'WAITING_REMOVE_COIN':
+        # تنظيف النص وتأمينه ضد الحروف الزائدة لضمان دقة الحذف من قاعدة البيانات
+        clean_text = text.replace("SUDT", "USDT")
         async with AsyncSessionLocal() as session:
-            await session.execute(delete(TrackedCoin).where(TrackedCoin.symbol == text))
+            await session.execute(delete(TrackedCoin).where(TrackedCoin.symbol == clean_text))
             await session.commit()
-            await update.message.reply_text(f"🗑️ تم حذف {text}!", reply_markup=get_coins_menu())
+            await update.message.reply_text(f"🗑️ تم حذف {clean_text} من قائمة المراقبة!", reply_markup=get_coins_menu())
         context.user_data["state"] = None
