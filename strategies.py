@@ -1,23 +1,70 @@
-# core/strategies.py
+import pandas as pd
+import pandas_ta as ta
 
 class SpotStrategies:
-    @staticmethod
-    def dynamic_dca(entry_price: float, current_price: float, drop_percentage: float = 0.05) -> bool:
-        """
-        متوسط التكلفة الديناميكي: لا يشتري إلا إذا هبط السعر بنسبة معينة (مثلاً 5%)
-        """
-        price_drop = (entry_price - current_price) / entry_price
-        if price_drop >= drop_percentage:
-            return True
-        return False
+    def __init__(self):
+        pass
 
-    @staticmethod
-    def smart_grid_levels(current_price: float, atr: float, grid_count: int = 5) -> list:
-        """
-        حساب مستويات الشراء والبيع لشبكة التداول بناءً على التذبذب (ATR)
-        """
-        step = atr / 2
-        buy_levels = [current_price - (step * i) for i in range(1, grid_count + 1)]
-        sell_levels = [current_price + (step * i) for i in range(1, grid_count + 1)]
-        
-        return {"buy_levels": buy_levels, "sell_levels": sell_levels}
+    def apply_technical_indicators(self, df: pd.DataFrame):
+        """تطبيق المؤشرات الفنية الأساسية على بيانات الشموع"""
+        if df.empty: return df
+
+        # RSI (Relative Strength Index)
+        df["RSI"] = ta.rsi(df["close"], length=14)
+
+        # MACD (Moving Average Convergence Divergence)
+        macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
+        df = pd.concat([df, macd], axis=1)
+
+        # Bollinger Bands
+        bbands = ta.bbands(df["close"], length=20, std=2)
+        df = pd.concat([df, bbands], axis=1)
+
+        # ATR (Average True Range)
+        df["ATR"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+
+        return df
+
+    def check_buy_signal(self, df: pd.DataFrame) -> bool:
+        """التحقق من إشارة شراء بناءً على المؤشرات الفنية"""
+        if df.empty or len(df) < 20: # نحتاج لبيانات كافية للمؤشرات
+            return False
+
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+
+        # مثال بسيط لإشارة شراء:
+        # RSI أقل من 30 (تشبع بيعي) وبدأ في الارتفاع
+        # MACD يعبر خط الإشارة للأعلى
+        # السعر قريب من الحد السفلي لـ Bollinger Bands
+
+        rsi_buy = last_row["RSI"] < 30 and last_row["RSI"] > prev_row["RSI"]
+        macd_buy = last_row["MACD_12_26_9"] > last_row["MACDs_12_26_9"] and prev_row["MACD_12_26_9"] < prev_row["MACDs_12_26_9"]
+        bb_buy = last_row["close"] < last_row["BBL_20_2.0"]
+
+        return rsi_buy or macd_buy or bb_buy
+
+    def check_sell_signal(self, df: pd.DataFrame) -> bool:
+        """التحقق من إشارة بيع بناءً على المؤشرات الفنية"""
+        if df.empty or len(df) < 20:
+            return False
+
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+
+        # مثال بسيط لإشارة بيع:
+        # RSI أعلى من 70 (تشبع شرائي) وبدأ في الانخفاض
+        # MACD يعبر خط الإشارة للأسفل
+        # السعر قريب من الحد العلوي لـ Bollinger Bands
+
+        rsi_sell = last_row["RSI"] > 70 and last_row["RSI"] < prev_row["RSI"]
+        macd_sell = last_row["MACD_12_26_9"] < last_row["MACDs_12_26_9"] and prev_row["MACD_12_26_9"] > prev_row["MACDs_12_26_9"]
+        bb_sell = last_row["close"] > last_row["BBU_20_2.0"]
+
+        return rsi_sell or macd_sell or bb_sell
+
+    def get_atr(self, df: pd.DataFrame) -> float:
+        """جلب قيمة ATR من البيانات المحسوبة"""
+        if not df.empty and "ATR" in df.columns:
+            return df["ATR"].iloc[-1]
+        return 0.0
