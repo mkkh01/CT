@@ -7,3 +7,4 @@ xgboost
 yfinance
 greenlet
 flask
+scikit-learn
