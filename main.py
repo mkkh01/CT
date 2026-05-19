@@ -5,24 +5,26 @@ from config import TELEGRAM_TOKEN
 from database import init_db
 from bot.handlers import start_cmd, button_handler
 from core.whale_tracker import WhaleTracker
+from keep_alive import keep_alive  # استدعاء خادم الويب
 
 async def start_background_tasks():
     """تشغيل المهام الخلفية مثل رادار الحيتان"""
     tracker = WhaleTracker()
-    # قائمة مبدئية للعملات التي سيراقبها النظام (يمكن جلبها من قاعدة البيانات لاحقاً)
     symbols_to_track = ["BTCUSDT", "ETHUSDT", "PEPEUSDT"] 
     
     print("🔄 جاري تشغيل رادار الحيتان للعملات المحددة...")
-    # تشغيل الرادار في الخلفية دون إيقاف الكود
     asyncio.create_task(tracker.start_tracking(symbols_to_track))
 
 async def main():
     print("🚀 جاري إقلاع النظام المتقدم...")
     
+    # تشغيل خادم الويب الوهمي لإرضاء منصة Render
+    keep_alive()
+    
     # 1. تهيئة قاعدة البيانات
     await init_db()
     
-    # 2. تشغيل المهام الخلفية (الحيتان والذكاء الاصطناعي)
+    # 2. تشغيل المهام الخلفية (الحيتان)
     await start_background_tasks()
     
     # 3. تهيئة وتشغيل بوت التليجرام
