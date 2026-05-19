@@ -3,60 +3,67 @@ import pandas as pd
 import xgboost as xgb
 from database import AsyncSessionLocal, PaperTrade
 from core.risk_manager import RiskManager
+from core.macro_data import MacroAnalyzer
+from core.strategies import SpotStrategies
 
 class AIEngine:
     def __init__(self):
         self.risk_manager = RiskManager()
-        # تهيئة نموذج XGBoost خفيف للعمل على خوادم Render
+        self.macro = MacroAnalyzer()
+        self.strategies = SpotStrategies()
+        # نموذج الذكاء الاصطناعي (جاهز للتدريب على البيانات التاريخية)
         self.model = xgb.XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.1)
-        self.is_trained = False
 
-    def analyze_market(self, symbol: str, df: pd.DataFrame, whale_signal: bool = False):
+    async def analyze_and_trade(self, symbol: str, current_price: float, atr: float, capital: float, whale_action: str = None):
         """
-        تحليل بيانات السوق وإصدار إشارة تداول
-        (هنا يتم دمج المؤشرات الفنية مع إشارات الحيتان)
+        تحليل شامل للسوق واتخاذ قرار التداول
         """
-        # في بيئة العمل الحقيقية، سيقوم النموذج بتحليل الـ DataFrame
-        # للتبسيط في هذه المرحلة الهيكلية، سنضع منطقاً يعتمد على الحيتان والزخم
+        # 1. جلب حالة الأسواق العالمية
+        regime = self.macro.get_market_regime()
+        fng = self.macro.get_fear_and_greed()
         
-        confidence = 0.0
+        confidence = 50.0  # نقطة البداية المحايدة
         signal = "HOLD"
 
-        # إذا كان هناك حوت يشتري، نرفع نسبة الثقة
-        if whale_signal:
-            confidence += 40.0
-            
-        # تحليل بسيط للزخم (كمثال هيكلي للذكاء الاصطناعي)
-        if len(df) > 0:
-            current_price = df['close'].iloc[-1]
-            sma_20 = df['close'].rolling(window=20).mean().iloc[-1]
-            
-            if current_price > sma_20:
-                signal = "BUY"
-                confidence += 35.0
-            elif current_price < sma_20:
-                signal = "SELL"
-                confidence += 35.0
+        # 2. تأثير الماكرو (الدولار وناسداك)
+        if regime == "RISK_OFF":
+            confidence -= 20.0  # بيئة خطرة للكريبتو
+        elif regime == "RISK_ON":
+            confidence += 20.0  # بيئة ممتازة
 
-        # إذا تجاوزت الثقة 70%، نعتمد الإشارة
-        if confidence >= 70.0:
-            return signal, confidence
-        return "HOLD", confidence
+        # 3. تأثير مؤشر الخوف والطمع (شراء الخوف وبيع الطمع)
+        if fng < 25: # رعب شديد (فرصة تجميع)
+            confidence += 15.0
+        elif fng > 75: # طمع شديد (خطر تصحيح)
+            confidence -= 15.0
 
-    async def execute_paper_trade(self, symbol: str, side: str, entry_price: float, atr: float, capital: float):
-        """تنفيذ صفقة وهمية وحفظها في قاعدة البيانات للتعلم"""
-        # 1. حساب حجم الصفقة (بافتراض نسبة نجاح تاريخية 55%)
+        # 4. تأثير الحيتان (السيولة الذكية)
+        if whale_action == "BUY":
+            confidence += 25.0
+        elif whale_action == "SELL":
+            confidence -= 25.0
+
+        # 5. اتخاذ القرار النهائي
+        if confidence >= 80.0:
+            signal = "BUY"
+        elif confidence <= 20.0:
+            signal = "SELL"
+
+        # 6. التنفيذ إذا كانت هناك إشارة قوية
+        if signal != "HOLD":
+            await self.execute_paper_trade(symbol, signal, current_price, atr, capital, confidence)
+            
+        return signal, confidence
+
+    async def execute_paper_trade(self, symbol: str, side: str, entry_price: float, atr: float, capital: float, confidence: float):
+        """تنفيذ الصفقة الوهمية وحفظها للتعلم"""
         pos_size = self.risk_manager.calculate_kelly_position(capital, win_rate=0.55, risk_reward_ratio=1.5)
-        
-        # 2. حساب الأهداف
         sl, tp = self.risk_manager.calculate_sl_tp(entry_price, atr, side)
         
-        # 3. التأكد من تغطية العمولات
         if not self.risk_manager.check_fee_violation(entry_price, tp):
-            print(f"⚠️ تم إلغاء صفقة {symbol} لأنها لا تغطي العمولات.")
+            print(f"⚠️ تجاهل صفقة {symbol}: الهدف لا يغطي عمولة المنصة.")
             return None
 
-        # 4. حفظ الصفقة في قاعدة البيانات (PostgreSQL)
         async with AsyncSessionLocal() as session:
             new_trade = PaperTrade(
                 symbol=symbol,
@@ -65,10 +72,10 @@ class AIEngine:
                 position_size=pos_size,
                 stop_loss=sl,
                 take_profit=tp,
-                confidence=85.0 # مثال
+                confidence=confidence
             )
             session.add(new_trade)
             await session.commit()
             
-        print(f"✅ تم فتح صفقة وهمية: {side} {symbol} | الحجم: ${pos_size} | الهدف: {tp}")
+        print(f"✅ [صفقة ذكية] {side} {symbol} | الثقة: {confidence}% | الحجم: ${pos_size} | الهدف: {tp}")
         return new_trade
