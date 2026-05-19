@@ -68,14 +68,14 @@ class WhaleTracker:
 
                     if self.bot and self.chat_id:
                         try:
-                            await self.bot.send_message(chat_id=self.chat_id, text=whale_msg, parse_mode=\'Markdown\')
+                            # تم تعديل السطر بالأسفل لمسح الرموز المائلة المسببة للـ SyntaxError
+                            await self.bot.send_message(chat_id=self.chat_id, text=whale_msg, parse_mode='Markdown')
                         except Exception as e:
                             print(f"خطأ في إرسال تنبيه الحوت للتليجرام: {e}")
 
     def add_symbol(self, symbol: str):
         """إضافة عملة جديدة للتتبع"""
         self.tracking_symbols.add(symbol.lower())
-        # لا حاجة لإعادة الاتصال، سيتم تحديث الـ stream تلقائياً في المرة القادمة
         print(f"تمت إضافة {symbol} إلى قائمة تتبع الحيتان.")
 
     def remove_symbol(self, symbol: str):
@@ -87,8 +87,3 @@ class WhaleTracker:
         """تحديث قائمة العملات التي يتم تتبعها"""
         self.tracking_symbols = {s.lower() for s in new_symbols}
         print(f"تم تحديث قائمة تتبع الحيتان إلى: {', '.join(self.tracking_symbols)}")
-        # لإعادة الاتصال بـ WebSocket مع الرموز الجديدة، يمكن إغلاق الاتصال الحالي
-        # ومعاودة الاتصال في الحلقة الرئيسية لـ _connect_websocket
-        # حالياً، هذا يتطلب إعادة تشغيل بسيط للـ WebSocket أو آلية أكثر تعقيداً لإدارة الـ streams
-        # ولكن للتبسيط، سيتم التقاط التغيير عند إعادة الاتصال التلقائي في حالة حدوث خطأ أو إغلاق
-
