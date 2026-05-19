@@ -13,3 +13,6 @@ ADMIN_ID = 1503808643
 # إعدادات التداول الافتراضية
 DEFAULT_CAPITAL = 1000.0
 TRADE_FEE = 0.001
+
+# رابط خدمة البث المباشر (WebSocket) لمنصة بينانس - تم إضافته لحل خطأ الاستيراد
+BINANCE_WS_URL = "wss://stream.binance.com:9443"
