@@ -4,7 +4,7 @@ from database import AsyncSessionLocal, PaperTrade, UserConfig, TrackedCoin
 from sqlalchemy import select
 from Core.risk_manager import RiskManager
 from macro_data import MacroAnalyzer
-# from strategies import SpotStrategies # تم إزالة هذا الاستيراد مؤقتاً لحين إعادة بناءه أو دمجه
+from strategies import SpotStrategies
 import ccxt.async_support as ccxt
 import asyncio
 
@@ -12,7 +12,7 @@ class AIEngine:
     def __init__(self, bot=None, chat_id=None):
         self.risk_manager = RiskManager()
         self.macro = MacroAnalyzer()
-        # self.strategies = SpotStrategies() # تم إزالة هذا الاستيراد مؤقتاً
+        self.strategies = SpotStrategies()
         self.model = xgb.XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.1)
         self.bot = bot
         self.chat_id = chat_id
@@ -46,6 +46,9 @@ class AIEngine:
         # جلب بيانات الشموع للتحليل الفني
         ohlcv_df = await self.get_candlestick_data(symbol, timeframe)
         
+        # تطبيق المؤشرات الفنية
+        ohlcv_df = self.strategies.apply_technical_indicators(ohlcv_df)
+
         regime = self.macro.get_market_regime()
         fng = self.macro.get_fear_and_greed()
         confidence = 50.0  
@@ -62,23 +65,21 @@ class AIEngine:
         if whale_action == "BUY": confidence += 25.0
         elif whale_action == "SELL": confidence -= 25.0
 
-        # 3. التحليل الفني (إضافة أنماط الشموع والمؤشرات هنا)
+        # 3. التحليل الفني (باستخدام الاستراتيجيات الجديدة)
         if not ohlcv_df.empty:
-            # مثال بسيط: إذا كان سعر الإغلاق الحالي أعلى من سعر الإغلاق السابق (شمعة صعودية)
-            if len(ohlcv_df) >= 2 and ohlcv_df['close'].iloc[-1] > ohlcv_df['close'].iloc[-2]:
-                confidence += 10.0
-            elif len(ohlcv_df) >= 2 and ohlcv_df['close'].iloc[-1] < ohlcv_df['close'].iloc[-2]:
-                confidence -= 10.0
+            if self.strategies.check_buy_signal(ohlcv_df):
+                confidence += 20.0
+            elif self.strategies.check_sell_signal(ohlcv_df):
+                confidence -= 20.0
             
-            # TODO: إضافة تحليل أنماط الشموع (مثل Hammer, Engulfing) والمؤشرات (RSI, MACD) هنا
-            # يمكن استخدام مكتبات مثل TA-Lib أو تنفيذها يدوياً
+            # تحديث ATR بناءً على البيانات المحسوبة
+            atr = self.strategies.get_atr(ohlcv_df)
 
         # تحديد الإشارة بناءً على الثقة
         if confidence >= 75.0: signal = "BUY"
         elif confidence <= 25.0: signal = "SELL"
 
         # هل الصفقة تظهر للمستخدم أم للتدريب فقط؟
-        # تظهر فقط إذا كانت الثقة عالية جداً (>85) أو إذا كانت بناءً على طلب المستخدم
         is_visible = confidence >= 85.0 or confidence <= 15.0
 
         if signal != "HOLD":
@@ -96,7 +97,7 @@ class AIEngine:
                        f"الوقف: ${trade.stop_loss:,.{self.risk_manager.get_dynamic_precision(trade.stop_loss)}f}\n"
                        f"--- النظام يراقب الصفقة الآن وسيرسل تقريراً عند الإغلاق ---")
                 try:
-                    await self.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode=\'Markdown\')
+                    await self.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode='Markdown')
                 except Exception as e:
                     print(f"خطأ في إرسال رسالة التليجرام: {e}")
                     
@@ -130,3 +131,4 @@ class AIEngine:
 
     async def close(self):
         await self.exchange.close()
+
