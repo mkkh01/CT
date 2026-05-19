@@ -1,43 +1,57 @@
-# core/macro_data.py
+# macro_data.py
 import yfinance as yf
 import requests
-import asyncio
+import time
 
 class MacroAnalyzer:
     def __init__(self):
         self.dxy_ticker = "DX-Y.NYB"
         self.ndx_ticker = "^NDX"
+        # إعداد الذاكرة المؤقتة (Cache)
+        self._cache = {"regime": None, "fng": None, "regime_time": 0, "fng_time": 0}
+        self.cache_duration = 3600  # حفظ البيانات لمدة ساعة (3600 ثانية)
 
     def get_market_regime(self) -> str:
-        """تحديد حالة السوق: Risk-On (شراء) أو Risk-Off (خطر/بيع)"""
+        current_time = time.time()
+        # إذا كانت البيانات موجودة ولم تمر ساعة، استخدمها فوراً
+        if self._cache["regime"] and (current_time - self._cache["regime_time"] < self.cache_duration):
+            return self._cache["regime"]
+            
         try:
-            # جلب بيانات الدولار وناسداك
             dxy = yf.Ticker(self.dxy_ticker).history(period="5d")
             ndx = yf.Ticker(self.ndx_ticker).history(period="5d")
+            if dxy.empty or ndx.empty: return "NEUTRAL"
             
-            if dxy.empty or ndx.empty:
-                return "NEUTRAL"
-
             dxy_trend = dxy['Close'].iloc[-1] - dxy['Close'].iloc[0]
             ndx_trend = ndx['Close'].iloc[-1] - ndx['Close'].iloc[0]
 
-            # إذا كان الدولار يهبط وناسداك يصعد = بيئة ممتازة للكريبتو
-            if dxy_trend < 0 and ndx_trend > 0:
-                return "RISK_ON"
-            # إذا كان الدولار يطير وناسداك ينهار = خطر
-            elif dxy_trend > 0 and ndx_trend < 0:
-                return "RISK_OFF"
+            if dxy_trend < 0 and ndx_trend > 0: 
+                regime = "RISK_ON"
+            elif dxy_trend > 0 and ndx_trend < 0: 
+                regime = "RISK_OFF"
+            else: 
+                regime = "NEUTRAL"
             
-            return "NEUTRAL"
+            # حفظ النتيجة في الذاكرة المؤقتة
+            self._cache["regime"] = regime
+            self._cache["regime_time"] = current_time
+            return regime
+            
         except Exception as e:
-            print(f"⚠️ خطأ في جلب بيانات الماكرو: {e}")
-            return "NEUTRAL"
+            print(f"⚠️ تنبيه ماكرو (تم استخدام الذاكرة المؤقتة): {e}")
+            return self._cache["regime"] or "NEUTRAL"
 
     def get_fear_and_greed(self) -> int:
-        """جلب مؤشر الخوف والطمع مجاناً"""
+        current_time = time.time()
+        if self._cache["fng"] and (current_time - self._cache["fng_time"] < self.cache_duration):
+            return self._cache["fng"]
+            
         try:
-            response = requests.get("https://api.alternative.me/fng/?limit=1")
-            data = response.json()
-            return int(data['data'][0]['value'])
+            res = requests.get("https://api.alternative.me/fng/?limit=1").json()
+            fng = int(res['data'][0]['value'])
+            
+            self._cache["fng"] = fng
+            self._cache["fng_time"] = current_time
+            return fng
         except:
-            return 50 # قيمة محايدة في حال الفشل
+            return self._cache["fng"] or 50
