@@ -1,4 +1,3 @@
-# bot/keyboards.py
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 def get_main_menu():
