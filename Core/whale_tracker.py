@@ -1,4 +1,4 @@
-# core/whale_tracker.py
+# Core/whale_tracker.py
 import asyncio
 import json
 import websockets
@@ -26,7 +26,6 @@ class WhaleTracker:
     async def track_symbol(self, symbol: str):
         uri = f"wss://stream.binance.com:9443/ws/{symbol.lower()}@aggTrade"
         
-        # الحوت هو من يشتري بـ 0.5% من سيولة اليوم في صفقة واحدة
         daily_vol = self.get_24h_volume(symbol)
         dynamic_whale_threshold = daily_vol * 0.005 
         
@@ -48,3 +47,8 @@ class WhaleTracker:
             except Exception as e:
                 print(f"⚠️ انقطع الاتصال لـ {symbol}")
                 del self.active_streams[symbol]
+
+    async def start_tracking(self, symbols_list: list):
+        """تشغيل الرادار لعدة عملات في نفس الوقت"""
+        tasks = [self.track_symbol(sym) for sym in symbols_list]
+        await asyncio.gather(*tasks)
