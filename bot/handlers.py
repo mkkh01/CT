@@ -4,7 +4,7 @@ from bot.keyboards import get_main_menu, get_coins_menu, get_timeframe_menu
 from config import ADMIN_ID
 from database import AsyncSessionLocal, TrackedCoin, UserConfig, PaperTrade
 from sqlalchemy import select, delete, func
-import httpx  # تم استبدال requests بـ httpx لضمان سرعة واستقرار البوت الأيوسنكرونوس
+import httpx
 
 async def check_admin(update: Update) -> bool:
     user_id = update.effective_user.id
@@ -24,17 +24,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     
-    # 📝 سطر تتبع: سيطبع في الـ Logs فوراً عند نقر أي زر
+    # 📝 سطر تتبع ذكي
     print(f"📥 [LOG] تم النقر على زر يحمل بيانات: {data} من قبل المستخدم: {update.effective_user.id}")
 
     try:
-        # الرد الفوري على التليجرام لإنهاء حالة التحميل في الزر
         await query.answer()
         print(f"✅ [LOG] تم إرسال الرد (query.answer) بنجاح للزر: {data}")
     except Exception as e:
         print(f"❌ [LOG] فشل البوت في الرد على الزر عبر التليجرام بسبب: {e}")
 
-    # بدء معالجة الشروط والأوامر داخل مصيدة أخطاء
     try:
         if data == 'main_menu':
             context.user_data["state"] = None
@@ -45,6 +43,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = None
             await query.edit_message_text("🪙 *إدارة العملات والوقت*", reply_markup=get_coins_menu(), parse_mode='Markdown')
             print("✨ [LOG] تم تحديث الشاشة إلى: إدارة العملات")
+            
+        elif data == 'capital':
+            # 💰 تم إضافة معالج زر رأس المال الكلي هنا لحل المشكلة برمجياً
+            context.user_data["state"] = 'WAITING_TOTAL_CAPITAL'
+            await query.edit_message_text("💰 *إدارة رأس المال الكلي:*\n\nأرسل قيمة رأس المال الجديد المخصص للتداول الخوارزمي بالدولار (مثال: 1500):", parse_mode='Markdown')
+            print("✨ [LOG] تم تحويل الحالة إلى انتظار استقبال رأس المال الكلي الجديد")
             
         elif data == 'report':
             print("📊 [LOG] جاري جلب تقرير الأداء من قاعدة البيانات...")
@@ -164,8 +168,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("✅ [LOG] تم بنجاح تعديل حالة النظام إلى (stopped) في جدول الإعدادات")
 
     except Exception as main_error:
-        # 🔥 هنا المصيدة! إذا انهار الكود لأي سبب سيطبع الخطأ الحقيقي هنا بالتفصيل
-        print(f"🚨🚨 [CRITICAL ERROR] انهار معالج الأزرار أثناء التنفيذ الفعلي! السبب الحقيقي هو: {main_error}")
+        print(f"🚨🚨 [CRITICAL ERROR] انهار معالج الأزرار! السبب: {main_error}")
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update): return
@@ -186,6 +189,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = None
         except:
             await update.message.reply_text("⚠️ أدخل رقماً صحيحاً.")
+
+    elif state == 'WAITING_TOTAL_CAPITAL':
+        # 💰 استقبال ومعالجة قيمة رأس المال الكلي الجديد نصياً
+        try:
+            total_capital = float(text)
+            async with AsyncSessionLocal() as session:
+                user_config = await session.execute(select(UserConfig).where(UserConfig.user_id == ADMIN_ID))
+                config = user_config.scalars().first()
+                if config:
+                    config.total_capital = total_capital
+                else:
+                    config = UserConfig(user_id=ADMIN_ID, total_capital=total_capital, system_status="stopped")
+                    session.add(config)
+                await session.commit()
+            await update.message.reply_text(f"✅ تم تحديث رأس المال الكلي للنظام إلى: *${total_capital:,.2f}*", reply_markup=get_main_menu(), parse_mode='Markdown')
+            context.user_data["state"] = None
+        except:
+            await update.message.reply_text("⚠️ أدخل رقماً صحيحاً لقيمة رأس المال.")
 
     elif state == 'WAITING_REMOVE_COIN':
         clean_text = text.replace("SUDT", "USDT")
