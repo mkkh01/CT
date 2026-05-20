@@ -2,7 +2,7 @@ import asyncio
 import json
 import websockets
 from config import BINANCE_WS_URL
-from bot.trading import AIEngine  # تأكد من مطابقة مسار محرك الذكاء الاصطناعي لديك
+from Core.ai_engine import AIEngine  # تم التعديل هنا ليتطابق مع مجلد Core واسم الملف الجديد
 
 class WhaleTracker:
     def __init__(self, bot=None, chat_id=None):
@@ -73,7 +73,7 @@ class WhaleTracker:
                     is_market_trade = False
                 else:
                     # طلبات ماركت فورية التهمت السيولة (Market Orders) وتؤثر على السعر حالاً
-                    action_en = "BUY" if not is_buyer_maker else "SELL" # سيتم فلترتها لاحقاً للشراء أو البيع الفعلي
+                    action_en = "BUY" if not is_buyer_maker else "SELL"
                     action_ar = "شراء حقيقي مباشر (تأثير فوري على السعر)" if not is_buyer_maker else "بيع حقيقي مباشر"
                     is_market_trade = True
 
@@ -96,7 +96,6 @@ class WhaleTracker:
 
                 # 🚀 تمرير البيانات لمحرك الذكاء الاصطناعي للتحليل والتدريب الذاتي
                 try:
-                    # نمرر الحركة الفعلية للمحرك، وإذا كانت مجرد نقل وتوزيع يستفيد منها كبيانات للتعلم والتدريب الصامت
                     asyncio.create_task(
                         self.ai_engine.analyze_and_trade(
                             symbol=symbol, 
@@ -118,4 +117,4 @@ class WhaleTracker:
 
     async def update_tracking_symbols(self, new_symbols: list):
         self.tracking_symbols = {s.lower() for s in new_symbols}
-        print(f"🔄 [RADAR V3] تحديث كامل للرادار لجميع عملات قاعدة البيانات المتاحة.")
+        print(f"🔄 [RADAR V3] تحديث شامل للرادار لجميع عملات قاعدة البيانات المتاحة.")
