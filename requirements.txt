@@ -3,8 +3,11 @@ SQLAlchemy
 asyncpg
 websockets
 pandas
+pandas-ta==0.3.14b0
+scipy
 xgboost
 yfinance
 greenlet
 flask
 scikit-learn
+requests
