@@ -1,34 +1,37 @@
 import pandas as pd
-import pandas_ta as ta
+# استدعاء مؤشرات مكتبة ta المدعومة والمستقرة على Render
+from ta.momentum import RSIIndicator
+from ta.trend import MACD
+from ta.volatility import BollingerBands, AverageTrueRange
 
 class SpotStrategies:
     def __init__(self):
         pass
 
     def apply_technical_indicators(self, df: pd.DataFrame):
-        """تطبيق المؤشرات الفنية الأساسية وتنظيف البيانات الفارغة لمنع الأخطاء الحسابية"""
+        """تطبيق المؤشرات الفنية الأساسية وتنظيف البيانات الفارغة لمنع الأخطاء الحسابية باستخدام مكتبة ta"""
         if df.empty: return df
 
         try:
-            # 1. RSI (Relative Strength Index)
-            df["RSI"] = ta.rsi(df["close"], length=14)
+            # 1. حساب RSI (Relative Strength Index)
+            df["RSI"] = RSIIndicator(close=df["close"], window=14).rsi()
 
-            # 2. MACD (Moving Average Convergence Divergence)
-            macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
-            if macd is not None and not macd.empty:
-                # توحيد أسماء أعمدة الماكد برمجياً لتجنب KeyError القاتل
-                macd.columns = ['MACD', 'MACD_HIST', 'MACD_SIGNAL']
-                df = pd.concat([df, macd], axis=1)
+            # 2. حساب MACD (Moving Average Convergence Divergence)
+            macd_indicator = MACD(close=df["close"], window_fast=12, window_slow=26, window_sign=9)
+            df['MACD'] = macd_indicator.macd()
+            df['MACD_HIST'] = macd_indicator.macd_diff()
+            df['MACD_SIGNAL'] = macd_indicator.macd_signal()
 
-            # 3. Bollinger Bands
-            bbands = ta.bbands(df["close"], length=20, std=2)
-            if bbands is not None and not bbands.empty:
-                # توحيد أسماء أعمدة البولنجر باند برمجياً لحماية العملات الصفرية
-                bbands.columns = ['BBL', 'BBM', 'BBU', 'BBB', 'BBP']
-                df = pd.concat([df, bbands], axis=1)
+            # 3. حساب Bollinger Bands وتوحيد أسماء الأعمدة لحماية العملات الصفرية
+            bb_indicator = BollingerBands(close=df["close"], window=20, window_dev=2)
+            df['BBL'] = bb_indicator.bollinger_lband()  # الحد السفلي
+            df['BBM'] = bb_indicator.bollinger_mavg()   # الحد الأوسط
+            df['BBU'] = bb_indicator.bollinger_hband()  # الحد العلوي
+            df['BBB'] = bb_indicator.bollinger_wband()  # العرض (Width)
+            df['BBP'] = bb_indicator.bollinger_pband()  # النسبة المنوية (Percentage)
 
-            # 4. ATR (Average True Range)
-            df["ATR"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+            # 4. حساب ATR (Average True Range) بأمان تام لمدير المخاطر
+            df["ATR"] = AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
 
             # ملء وتطهير القيم الفارغة الأولى الناتجة عن فترات حساب المؤشرات الفنية
             df = df.fillna(method='bfill')
