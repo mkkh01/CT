@@ -3,7 +3,7 @@ SQLAlchemy
 asyncpg
 websockets
 pandas
-https://github.com/twopirllc/pandas-ta/archive/refs/heads/main.zip
+ta
 scipy
 xgboost
 yfinance
