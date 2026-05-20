@@ -11,7 +11,7 @@ class UserConfig(Base):
     __tablename__ = 'users_config'
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
-    paper_capital = Column(Float, default=1000.0)
+    paper_capital = Column(Float, default=10.0) # تم خفض القيمة الافتراضية لتتوافق مع الحسابات الصغيرة
     is_active = Column(Boolean, default=True)
 
 class TrackedCoin(Base):
@@ -19,7 +19,7 @@ class TrackedCoin(Base):
     id = Column(Integer, primary_key=True)
     symbol = Column(String(20), unique=True, nullable=False)
     timeframe = Column(String(10), default="15m")
-    allocated_capital = Column(Float, default=100.0)
+    allocated_capital = Column(Float, default=5.0) # تم تعديل رأس المال المخصص لكل عملة إلى 5 دولار لفتح الصفقات الصغيرة فوراً
 
 class PaperTrade(Base):
     __tablename__ = 'paper_trades_v2' # نسخة جديدة لدعم التتبع
@@ -44,4 +44,4 @@ AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=F
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    print("✅ تم تحديث قاعدة البيانات لدعم نظام التعلم والمراقبة.")
+    print("✅ تم تحديث قاعدة البيانات لدعم نظام التعلم والمراقبة والمبالغ الصغيرة.")
