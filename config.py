@@ -1,18 +1,16 @@
 # config.py
 
-# 1. توكن التليجرام الخاص بك
+# 1. توكن التليجرام
 TELEGRAM_TOKEN = "8935169680:AAHH2VJ_tn9xGwwu-ottEBWrh0GilngCpfc"
 
-# 2. رابط قاعدة البيانات المباشر والآمن (Asyncpg) لمنصة Render
-RAW_DATABASE_URL = "postgresql://copilot_user:ynPu1qycw2CrfixLRjkxVG0333NfXPYl@dpg-d84te69kh4rs73denmg0-a.virginia-postgres.render.com/copilot_db_ec8p"
+# 2. رابط Supabase النهائي (تم دمج Host مع كلمة المرور والمنفذ الصحيح)
+RAW_DATABASE_URL = "postgresql://postgres.licqbfixgyzrahuscwnh:Mk_03065750@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"
+
+# تحويل الرابط ليدعم البرمجة غير المتزامنة (Asyncpg)
 DATABASE_URL = RAW_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# 3. الـ ID الخاص بك (الأدمن المصرح له بالتحكم)
+# 3. إعدادات الإدارة والتداول
 ADMIN_ID = 1503808643
-
-# 4. إعدادات التداول الافتراضية والتعلم الذاتي
 DEFAULT_CAPITAL = 10.0
 TRADE_FEE = 0.001
-
-# 5. رابط خدمة البث المباشر (WebSocket) لمنصة بينانس
 BINANCE_WS_URL = "wss://stream.binance.com:9443"
