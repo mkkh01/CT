@@ -1,15 +1,16 @@
 # config.py
 
-# 1. توكن التليجرام
+# 1. توكن التليجرام الخاص بك
 TELEGRAM_TOKEN = "8935169680:AAHH2VJ_tn9xGwwu-ottEBWrh0GilngCpfc"
 
-# 2. رابط Supabase النهائي (تم دمج Host مع كلمة المرور والمنفذ الصحيح)
-RAW_DATABASE_URL = "postgresql://postgres.licqbfixgyzrahuscwnh:Mk_03065750@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"
+# 2. رابط Supabase المباشر (Direct Connection) المستخرج من الصورة
+# قمت بدمج اسم المستخدم postgres مع معرف المشروع licqbfixgyzrahuscwnh وكلمة مرورك
+RAW_DATABASE_URL = "postgresql://postgres:Mk_03065750@db.licqbfixgyzrahuscwnh.supabase.co:5432/postgres"
 
-# تحويل الرابط ليدعم البرمجة غير المتزامنة (Asyncpg)
+# تحويل الرابط ليدعم asyncpg
 DATABASE_URL = RAW_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# 3. إعدادات الإدارة والتداول
+# 3. بقية الإعدادات
 ADMIN_ID = 1503808643
 DEFAULT_CAPITAL = 10.0
 TRADE_FEE = 0.001
