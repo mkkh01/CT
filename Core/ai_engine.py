@@ -23,7 +23,8 @@ class AIEngine:
 
     async def get_coin_config(self, symbol: str):
         """جلب إعدادات العملة المخصصة (رأس المال والإطار الزمني)"""
-        async with AsyncSessionLocal() as session:
+        # تم تعديل هذا السطر لتعطيل الكاش وحل مشكلة الجمود وخطأ الـ DuplicatePreparedStatement
+        async with AsyncSessionLocal(execution_options={"compiled_cache": None}) as session:
             result = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
             return result.scalars().first()
 
@@ -102,68 +103,3 @@ class AIEngine:
 
         # تحديد وضوح الصفقة (تظهر للمستخدم أم مخفية للتدريب الذاتي فقط)
         is_visible = confidence >= 80.0 or confidence <= 20.0
-
-        if signal != "HOLD":
-            print(f"🚀 [AI ENGINE] إشارة نشطة مكتشفة ({signal})! تمرير الأمر فوراً للتنفيذ والحفظ...")
-            trade = await self.execute_paper_trade(symbol, signal, current_price, atr, capital, confidence, is_visible)
-            
-            if trade:
-                print(f"✅ [AI ENGINE] تم بنجاح حفظ الصفقة في قاعدة البيانات المحدثة V2 برقم: {trade.id} | الحالة: {trade.status}")
-                
-                # إرسال إشعار فوري للتليجرام إذا كانت الصفقة تستحق الظهور للمستخدم
-                if is_visible and self.bot and self.chat_id and self.chat_id != 0:
-                    precision = self.risk_manager.get_dynamic_precision(current_price)
-                    msg = (f"🤖 *قرار الذكاء الاصطناعي المتقدم (V3)*\n\n"
-                           f"🪙 العملة: {symbol}\n"
-                           f"🎯 القرار الإستراتيجي: {signal}\n"
-                           f"⏱️ الإطار الزمني: {timeframe}\n"
-                           f"💵 سعر الدخول الحالي: ${current_price:,.{precision}f}\n"
-                           f"🧠 نسبة ثقة المحرك: {confidence:.2f}%\n"
-                           f"🟢 الهدف (TP): ${trade.take_profit:,.{precision}f}\n"
-                           f"🔴 الوقف (SL): ${trade.stop_loss:,.{precision}f}\n"
-                           f"ℹ️ نوع الصفقة: {'شفافة/علنية' if is_visible else 'خفية/تدريبية'}\n\n"
-                           f"--- النظام يراقب حركات الشموع الآن وسيقوم بتحديث سجلات التعلم عند الإغلاق ---")
-                    try:
-                        await self.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode='Markdown')
-                        print(f"📱 [AI ENGINE] تم إرسال إشعار الصفقة بنجاح إلى التليجرام.")
-                    except Exception as e:
-                        print(f"❌ [AI ENGINE] فشل إرسال رسالة التليجرام: {e}")
-            else:
-                print(f"❌ [AI ENGINE] تم إلغاء الصفقة في مرحلة إدارة المخاطر (تأكد من إعدادات السيولة للعملة).")
-        else:
-            print(f"⏸️ [AI ENGINE] النتيجة تعادل (HOLD). تم صرف النظر عن الصفقة لعدم كفاية الزخم الاستراتيجي.")
-                    
-        return signal, confidence
-
-    async def execute_paper_trade(self, symbol: str, side: str, entry_price: float, atr: float, capital: float, confidence: float, is_visible: bool):
-        win_rate = 0.55 # قيمة افتراضية للتدريب الأول
-        risk_reward_ratio = 1.5 
-
-        # حساب حجم المركز مستنداً لمدير المخاطر المطور والمناسب للمبالغ الصغيرة
-        pos_size = self.risk_manager.calculate_kelly_position(capital, win_rate, risk_reward_ratio)
-        
-        # حساب مستويات الوقف والهدف بدقة ديناميكية
-        sl, tp = self.risk_manager.calculate_sl_tp(entry_price, atr, side)
-        
-        # التحقق من الرسوم بمرونة
-        if not self.risk_manager.check_fee_violation(entry_price, tp): 
-            return None
-
-        try:
-            async with AsyncSessionLocal() as session:
-                new_trade = PaperTrade(
-                    symbol=symbol, side=side, entry_price=entry_price,
-                    position_size=pos_size, stop_loss=sl, take_profit=tp, 
-                    confidence=confidence, is_visible=is_visible,
-                    status="OPEN"
-                )
-                session.add(new_trade)
-                await session.commit()
-                await session.refresh(new_trade)
-            return new_trade
-        except Exception as db_err:
-            print(f"🚨 [AI ENGINE] انهارت عملية حفظ الصفقة في قاعدة البيانات بسبب تعارض أو خطأ هيكلي: {db_err}")
-            return None
-
-    async def close(self):
-        await self.exchange.close()
