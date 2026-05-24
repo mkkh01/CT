@@ -1,47 +1,60 @@
-import asyncio
+import os
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text
-from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from typing import Optional
 from config import DATABASE_URL
 
-Base = declarative_base()
+# 1. إنشاء محرك قاعدة البيانات مع الإعدادات الخاصة بـ Supabase Pooler
+engine = create_async_engine(
+    DATABASE_URL,
+    # الإعدادات أدناه تحل مشكلة DuplicatePreparedStatementError نهائياً
+    statement_cache_size=0,
+    prepared_statement_cache_size=0
+)
 
+# 2. إعداد مصنع الجلسات (Session Factory)
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
+
+# 3. تعريف الطبقة الأساسية للجداول
+class Base(DeclarativeBase):
+    pass
+
+# 4. جدول إعدادات المستخدم (رأس المال، الحالة)
 class UserConfig(Base):
-    __tablename__ = 'users_config'
-    id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
-    paper_capital = Column(Float, default=10.0) # تم خفض القيمة الافتراضية لتتوافق مع الحسابات الصغيرة
-    is_active = Column(Boolean, default=True)
+    __tablename__ = "users_config"
+    user_id: Mapped[int] = mapped_column(primary_key=True)
+    paper_capital: Mapped[float] = mapped_column(default=100.0)
+    is_active: Mapped[bool] = mapped_column(default=False)
+    risk_level: Mapped[str] = mapped_column(default="medium")
 
+# 5. جدول العملات المراقبة
 class TrackedCoin(Base):
-    __tablename__ = 'tracked_coins_v3' # نسخة جديدة لتجنب تعارض الجداول
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(20), unique=True, nullable=False)
-    timeframe = Column(String(10), default="15m")
-    allocated_capital = Column(Float, default=5.0) # تم تعديل رأس المال المخصص لكل عملة إلى 5 دولار لفتح الصفقات الصغيرة فوراً
+    __tablename__ = "tracked_coins_v3"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(unique=True)
+    timeframe: Mapped[str] = mapped_column(default="15m")
+    allocated_capital: Mapped[float] = mapped_column(default=50.0)
+    added_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
+# 6. جدول الصفقات الوهمية (Paper Trading)
 class PaperTrade(Base):
-    __tablename__ = 'paper_trades_v2' # نسخة جديدة لدعم التتبع
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(20), nullable=False)
-    side = Column(String(10), nullable=False)
-    entry_price = Column(Float, nullable=False)
-    position_size = Column(Float, nullable=False)
-    stop_loss = Column(Float, nullable=False)
-    take_profit = Column(Float, nullable=False)
-    confidence = Column(Float, nullable=False)
-    is_visible = Column(Boolean, default=True) # هل الصفقة ظهرت للمستخدم أم كانت تدريبية خفية
-    status = Column(String(20), default="OPEN") # OPEN, WON, LOST
-    exit_price = Column(Float, nullable=True)
-    analysis = Column(Text, nullable=True) # تحليل سبب النجاح أو الفشل
-    opened_at = Column(DateTime, default=datetime.utcnow)
-    closed_at = Column(DateTime, nullable=True)
+    __tablename__ = "paper_trades_v2"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column()
+    type: Mapped[str] = mapped_column()  # BUY or SELL
+    entry_price: Mapped[float] = mapped_column()
+    exit_price: Mapped[Optional[float]] = mapped_column(nullable=True)
+    amount: Mapped[float] = mapped_column()
+    status: Mapped[str] = mapped_column(default="OPEN") # OPEN or CLOSED
+    pnl: Mapped[float] = mapped_column(default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
-engine = create_async_engine(DATABASE_URL, echo=False, future=True)
-AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
+# دالة لإنشاء الجداول في حال عدم وجودها
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    print("✅ تم تحديث قاعدة البيانات لدعم نظام التعلم والمراقبة والمبالغ الصغيرة.")
