@@ -24,7 +24,7 @@ def get_private_trades_menu():
     keyboard = [
         [
             InlineKeyboardButton("🟢 تشغيل الإشارات", callback_data='elite_on'),
-            InlineKeyboardButton("🔴 إيقاف الإشارات", callback_data='elite_off")
+            InlineKeyboardButton("🔴 إيقاف الإشارات", callback_data='elite_off')
         ],
         [InlineKeyboardButton("📋 تقرير الأداء اللحظي", callback_data='elite_instant_report')],
         [InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]
@@ -57,5 +57,3 @@ def get_timeframe_menu():
         [InlineKeyboardButton("🔙 رجوع", callback_data='coins')]
     ]
     return InlineKeyboardMarkup(keyboard)
-
-
