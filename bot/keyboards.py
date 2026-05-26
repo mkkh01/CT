@@ -2,8 +2,14 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 def get_main_menu():
     keyboard = [
+        # الزر الجديد في المقدمة لأنه الأهم لمتابعة الفرص الذهبية
+        [InlineKeyboardButton("🌟 الصفقات الخاصة", callback_data='private_trades')],
+        
         [InlineKeyboardButton("📈 الأسعار الحية", callback_data='live_prices')],
-        [InlineKeyboardButton("📊 التقرير الخفي للتعلم", callback_data='report')],
+        
+        # قمت بتغيير الاسم ليكون أوضح بأن هذا التقرير للتدريب الداخلي
+        [InlineKeyboardButton("📊 تقرير التدريب والتعلم", callback_data='report')],
+        
         [InlineKeyboardButton("💰 إدارة رأس المال الكلي", callback_data='capital')],
         [InlineKeyboardButton("🪙 إدارة العملات (متقدم)", callback_data='coins')],
         [
