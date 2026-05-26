@@ -16,25 +16,30 @@ class TradeMonitor:
         from Core.ai_engine import AIEngine
         ai = AIEngine(bot=self.bot, chat_id=self.chat_id)
         self.is_running = True
-        print("📡 تم تشغيل الرادار والمراقب اللحظي V3.")
+        print("📡 تم تشغيل الرادار والمراقب اللحظي V3.1 بنجاح.")
         
         while self.is_running:
             try:
                 async with AsyncSessionLocal() as session:
-                    # 1. فحص هل النظام نشط
+                    # 1. فحص نشاط النظام
                     cfg_res = await session.execute(select(UserConfig).limit(1))
                     cfg = cfg_res.scalars().first()
                     if not cfg or not cfg.is_active:
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(20)
                         continue
 
                     # 2. جولة صيد الصفقات (Scan)
                     coins_res = await session.execute(select(TrackedCoin))
-                    for coin in coins_res.scalars().all():
-                        await ai.analyze_and_trade(coin.symbol)
+                    tracked_list = coins_res.scalars().all()
+                    
+                    for coin in tracked_list:
+                        try:
+                            await ai.analyze_and_trade(coin.symbol)
+                        except Exception as e:
+                            print(f"⚠️ خطأ في تحليل {coin.symbol}: {e}")
                         await asyncio.sleep(1)
 
-                    # 3. جلب الصفقات المفتوحة لمراقبتها
+                    # 3. جلب الصفقات المفتوحة للمراقبة
                     trades_res = await session.execute(select(PaperTrade).where(PaperTrade.status == "OPEN"))
                     symbols = list(set([t.symbol for t in trades_res.scalars().all()]))
 
@@ -42,16 +47,21 @@ class TradeMonitor:
                     streams = [f"{s.lower()}@miniTicker" for s in symbols]
                     uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
                     async with websockets.connect(uri) as ws:
-                        # راقب الأسعار لمدة 5 دقائق قبل جولة الفحص التالية
-                        for _ in range(300):
-                            msg = await ws.recv()
-                            await self._process_price_update(json.loads(msg))
+                        # مراقبة لمدة 3 دقائق قبل جولة الفحص القادمة
+                        for _ in range(180):
+                            try:
+                                msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                                await self._process_price_update(json.loads(msg))
+                            except asyncio.TimeoutError:
+                                continue
+                            except Exception:
+                                break
                             await asyncio.sleep(1)
                 else:
-                    await asyncio.sleep(20)
+                    await asyncio.sleep(15)
 
             except Exception as e:
-                print(f"⚠️ خطأ في المراقبة: {e}")
+                print(f"⚠️ خطأ في المراقبة الرئيسية: {e}")
                 await asyncio.sleep(10)
 
     async def _process_price_update(self, message):
