@@ -1,7 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
 def get_main_menu():
-    """لوحة التحكم الرئيسية (ReplyKeyboardMarkup)"""
+    """لوحة التحكم الرئيسية (القائمة السفلية الثابتة)"""
     keyboard = [
         [KeyboardButton("🌟 الصفقات الخاصة")],
         [KeyboardButton("📈 الأسعار الحية")],
@@ -13,30 +13,36 @@ def get_main_menu():
         KeyboardButton("▶️ بدء التعلم الخفي"), 
         KeyboardButton("⏸️ إيقاف التعلم الخفي")
     ]
-    return ReplyKeyboardMarkup(keyboard + [bottom_row], resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard + [bottom_row], 
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
 
 def get_private_trades_menu():
+    """قائمة التحكم في الإشارات والصفقات الخاصة"""
     keyboard = [
         [
             InlineKeyboardButton("🟢 تشغيل الإشارات", callback_data='elite_on'),
-            InlineKeyboardButton("🔴 إيقاف الإشارات", callback_data='elite_off')
+            InlineKeyboardButton("🔴 إيقاف الإشارات", callback_data='elite_off")
         ],
         [InlineKeyboardButton("📋 تقرير الأداء اللحظي", callback_data='elite_instant_report')],
-        [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
+        [InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_coins_menu():
+    """قائمة إدارة العملات (تظهر بعد الضغط على إدارة العملات)"""
     keyboard = [
         [InlineKeyboardButton("➕ إضافة عملة جديدة", callback_data='add_coin')],
         [InlineKeyboardButton("➖ حذف عملة", callback_data='remove_coin')],
         [InlineKeyboardButton("📋 عرض الإعدادات", callback_data='view_coins')],
-        [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
+        [InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_timeframe_menu():
-    """تعديل بسيط: إزالة تمرير الرمز لأننا نستخدم السياق (context)"""
+    """قائمة اختيار الإطار الزمني (تظهر أثناء إضافة عملة)"""
     keyboard = [
         [
             InlineKeyboardButton("1m", callback_data='tf_1m'),
