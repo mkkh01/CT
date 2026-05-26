@@ -6,6 +6,7 @@ from Core.risk_manager import RiskManager
 from macro_data import MacroAnalyzer
 from strategies import SpotStrategies
 from datetime import datetime
+import asyncio
 
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
@@ -14,6 +15,7 @@ class AIEngine:
         self.strategies = SpotStrategies()
         self.bot = bot
         self.chat_id = chat_id
+        # تم تفعيل تمكين معدل الطلبات للمساعدة في تجنب الحظر
         self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 
     async def get_coin_config(self, symbol: str):
@@ -27,6 +29,9 @@ class AIEngine:
         tf = coin_config.timeframe if coin_config else "5m"
         
         try:
+            # إضافة تأخير بسيط قبل الطلب لتقليل الضغط على API بين العملات
+            await asyncio.sleep(0.5) 
+            
             ohlcv = await self.exchange.fetch_ohlcv(symbol, tf, limit=100)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             current_price = float(df['close'].iloc[-1])
@@ -42,8 +47,9 @@ class AIEngine:
             print(f"📊 [ANALYSIS] {symbol} | Confidence: {confidence}%")
 
             signal = "HOLD"
-            if confidence >= 58.0: signal = "BUY"
-            elif confidence <= 42.0: signal = "SELL"
+            # رفعنا حد الشراء قليلاً لزيادة الجودة
+            if confidence >= 60.0: signal = "BUY" 
+            elif confidence <= 40.0: signal = "SELL"
 
             if signal != "HOLD":
                 await self.execute_open_trade(symbol, signal, current_price, atr, capital, confidence)
@@ -55,7 +61,7 @@ class AIEngine:
 
     async def execute_open_trade(self, symbol, side, price, atr, capital, confidence):
         async with AsyncSessionLocal() as session:
-            # منع التكرار
+            # منع التكرار في قاعدة البيانات
             check = await session.execute(select(PaperTrade).where((PaperTrade.symbol == symbol) & (PaperTrade.status == "OPEN")))
             if check.scalars().first(): return
 
@@ -76,9 +82,21 @@ class AIEngine:
                 session.add(new_trade)
                 await session.commit()
                 
-                msg = f"🚀 *تم فتح صفقة جديدة!*\\n\\nالعملة: {symbol}\\nالنوع: {side}\\nالثقة: {confidence}%\\nالسعر: {price}\\nالهدف: {tp}\\nالوقف: {sl}"
-                if self.bot: await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
-                print(f"✅ [SUCCESS] تم حفظ صفقة {symbol} بنجاح.")
+                # --- نظام الإشعارات الذكي (التدريب الصامت) ---
+                # سيتم إرسال إشعار للتيليجرام فقط إذا كانت الثقة >= 85% (الصفقات الخاصة)
+                if confidence >= 85.0:
+                    msg = (f"🌟 *فرصة تداول خاصة (ثقة عالية)!*\\n\\n"
+                           f"العملة: {symbol}\\n"
+                           f"النوع: {side}\\n"
+                           f"الثقة: {confidence}%\\n"
+                           f"السعر: {price}\\n"
+                           f"الهدف: {tp}\\n"
+                           f"الوقف: {sl}")
+                    if self.bot: 
+                        await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
+                
+                # الصفقات العادية تسجل فقط في السجلات للتقرير لاحقاً
+                print(f"✅ [SUCCESS] تم تسجيل صفقة {symbol} (تدريب صامت) بنجاح.")
             
             except Exception as e:
                 print(f"❌ [DB ERROR] فشل حفظ الصفقة: {e}")
