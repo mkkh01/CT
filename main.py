@@ -16,52 +16,56 @@ from Core.trade_monitor import TradeMonitor
 from sqlalchemy import select
 
 async def start_background_tasks(app):
-    """تشغيل المهام الخلفية مع نظام حماية من الحظر"""
+    """تشغيل المهام الخلفية بنظام التدرج الزمني الفائق"""
     try:
-        # انتظر قليلاً قبل البدء لضمان استقرار اتصال الإنترنت
-        await asyncio.sleep(2)
+        # 1. فترة سماح طويلة (45 ثانية) عند الإقلاع للسماح لـ Render و Binance بتهدئة الاتصالات
+        print("⏳ نظام الحماية: انتظار 45 ثانية قبل بدء الربط مع Binance...")
+        await asyncio.sleep(45)
         
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(TrackedCoin.symbol))
             symbols = result.scalars().all()
         
         if not symbols:
-            symbols = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"]
+            symbols = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
             
         print(f"🛠️ جاري تهيئة الرادار لـ {len(symbols)} عملة...")
 
-        # 1. رادار الحيتان (Whale Tracker)
-        # تمت إضافة تأخير داخلي في الكلاس لتجنب طلبات Binance المتتالية
+        # 2. رادار الحيتان (Whale Tracker)
         tracker = WhaleTracker(bot=app.bot, chat_id=ADMIN_ID)
         asyncio.create_task(tracker.start_tracking(symbols))
         
-        # تأخير 5 ثوانٍ بين تشغيل الرادار ومراقب الصفقات لتخفيف الضغط
-        await asyncio.sleep(5)
+        # 3. فاصل زمني كبير (60 ثانية) بين الرادار ومراقب الصفقات
+        # هذا يمنع تجاوز حد الطلبات (Rate Limit) ويحافظ على استجابة الأزرار
+        await asyncio.sleep(60)
         
-        # 2. مراقب الصفقات (التعلم الذاتي ومراقبة الأهداف)
+        # 4. مراقب الصفقات (التعلم الذاتي)
         monitor = TradeMonitor(bot=app.bot)
         asyncio.create_task(monitor.check_prices())
         
-        print(f"🔄 المهام الخلفية تعمل الآن بنظام الحماية الذكي.")
+        print(f"🔄 المهام الخلفية تعمل الآن بنظام الاستقرار الفائق.")
     except Exception as e:
         print(f"⚠️ فشل بدء المهام الخلفية: {e}")
 
 async def post_init(app: Application):
-    """تُستدعى تلقائياً لتشغيل المهام الحرة"""
-    await start_background_tasks(app)
+    """تُستدعى تلقائياً لتشغيل المهام الخلفية دون عرقلة البوت"""
+    # استخدام create_task هنا يضمن أن البوت يبدأ استقبال الأزرار فوراً
+    # بينما المهام الثقيلة تبدأ في الخلفية بعد فترة السماح
+    asyncio.create_task(start_background_tasks(app))
 
 def main():
-    print("🚀 جاري إقلاع النظام المطور V3 (نسخة الحماية)...")
+    print("🚀 جاري إقلاع النظام المطور V3 (Stability Mode)...")
     
-    # بناء قاعدة البيانات
+    # تهيئة قاعدة البيانات
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(init_db())
     except Exception as e:
-        print(f"❌ خطأ في تهيئة قاعدة البيانات: {e}")
+        print(f"❌ خطأ في قاعدة البيانات: {e}")
     
-    # بناء التطبيق مع نظام إدارة الطلبات لتيليجرام
+    # بناء التطبيق
+    # تم إضافة تدرج في الطلبات لضمان استجابة سريعة للأزرار
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
     # إضافة المعالجات (Handlers)
@@ -69,15 +73,15 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    print("✅ النظام V3 جاهز تماماً ومعزز ببروتوكول Anti-Ban!")
+    print("✅ النظام V3 جاهز تماماً. الأزرار ستعمل فوراً، والتحليل سيبدأ بعد دقيقة.")
     
-    # drop_pending_updates=True تضمن عدم الرد على الرسائل القديمة أثناء التوقف وتجنب Conflict الـ Webhooks
+    # drop_pending_updates تمنع تراكم الرسائل القديمة التي تعطل البوت
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n🛑 تم إيقاف النظام يدوياً.")
+        print("\n🛑 تم إيقاف النظام.")
     except Exception as e:
-        print(f"💥 خطأ غير متوقع في التشغيل: {e}")
+        print(f"💥 خطأ تشغيل: {e}")
