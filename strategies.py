@@ -16,8 +16,8 @@ class SpotStrategies:
             # 1. حساب RSI
             df["RSI"] = RSIIndicator(close=df["close"], window=14).rsi()
 
-            # 2. حساب MACD
-            macd_indicator = MACD(close=df["close"], window=fast=12, window_slow=26, window_sign=9)
+            # 2. حساب MACD - تم تصحيح الخطأ هنا (window_fast)
+            macd_indicator = MACD(close=df["close"], window_fast=12, window_slow=26, window_sign=9)
             df['MACD'] = macd_indicator.macd()
             df['MACD_HIST'] = macd_indicator.macd_diff()
             df['MACD_SIGNAL'] = macd_indicator.macd_signal()
@@ -31,7 +31,7 @@ class SpotStrategies:
             # 4. حساب ATR
             df["ATR"] = AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
 
-            # تحذير: تم استبدال fillna(method='bfill') بـ bfill() مباشرة لتوافق النسخ الجديدة من Pandas
+            # ملء القيم الفارغة
             df = df.bfill()
             return df
             
@@ -44,26 +44,25 @@ class SpotStrategies:
         if df.empty: return 50.0
         
         last_row = df.iloc[-1]
-        confidence = 50.0  # نقطة البداية
+        confidence = 50.0 
         
         # 1. تحليل المؤشرات الفنية (إضافة حتى 30 درجة)
-        if last_row["RSI"] <= 30: confidence += 10 # تشبع بيعي قوي
-        if last_row["MACD"] > last_row["MACD_SIGNAL"]: confidence += 10 # اتجاه صاعد
-        if last_row["close"] <= last_row["BBL"]: confidence += 10 # دعم قوي
+        if last_row["RSI"] <= 30: confidence += 10
+        if last_row["MACD"] > last_row["MACD_SIGNAL"]: confidence += 10
+        if last_row["close"] <= last_row["BBL"]: confidence += 10
 
         # 2. تأثير الحيتان (إضافة حتى 25 درجة)
         if whale_action == "BUY": confidence += 25
         
-        # 3. نظام السوق (Risk-On / Risk-Off) (إضافة حتى 15 درجة)
+        # 3. نظام السوق (إضافة حتى 15 درجة)
         if regime == "RISK_ON": confidence += 15
         
-        return min(confidence, 100.0) # لا تتجاوز 100%
+        return min(confidence, 100.0)
 
     def check_buy_signal(self, df: pd.DataFrame) -> bool:
         if df.empty or len(df) < 26: return False
         last_row = df.iloc[-1]
         
-        # شرط الشراء: أي مؤشر إيجابي يعطي إشارة أولية (للتدريب)
         rsi_buy = last_row["RSI"] <= 35
         macd_buy = last_row["MACD"] > last_row["MACD_SIGNAL"]
         bb_buy = last_row["close"] <= (last_row["BBL"] * 1.005)
