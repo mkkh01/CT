@@ -34,7 +34,6 @@ class AIEngine:
             df = self.strategies.apply_technical_indicators(df)
             atr = self.strategies.get_atr(df)
             
-            # حساب نسبة الثقة بناءً على التحليل الفني والماكرو
             confidence = 50.0
             if self.macro.get_market_regime() == "RISK_ON": confidence += 10
             if self.strategies.check_buy_signal(df): confidence += 20
@@ -56,7 +55,7 @@ class AIEngine:
 
     async def execute_open_trade(self, symbol, side, price, atr, capital, confidence):
         async with AsyncSessionLocal() as session:
-            # التحقق من عدم وجود صفقات مفتوحة لنفس العملة لتجنب التكرار
+            # منع التكرار
             check = await session.execute(select(PaperTrade).where((PaperTrade.symbol == symbol) & (PaperTrade.status == "OPEN")))
             if check.scalars().first(): return
 
@@ -64,26 +63,23 @@ class AIEngine:
             amount = self.risk_manager.calculate_kelly_position(capital, 0.6, 1.5)
 
             try:
-                # إنشاء كائن الصفقة بالمسميات المطابقة لـ Supabase
                 new_trade = PaperTrade(
                     symbol=symbol,
-                    type=side, # 'type' هو المسمى الموجود في صورتك الأخيرة لـ Supabase
-                    entry_price=price, 
-                    stop_loss=sl, 
-                    take_profit=tp, 
-                    amount=amount, 
-                    status="OPEN", 
+                    type=side,
+                    entry_price=price,
+                    stop_loss=sl,
+                    take_profit=tp,
+                    amount=amount,
+                    status="OPEN",
                     timestamp=datetime.utcnow()
                 )
                 session.add(new_trade)
                 await session.commit()
                 
-                # إرسال إشعار فوري للتليجرام عند نجاح الحفظ
                 msg = f"🚀 *تم فتح صفقة جديدة!*\\n\\nالعملة: {symbol}\\nالنوع: {side}\\nالثقة: {confidence}%\\nالسعر: {price}\\nالهدف: {tp}\\nالوقف: {sl}"
                 if self.bot: await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
-                print(f"✅ [SUCCESS] تم تسجيل صفقة {symbol} في قاعدة البيانات.")
+                print(f"✅ [SUCCESS] تم حفظ صفقة {symbol} بنجاح.")
             
             except Exception as e:
-                # تسجيل الخطأ في حال فشل الحفظ بسبب أعمدة ناقصة
                 print(f"❌ [DB ERROR] فشل حفظ الصفقة: {e}")
                 await session.rollback()
