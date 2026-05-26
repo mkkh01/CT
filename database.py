@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 from config import DATABASE_URL
 
-# إعداد المحرك مع حل مشكلة الـ Pooler والـ Cache
+# إعداد المحرك
 engine = create_async_engine(
     DATABASE_URL,
     connect_args={
@@ -25,7 +25,6 @@ class Base(DeclarativeBase):
 
 class UserConfig(Base):
     __tablename__ = "users_config"
-    # تم تغيير الاسم هنا ليطابق ما يبحث عنه ملف main و handlers
     telegram_id: Mapped[int] = mapped_column(primary_key=True)
     paper_capital: Mapped[float] = mapped_column(default=100.0)
     is_active: Mapped[bool] = mapped_column(default=False)
@@ -43,8 +42,11 @@ class PaperTrade(Base):
     __tablename__ = "paper_trades_v2"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column()
-    type: Mapped[str] = mapped_column()
+    type: Mapped[str] = mapped_column() # BUY or SELL
     entry_price: Mapped[float] = mapped_column()
+    # إضافة الأعمدة التي كانت تسبب خطأ 'invalid keyword argument'
+    stop_loss: Mapped[Optional[float]] = mapped_column(nullable=True)
+    take_profit: Mapped[Optional[float]] = mapped_column(nullable=True)
     exit_price: Mapped[Optional[float]] = mapped_column(nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     amount: Mapped[float] = mapped_column()
@@ -55,4 +57,3 @@ class PaperTrade(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
