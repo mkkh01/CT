@@ -1,21 +1,30 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
 def get_main_menu():
+    """لوحة التحكم الرئيسية (الأزرار الكبيرة أسفل الشاشة)"""
+    # الأزرار الرئيسية كما طلبت
     keyboard = [
-        # الزر الجديد في المقدمة لأنه الأهم لمتابعة الفرص الذهبية
-        [InlineKeyboardButton("🌟 الصفقات الخاصة", callback_data='private_trades')],
-        
-        [InlineKeyboardButton("📈 الأسعار الحية", callback_data='live_prices')],
-        
-        # قمت بتغيير الاسم ليكون أوضح بأن هذا التقرير للتدريب الداخلي
-        [InlineKeyboardButton("📊 تقرير التدريب والتعلم", callback_data='report')],
-        
-        [InlineKeyboardButton("💰 إدارة رأس المال الكلي", callback_data='capital')],
-        [InlineKeyboardButton("🪙 إدارة العملات (متقدم)", callback_data='coins')],
+        [KeyboardButton("🌟 الصفقات الخاصة")],
+        [KeyboardButton("📈 الأسعار الحية")],
+        [KeyboardButton("🧠 تقرير التدريب والتعلم")], # خاص بالتعلم الخفي
+        [KeyboardButton("💰 إدارة رأس المال")],
+        [KeyboardButton("🌐 إدارة العملات")]
+    ]
+    # أزرار التشغيل والايقاف في الأسفل خاصة بالتعلم الخفي فقط
+    bottom_row = [KeyboardButton("▶️ بدء التعلم الخفي"), KeyboardButton("⏸️ إيقاف التعلم الخفي")]
+    
+    markup = ReplyKeyboardMarkup(keyboard + [bottom_row], resize_keyboard=True)
+    return markup
+
+def get_private_trades_menu():
+    """الأزرار الثلاثة المرتبطة بالصفقات الخاصة (تظهر عند الضغط على زر الصفقات الخاصة)"""
+    keyboard = [
         [
-            InlineKeyboardButton("▶️ تشغيل", callback_data='start_sys'),
-            InlineKeyboardButton("⏸️ إيقاف", callback_data='stop_sys')
-        ]
+            InlineKeyboardButton("🟢 تشغيل الإشارات", callback_data='elite_on'),
+            InlineKeyboardButton("🔴 إيقاف الإشارات", callback_data='elite_off')
+        ],
+        [InlineKeyboardButton("📋 تقرير الأداء اللحظي", callback_data='elite_instant_report')],
+        [InlineKeyboardButton("🔙 رجوع للقائمة الرئيسية", callback_data='main_menu')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -23,23 +32,6 @@ def get_coins_menu():
     keyboard = [
         [InlineKeyboardButton("➕ إضافة عملة جديدة", callback_data='add_coin')],
         [InlineKeyboardButton("➖ حذف عملة", callback_data='remove_coin')],
-        [InlineKeyboardButton("📋 عرض العملات وإعداداتها", callback_data='view_coins')],
-        [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_timeframe_menu(symbol: str):
-    """أزرار اختيار الإطار الزمني للعملة"""
-    keyboard = [
-        [
-            InlineKeyboardButton("1m", callback_data=f'tf_1m_{symbol}'),
-            InlineKeyboardButton("5m", callback_data=f'tf_5m_{symbol}'),
-            InlineKeyboardButton("15m", callback_data=f'tf_15m_{symbol}')
-        ],
-        [
-            InlineKeyboardButton("1h", callback_data=f'tf_1h_{symbol}'),
-            InlineKeyboardButton("4h", callback_data=f'tf_4h_{symbol}'),
-            InlineKeyboardButton("1d", callback_data=f'tf_1d_{symbol}')
-        ]
+        [InlineKeyboardButton("📋 عرض الإعدادات", callback_data='view_coins')]
     ]
     return InlineKeyboardMarkup(keyboard)
