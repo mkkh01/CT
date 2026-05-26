@@ -10,7 +10,12 @@ print("✅ خادم Keep-Alive يعمل.")
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, TrackedCoin, UserConfig
-from bot.handlers import start_cmd, button_handler, text_handler, start_add_coin, get_coin_name, get_capital, get_timeframe, NAME, CAPITAL, TIMEFRAME
+# ✅ أضفنا استيراد error_handler هنا
+from bot.handlers import (
+    start_cmd, button_handler, text_handler, 
+    start_add_coin, get_coin_name, get_capital, get_timeframe, 
+    NAME, CAPITAL, TIMEFRAME, error_handler
+)
 from Core.whale_tracker import WhaleTracker
 from Core.trade_monitor import TradeMonitor
 from sqlalchemy import select
@@ -23,32 +28,41 @@ conv_handler = ConversationHandler(
         CAPITAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_capital)],
         TIMEFRAME: [CallbackQueryHandler(get_timeframe, pattern='^tf_')]
     },
-    fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)]
+    fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
+    # ✅ إعدادات إضافية لزيادة الاستقرار
+    allow_reentry=True
 )
 
 async def start_background_tasks(app):
-    # ... (نفس منطقك السابق بدون تغيير)
-    await asyncio.sleep(30)
+    """تشغيل المهام الخلفية: الرادار والمراقبة"""
+    await asyncio.sleep(10) # تقليل وقت الانتظار ليبدأ أسرع قليلاً
     tracker = WhaleTracker(bot=app.bot, chat_id=ADMIN_ID)
     monitor = TradeMonitor(bot=app.bot)
     print(f"📡 تم تشغيل الرادار والمحلل التحليلي V3.2 بنجاح.")
+    
     while True:
         try:
             async with AsyncSessionLocal() as session:
                 res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
                 cfg = res.scalars().first()
-                if cfg and cfg.is_active:
+                
+                # ✅ تعديل هام: استخدمنا cfg.elite_enabled بدلاً من is_active (الموجود في قاعدة البيانات)
+                # إذا أردت خاصية جديدة، أضف العمود للجدول أولاً
+                if cfg and cfg.elite_enabled: 
                     coin_res = await session.execute(select(TrackedCoin.symbol))
                     symbols = coin_res.scalars().all()
                     if symbols:
-                        if hasattr(tracker, 'start_tracking'): await tracker.start_tracking(symbols)
+                        if hasattr(tracker, 'start_tracking'): 
+                            await tracker.start_tracking(symbols)
                         await monitor.check_prices() 
-            await asyncio.sleep(60)
+                        
+            await asyncio.sleep(60) # تكرار العملية كل دقيقة
         except Exception as e:
-            print(f"⚠️ خطأ في دورة المهام الخلفية: {e}")
-            await asyncio.sleep(60)
+            print(f"⚠️ خطأ في دورة المهام الخلفية: {str(e)}")
+            await asyncio.sleep(30) # محاولة أسرع عند حدوث خطأ
 
 async def post_init(app: Application):
+    """يتم تنفيذه مرة واحدة عند بدء التشغيل"""
     asyncio.create_task(start_background_tasks(app))
 
 def main():
@@ -56,22 +70,35 @@ def main():
     loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(init_db())
+        print("✅ قاعدة البيانات جاهزة.")
     except Exception as e:
         print(f"❌ خطأ في قاعدة البيانات: {e}")
-    
+        return # إيقاف التشغيل إذا فشلت قاعدة البيانات
+
+    # بناء التطبيق
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
-    # حذف Webhook لضمان Polling مستقر
-    loop.run_until_complete(app.bot.delete_webhook())
+    # ✅ خطوة أساسية لحذف أي اتصالات سابقة ومنع خطأ Conflict
+    loop.run_until_complete(app.bot.delete_webhook(drop_pending_updates=True))
     
-    # [الترتيب مهم جداً]:
-    app.add_handler(conv_handler) # 1. المحرك الجديد أولاً
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CallbackQueryHandler(button_handler)) 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    # --- تسجيل المعالجات (الترتيب مهم جداً) ---
+    app.add_handler(conv_handler)                  # 1. نظام إضافة العملات
+    app.add_handler(CommandHandler("start", start_cmd)) # 2. أمر البدء
+    app.add_handler(CallbackQueryHandler(button_handler)) # 3. جميع الأزرار
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)) # 4. النصوص والقوائم
     
-    print("✅ النظام جاهز. ConversationHandler مفعل.")
-    app.run_polling(drop_pending_updates=True)
+    # ✅ إضافة معالج الأخطاء هنا لحل مشكلة "No error handlers" و "Conflict" نهائياً
+    app.add_error_handler(error_handler)
+
+    print("✅ النظام جاهز بالكامل. جميع الوحدات مفعلة.")
+    
+    # ✅ تشغيل البوت مع إعدادات آمنة ومستقرة
+    app.run_polling(
+        drop_pending_updates=True,
+        poll_interval=1.0,       # فترة جلب التحديثات (ثانية واحدة)
+        timeout=10,              # مهلة الاتصال
+        read_timeout=15
+    )
 
 if __name__ == "__main__":
     main()
