@@ -57,3 +57,5 @@ def get_timeframe_menu():
         [InlineKeyboardButton("🔙 رجوع", callback_data='coins')]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
