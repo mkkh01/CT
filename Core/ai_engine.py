@@ -18,7 +18,8 @@ class AIEngine:
         self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 
     async def get_coin_config(self, symbol: str):
-        async with AsyncSessionLocal(execution_options={"compiled_cache": None}) as session:
+        """إصلاح: جلب الإعدادات بدون الكلمات المفتاحية المسببة للخطأ"""
+        async with AsyncSessionLocal() as session:
             result = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
             return result.scalars().first()
 
@@ -28,36 +29,39 @@ class AIEngine:
         capital = coin_config.allocated_capital if coin_config else 20.0
         tf = coin_config.timeframe if coin_config else "5m"
         
-        # جلب البيانات
-        ohlcv = await self.exchange.fetch_ohlcv(symbol, tf, limit=100)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        current_price = float(df['close'].iloc[-1])
-        
-        # تطبيق الاستراتيجيات
-        df = self.strategies.apply_technical_indicators(df)
-        atr = self.strategies.get_atr(df)
-        
-        # حساب الثقة (Confidence)
-        confidence = 50.0
-        if self.macro.get_market_regime() == "RISK_ON": confidence += 10
-        if self.strategies.check_buy_signal(df): confidence += 20
-        if whale_action == "BUY": confidence += 25
-        
-        print(f"📊 [ANALYSIS] {symbol} | Confidence: {confidence}%")
+        try:
+            # جلب البيانات
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, tf, limit=100)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            current_price = float(df['close'].iloc[-1])
+            
+            # تطبيق الاستراتيجيات
+            df = self.strategies.apply_technical_indicators(df)
+            atr = self.strategies.get_atr(df)
+            
+            # حساب الثقة (Confidence)
+            confidence = 50.0
+            if self.macro.get_market_regime() == "RISK_ON": confidence += 10
+            if self.strategies.check_buy_signal(df): confidence += 20
+            if whale_action == "BUY": confidence += 25
+            
+            print(f"📊 [ANALYSIS] {symbol} | Confidence: {confidence}%")
 
-        # اتخاذ القرار (تم خفض العتبة لزيادة الاستجابة)
-        signal = "HOLD"
-        if confidence >= 58.0: signal = "BUY"
-        elif confidence <= 42.0: signal = "SELL"
+            # اتخاذ القرار
+            signal = "HOLD"
+            if confidence >= 58.0: signal = "BUY"
+            elif confidence <= 42.0: signal = "SELL"
 
-        if signal != "HOLD":
-            await self.execute_open_trade(symbol, signal, current_price, atr, capital, confidence)
-        
-        return signal, confidence
+            if signal != "HOLD":
+                await self.execute_open_trade(symbol, signal, current_price, atr, capital, confidence)
+            
+            return signal, confidence
+        except Exception as e:
+            print(f"❌ خطأ في تحليل {symbol}: {e}")
+            return "HOLD", 50.0
 
     async def execute_open_trade(self, symbol, side, price, atr, capital, confidence):
         async with AsyncSessionLocal() as session:
-            # منع فتح صفقات مكررة لنفس العملة
             check = await session.execute(select(PaperTrade).where((PaperTrade.symbol == symbol) & (PaperTrade.status == "OPEN")))
             if check.scalars().first(): return
 
@@ -67,7 +71,8 @@ class AIEngine:
             new_trade = PaperTrade(
                 symbol=symbol, side=side, entry_price=price, 
                 stop_loss=sl, take_profit=tp, amount=amount, 
-                status="OPEN", timestamp=datetime.utcnow()
+                status="OPEN", timestamp=datetime.utcnow(),
+                is_visible=(confidence >= 70)
             )
             session.add(new_trade)
             await session.commit()
