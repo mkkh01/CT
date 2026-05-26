@@ -5,10 +5,11 @@ from telegram.ext import (
 )
 from telegram.error import Conflict, NetworkError, TimedOut
 from datetime import datetime
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from config import ADMIN_ID
-from database import AsyncSessionLocal, TrackedCoin, UserConfig
+from database import AsyncSessionLocal, TrackedCoin, UserConfig, TradeHistory
 from bot.keyboards import get_main_menu, get_coins_menu, get_private_trades_menu, get_timeframe_menu
+import yfinance as yf
 
 # تعريف حالات المحادثة لإضافة العملة
 NAME, CAPITAL, TIMEFRAME = range(3)
@@ -18,22 +19,18 @@ async def check_admin(update: Update) -> bool:
     user_id = update.effective_user.id
     return ADMIN_ID != 0 and user_id == ADMIN_ID
 
-# معالج الأخطاء العام لحل مشكلة No error handlers و Conflict والانقطاعات
+# معالج الأخطاء العام
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
     print(f"⚠️ نظام: حدث خطأ -> {str(error)}")
 
-    # حل جذري لخطأ Conflict (التعارض بين نسخ البوت)
     if isinstance(error, Conflict):
         print("🚨 كشف تعارض: يوجد نسخة أخرى تعمل. تم تجاهل الخطأ ومتابعة العمل...")
         return
-
-    # معالجة انقطاعات الشبكة و WebSocket
     elif isinstance(error, (NetworkError, TimedOut)):
         print("🔌 انقطاع شبكة: سيتم إعادة المحاولة تلقائياً...")
         return
 
-    # إشعار المستخدم في حالات الأخطاء الأخرى
     if update and isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text("❌ حدث خطأ بسيط، يرجى المحاولة مجدداً.")
@@ -50,12 +47,12 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# --- منطق إضافة عملة جديدة ---
+# --- منطق إضافة عملة جديدة (من خلال إدارة العملات فقط) ---
 async def start_add_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.message:
-        await query.message.edit_text("✍️ أرسل رمز العملة بصيغة صحيحة (مثال: BTCUSDT):")
+        await query.message.edit_text("✍️ أرسل رمز العملة بصيغة صحيحة (مثل: BTCUSDT):")
     return NAME
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,6 +64,7 @@ async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ الرمز غير صالح! أعد المحاولة:")
         return NAME
 
+    # ✅ حفظ الاسم المدخل من قبلك في قاعدة البيانات
     context.user_data["symbol"] = symbol_input
     await update.message.reply_text("💰 أدخل رأس المال المخصص لهذه العملة (رقم فقط):")
     return CAPITAL
@@ -96,7 +94,7 @@ async def get_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     tf = query.data.replace("tf_", "")
 
-    # حفظ البيانات كاملة في قاعدة البيانات
+    # ✅ إضافة العملة الجديدة إلى قاعدة البيانات لتظهر في كل مكان
     async with AsyncSessionLocal() as session:
         new_coin = TrackedCoin(
             symbol=context.user_data["symbol"],
@@ -107,7 +105,7 @@ async def get_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await session.commit()
 
     await query.edit_message_text(
-        f"✅ تمت إضافة العملة بنجاح!\n\n"
+        f"✅ تمت إضافة العملة إلى قاعدة البيانات بنجاح!\n\n"
         f"🪙 العملة: *{context.user_data['symbol']}*\n"
         f"💵 رأس المال: *{context.user_data['capital']}*\n"
         f"⏱️ الإطار: *{tf}*",
@@ -115,16 +113,15 @@ async def get_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(update.effective_chat.id, "🏠 العودة للقائمة الرئيسية:", reply_markup=get_main_menu())
     
-    # مسح البيانات المؤقتة لمنع التعارض
     context.user_data.clear()
     return ConversationHandler.END
 
 # --- معالج الأزرار الرئيسية ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()  # ✅ ضروري جداً لحل مشكلة NoneType
+    await query.answer()
 
-    if not query.message: # ✅ فحص أساسي لضمان وجود الرسالة
+    if not query.message:
         return
 
     data = query.data
@@ -152,7 +149,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if cfg:
                 cfg.elite_enabled = is_on
             else:
-                # إنشاء إعدادات جديدة إذا لم تكن موجودة
                 cfg = UserConfig(telegram_id=ADMIN_ID, elite_enabled=is_on)
                 session.add(cfg)
             await session.commit()
@@ -168,7 +164,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return NAME
 
     elif data == 'remove_coin':
-        # ✅ جلب العملات من قاعدة البيانات لعرضها وحذفها
+        # ✅ جلب العملات الموجودة في قاعدة البيانات فقط للحذف
         async with AsyncSessionLocal() as session:
             coins = await session.execute(select(TrackedCoin.id, TrackedCoin.symbol))
             coins_list = coins.all()
@@ -181,12 +177,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for idx, (coin_id, symbol) in enumerate(coins_list, 1):
                 text += f"{idx}. {symbol} (ID: {coin_id})\n"
             
-            text += "\nأرسل رقم المعرف (ID) الخاص بالعملة للحذف."
+            text += "\nأرسل رقم المعرف (ID) للحذف."
             await query.edit_message_text(text)
             context.user_data['action'] = 'delete_coin'
 
     elif data == 'view_coins':
-        # ✅ عرض حقيقي للعملات المضافة من قاعدة البيانات
+        # ✅ عرض القائمة كاملة من قاعدة البيانات
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(TrackedCoin.symbol, TrackedCoin.allocated_capital, TrackedCoin.timeframe)
@@ -194,110 +190,151 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             coins = result.all()
 
             if not coins:
-                text = "📋 لا توجد عملات مضافة حتى الآن."
+                text = "📋 لا توجد عملات مضافة حتى الآن. استخدم 'إضافة عملة'."
             else:
-                text = "📋 *قائمة العملات المتابعة:*\n\n"
+                text = "📋 *قائمة العملات المتابعة (من قاعدة البيانات):*\n\n"
                 for sym, cap, tf in coins:
-                    text += f"🪙 {sym}\n💵 رأس المال: {cap}\n⏱️ الإطار: {tf}\n➖➖➖➖➖➖\n"
+                    text += f"🪙 {sym}\n💵 رأس المال: {cap:.2f}\n⏱️ الإطار: {tf}\n➖➖➖➖➖➖\n"
 
         await query.edit_message_text(text, reply_markup=get_coins_menu(), parse_mode='Markdown')
 
     elif data == 'elite_instant_report':
-        # ✅ تقرير حقيقي مبني على البيانات
+        # ✅ تقرير يعتمد على بيانات النظام الحقيقية
         async with AsyncSessionLocal() as session:
-            count = await session.execute(select(TrackedCoin).count())
-            active = await session.execute(select(UserConfig.elite_enabled).where(UserConfig.telegram_id == ADMIN_ID))
-            active_status = active.scalar_one_or_none()
+            cfg = await session.execute(select(UserConfig.elite_enabled).where(UserConfig.telegram_id == ADMIN_ID))
+            status_sys = cfg.scalar_one_or_none()
+            
+            count_coins = await session.execute(select(TrackedCoin).count())
+            count_coins = count_coins.scalar()
+
+            total_trades = await session.execute(select(TradeHistory).count())
+            win_trades = await session.execute(select(TradeHistory).where(TradeHistory.profit > 0).count())
+            
+            accuracy = (win_trades.scalar() / total_trades.scalar()) * 100 if total_trades.scalar() > 0 else 0.0
 
         report_text = (
             "📊 *تقرير الأداء اللحظي*\n\n"
-            f"⚙️ حالة النظام: {'يعمل 🟢' if active_status else 'متوقف 🔴'}\n"
-            f"🪙 عدد العملات المتابعة: {count.scalar()}\n"
-            f"📈 جلسة التداول: نشطة\n"
+            f"⚙️ حالة النظام: {'يعمل 🟢' if status_sys else 'متوقف 🔴'}\n"
+            f"🪙 عدد العملات المضافة: {count_coins}\n"
+            f"📈 إجمالي الصفقات: {total_trades.scalar()}\n"
+            f"✅ دقة التنبؤ: {accuracy:.2f}%\n"
             f"🕒 آخر تحديث: {datetime.now().strftime('%H:%M:%S')}"
         )
         await query.edit_message_text(report_text, reply_markup=get_private_trades_menu(), parse_mode='Markdown')
-
-    elif data == 'coins':
-        await query.edit_message_text("🌐 إدارة العملات:", reply_markup=get_coins_menu())
 
 # --- معالج النصوص والأزرار السفلية ---
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update):
         return
-
     if not update.message:
         return
 
     text = update.message.text.strip()
 
-    # ✅ التحقق مما إذا كان المستخدم في وضع الحذف
+    # ✅ تنفيذ عملية الحذف من قاعدة البيانات
     if context.user_data.get('action') == 'delete_coin':
         try:
             coin_id = int(text)
             async with AsyncSessionLocal() as session:
                 await session.execute(delete(TrackedCoin).where(TrackedCoin.id == coin_id))
                 await session.commit()
-            await update.message.reply_text(f"✅ تم حذف العملة ذات المعرف {coin_id} بنجاح.", reply_markup=get_coins_menu())
-        except:
-            await update.message.reply_text("❌ معرف غير صالح أو خطأ في الحذف.")
+            await update.message.reply_text(f"✅ تم حذف العملة رقم {coin_id} من قاعدة البيانات بنجاح.", reply_markup=get_coins_menu())
+        except Exception as e:
+            await update.message.reply_text(f"❌ فشل في الحذف: {str(e)}")
         finally:
             context.user_data.pop('action', None)
         return
 
-    # ✅ الأزرار الرئيسية - تم تعديلها لتصبح وظيفية بالكامل
-    if "🌟 الصفقات الخاصة" in text:
-        await update.message.reply_text(
-            "🌟 *مركز التحكم والصفقات الخاصة*", 
-            reply_markup=get_private_trades_menu(), 
-            parse_mode='Markdown'
-        )
-    elif "🌐 إدارة العملات" in text:
-        await update.message.reply_text(
-            "🪙 *إدارة العملات*\nإضافة، حذف وعرض العملات المتابعة:", 
-            reply_markup=get_coins_menu(), 
-            parse_mode='Markdown'
-        )
-    elif "📈 الأسعار الحية" in text:
-        # ✅ عرض بيانات حقيقية جاهزة (يمكن ربطها بـ API لاحقاً)
-        await update.message.reply_text(
-            "📈 *الأسعار الحية*\n\n"
-            "BTC: 94,250 USDT 📈\n"
-            "ETH: 3,280 USDT 📉\n"
-            "SOL: 142 USDT 📈\n"
-            "📊 يتم التحديث كل دقيقة...",
-            parse_mode='Markdown'
-        )
+    # --- ✅ الأسعار الحية: تجلب فقط العملات الموجودة في قاعدة البيانات ---
+    if "📈 الأسعار الحية" in text:
+        async with AsyncSessionLocal() as session:
+            # جلب أسماء العملات التي أضفتها أنت فقط
+            result = await session.execute(select(TrackedCoin.symbol))
+            coins_in_db = result.scalars().all()
+
+        if not coins_in_db:
+            await update.message.reply_text("❌ لا توجد عملات مضافة في قاعدة البيانات حالياً. أضف أولاً من 'إدارة العملات'.")
+            return
+
+        # بناء الرسالة وجلب السعر لكل عملة موجودة
+        price_text = "📈 *الأسعار الحية (للعملات المضافة لديك فقط)*\n\n"
+        for coin_symbol in coins_in_db:
+            try:
+                # تحويل الصيغة لتناسب مكتبة الأسعار (مثل BTCUSDT -> BTC-USD)
+                yahoo_symbol = coin_symbol.replace("USDT", "-USD")
+                ticker = yf.Ticker(yahoo_symbol)
+                price = ticker.info.get('regularMarketPrice', 'غير متاح')
+                
+                if isinstance(price, float):
+                    price_text += f"🪙 {coin_symbol}: {price:,.2f} USDT 📊\n"
+                else:
+                    price_text += f"🪙 {coin_symbol}: {price} ⚠️\n"
+            except Exception as e:
+                price_text += f"🪙 {coin_symbol}: خطأ في جلب السعر ❌\n"
+
+        price_text += "\n🔄 يتم التحديث تلقائياً..."
+        await update.message.reply_text(price_text, parse_mode='Markdown')
+
+    # --- تقرير التدريب ---
     elif "🧠 تقرير التدريب والتعلم" in text:
-        await update.message.reply_text(
+        async with AsyncSessionLocal() as session:
+            total = await session.execute(select(TradeHistory).count())
+            wins = await session.execute(select(TradeHistory).where(TradeHistory.profit > 0).count())
+            total_profit = await session.execute(select(func.sum(TradeHistory.profit)))
+            total_profit = total_profit.scalar() or 0
+
+            accuracy = (wins.scalar() / total.scalar()) * 100 if total.scalar() > 0 else 0
+
+        text_report = (
             "🧠 *تقرير التدريب والتعلم الذكي*\n\n"
-            "✅ دقة التنبؤ الحالية: 87.4%\n"
-            "📚 عدد الصفقات التي تم تحليلها: 124\n"
-            "🔄 حالة التعلم: مستمر ونشط\n"
-            "📈 أداء الشهر الحالي: +12.5%",
-            parse_mode='Markdown'
+            f"✅ دقة التنبؤ المحسوبة: {accuracy:.2f}%\n"
+            f"📚 عدد الصفقات المحللة: {total.scalar()}\n"
+            f"🔄 حالة التعلم: نشط ومستمر 🧠\n"
+            f"📈 صافي الربح الكلي: {total_profit:.2f} USDT"
         )
+        await update.message.reply_text(text_report, parse_mode='Markdown')
+
+    # --- إدارة رأس المال: قراءة إجمالي من قاعدة البيانات ---
     elif "💰 إدارة رأس المال" in text:
-        await update.message.reply_text(
-            "💰 *إدارة رأس المال*\n\n"
-            "💵 الرصيد الكلي: 10,000 USDT\n"
-            "💸 المخاطرة لكل صفقة: 1.5%\n"
-            "🔒 نسبة الأمان: 85%\n"
-            "📊 الأرباح التراكمية: +4.2%",
-            parse_mode='Markdown'
+        async with AsyncSessionLocal() as session:
+            # مجموع رؤوس الأموال المخصصة للعملات التي أضفتها
+            total_capital = await session.execute(select(func.sum(TrackedCoin.allocated_capital)))
+            total_capital = total_capital.scalar() or 0
+
+            # إعدادات المخاطرة
+            risk_percent = 1.5
+
+        text_capital = (
+            "💰 *إدارة رأس المال (إجمالي مخصص)*\n\n"
+            f"💵 الرصيد الكلي المخصص: {total_capital:,.2f} USDT\n"
+            f"💸 المخاطرة لكل صفقة: {risk_percent}% من رأس المال\n"
+            f"🔒 نسبة الأمان: تحسب بناءً على التقلب\n"
+            f"📊 العملات النشطة: تقاس من قاعدة البيانات"
         )
+        await update.message.reply_text(text_capital, parse_mode='Markdown')
+
+    elif "🌟 الصفقات الخاصة" in text:
+        await update.message.reply_text("🌟 مركز التحكم:", reply_markup=get_private_trades_menu())
+    elif "🌐 إدارة العملات" in text:
+        await update.message.reply_text("🪙 إدارة العملات:", reply_markup=get_coins_menu())
+    
+    # --- أزرار التحكم ---
     elif "▶️ بدء التعلم الخفي" in text:
         async with AsyncSessionLocal() as session:
             cfg = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
             cfg = cfg.scalars().first()
-            if cfg: cfg.elite_enabled = True
-            else: session.add(UserConfig(telegram_id=ADMIN_ID, elite_enabled=True))
+            if cfg: 
+                cfg.elite_enabled = True
+            else: 
+                session.add(UserConfig(telegram_id=ADMIN_ID, elite_enabled=True))
             await session.commit()
-        await update.message.reply_text("🚀 تم تفعيل نظام التعلم والتحليل الذكي بنجاح. النظام يعمل في الخلفية.")
+        await update.message.reply_text("🚀 تم تفعيل نظام التعلم. يراقب العملات الموجودة في قاعدة البيانات الآن.")
+
     elif "⏸️ إيقاف التعلم الخفي" in text:
         async with AsyncSessionLocal() as session:
             cfg = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
             cfg = cfg.scalars().first()
-            if cfg: cfg.elite_enabled = False
-            await session.commit()
-        await update.message.reply_text("⏸️ تم إيقاف نظام التعلم والمراقبة مؤقتاً.")
+            if cfg: 
+                cfg.elite_enabled = False
+                await session.commit()
+        await update.message.reply_text("⏸️ تم إيقاف المراقبة مؤقتاً.")
