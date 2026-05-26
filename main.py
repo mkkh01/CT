@@ -30,7 +30,8 @@ conv_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
     # ✅ إعدادات إضافية لزيادة الاستقرار
-    allow_reentry=True
+    allow_reentry=True,
+    per_message=False # ✅ إضافة لحل تحذير per_message
 )
 
 async def start_background_tasks(app):
@@ -46,8 +47,7 @@ async def start_background_tasks(app):
                 res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
                 cfg = res.scalars().first()
                 
-                # ✅ تعديل هام: استخدمنا cfg.elite_enabled بدلاً من is_active (الموجود في قاعدة البيانات)
-                # إذا أردت خاصية جديدة، أضف العمود للجدول أولاً
+                # ✅ تعديل هام: استخدمنا cfg.elite_enabled بدلاً من is_active
                 if cfg and cfg.elite_enabled: 
                     coin_res = await session.execute(select(TrackedCoin.symbol))
                     symbols = coin_res.scalars().all()
@@ -87,17 +87,17 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler)) # 3. جميع الأزرار
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)) # 4. النصوص والقوائم
     
-    # ✅ إضافة معالج الأخطاء هنا لحل مشكلة "No error handlers" و "Conflict" نهائياً
+    # ✅ إضافة معالج الأخطاء هنا لحل المشاكل نهائياً
     app.add_error_handler(error_handler)
 
     print("✅ النظام جاهز بالكامل. جميع الوحدات مفعلة.")
     
-    # ✅ تشغيل البوت مع إعدادات آمنة ومستقرة
+    # ✅ تشغيل البوت بالإعدادات الصحيحة والمتوافقة مع الإصدار الجديد
     app.run_polling(
         drop_pending_updates=True,
         poll_interval=1.0,       # فترة جلب التحديثات (ثانية واحدة)
-        timeout=10,              # مهلة الاتصال
-        read_timeout=15
+        timeout=10,              # ✅ تم دمج المهلة في هذا المعامل (حذفنا read_timeout و connect_timeout)
+        allowed_updates=["message", "callback_query"] # ✅ تحديد أنواع التحديثات لزيادة الكفاءة
     )
 
 if __name__ == "__main__":
