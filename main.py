@@ -10,7 +10,6 @@ print("✅ خادم Keep-Alive يعمل.")
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, TrackedCoin, UserConfig
-# التأكد من استيراد الملفات بالاسم الصحيح (handlers وليس Handlers إذا كانت الحروف صغيرة)
 from bot.handlers import start_cmd, button_handler, text_handler
 from Core.whale_tracker import WhaleTracker
 from Core.trade_monitor import TradeMonitor
@@ -37,22 +36,13 @@ async def start_background_tasks(app):
                     symbols = coin_res.scalars().all()
                     
                     if symbols:
-                        # تشغيل المهام مع التأكد من وجود الدالة قبل استدعائها
-                        # استبدل 'start_tracking' بالاسم الصحيح الموجود في ملفك
                         if hasattr(tracker, 'start_tracking'):
                             await tracker.start_tracking(symbols)
-                        else:
-                            print("⚠️ تحذير: دالة التتبع غير موجودة في WhaleTracker")
-                        
                         await monitor.check_prices() 
-                else:
-                    # النظام في وضع الاستعداد
-                    pass
             
             await asyncio.sleep(60)
             
         except Exception as e:
-            # هذا الجزء يمنع توقف البوت عند حدوث أي خطأ برمجي
             print(f"⚠️ خطأ في دورة المهام الخلفية: {e}")
             await asyncio.sleep(60)
 
@@ -61,7 +51,7 @@ async def post_init(app: Application):
     asyncio.create_task(start_background_tasks(app))
 
 def main():
-    print("🚀 جاري إقلاع النظام المطور V3 (Elite & Learning Mode)...")
+    print("🚀 جاري إقلاع النظام المطور V3...")
     
     # تهيئة قاعدة البيانات
     loop = asyncio.get_event_loop()
@@ -73,14 +63,17 @@ def main():
     # بناء التطبيق
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
-    # إضافة المعالجات (Handlers)
+    # [تعديل هام] حذف أي Webhook قديم عالق لضمان عمل الـ Polling
+    loop.run_until_complete(app.bot.delete_webhook())
+    
+    # إضافة المعالجات (Handlers) بالترتيب الصحيح
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(button_handler)) # الأزرار أولاً
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    print("✅ النظام V3 جاهز تماماً. تحكم بالتعلم الخفي من الأزرار السفلية.")
+    print("✅ النظام جاهز. تحكم بالتعلم الخفي من الأزرار السفلية.")
     
-    # drop_pending_updates=True ضرورية لتجاوز رسائل التضارب المعلقة
+    # تشغيل البوت
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
