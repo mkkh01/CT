@@ -261,7 +261,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('action', None)
         return
 
-    # --- ✅ الأسعار الحية: تم التحديث لاستخدام WebSocket لتجنب الحظر (Bans) وضمان السرعة القصوى ---
+    # --- ✅ الأسعار الحية: تم التحديث لاستخدام REST API مع معالجة ذكية لتجنب الحظر وضمان العمل على Render ---
     if "📈 الأسعار الحية" in text:
         print(f"📊 [LIVE PRICES] طلب جلب الأسعار من المستخدم {update.effective_user.id}")
         async with AsyncSessionLocal() as session:
@@ -269,50 +269,48 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             coins_in_db = result.scalars().all()
         
         if not coins_in_db:
-            print("⚠️ [LIVE PRICES] لا توجد عملات مضافة في قاعدة البيانات.")
+            print("⚠️ [LIVE PRICES] لا توجد عملات مضافة.")
             await update.message.reply_text("❌ لا توجد عملات مضافة لمتابعة أسعارها.")
             return
 
-        import websockets
-        import json
+        import ccxt.async_support as ccxt_async
+        # استخدام وكيل مستخدم (User-Agent) مختلف لتجنب بعض قيود الـ IP
+        exchange = ccxt_async.binance({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
         
-        price_text = "📈 *الأسعار الحية (عبر WebSocket)*\n\n"
-        streams = [f"{s.lower()}@miniTicker" for s in coins_in_db]
-        uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
+        price_text = "📈 *الأسعار الحية (Binance REST API)*\n\n"
+        waiting_msg = await update.message.reply_text("⏳ جاري جلب الأسعار من Binance...")
         
-        waiting_msg = await update.message.reply_text("⏳ جاري الاتصال بـ Binance وجلب الأسعار اللحظية...")
-        
-        prices_data = {}
         try:
-            async with websockets.connect(uri) as ws:
-                # ننتظر قليلاً لجمع التحديثات لجميع العملات المطلوبة
-                start_time = datetime.now()
-                while len(prices_data) < len(coins_in_db) and (datetime.now() - start_time).seconds < 5:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=2)
-                    data = json.loads(msg)['data']
-                    sym = data['s']
-                    prices_data[sym] = {
-                        'price': float(data['c']),
-                        'open': float(data['o'])
-                    }
+            # جلب الأسعار دفعة واحدة (أكثر كفاءة وأقل عرضة للحظر)
+            tickers = await exchange.fetch_tickers(list(coins_in_db))
             
             for symbol in coins_in_db:
-                if symbol in prices_data:
-                    p = prices_data[symbol]['price']
-                    o = prices_data[symbol]['open']
-                    change = ((p - o) / o) * 100
+                if symbol in tickers:
+                    data = tickers[symbol]
+                    last = data['last']
+                    change = data['percentage']
                     icon = "🟢" if change >= 0 else "🔴"
-                    price_text += f"🪙 *{symbol}*: `{p:,.4f}` USDT ({icon} {change:+.2f}%)\n"
+                    price_text += f"🪙 *{symbol}*: `{last:,.4f}` USDT ({icon} {change:+.2f}%)\n"
                 else:
-                    price_text += f"🪙 *{symbol}*: ⚠️ لا توجد بيانات (حاول مرة أخرى)\n"
+                    price_text += f"🪙 *{symbol}*: ⚠️ لا توجد بيانات\n"
             
-            print(f"✅ [LIVE PRICES] تم جلب {len(prices_data)} سعر بنجاح.")
+            print(f"✅ [LIVE PRICES] تم جلب الأسعار بنجاح لـ {len(coins_in_db)} عملة.")
             await waiting_msg.delete()
             await update.message.reply_text(price_text, parse_mode='Markdown')
             
         except Exception as e:
-            print(f"❌ [LIVE PRICES] خطأ في WebSocket: {str(e)}")
-            await waiting_msg.edit_text(f"⚠️ خطأ في جلب الأسعار: {str(e)}\n\n_ملاحظة: قد يكون هناك حظر مؤقت على الـ IP، يرجى المحاولة لاحقاً._")
+            print(f"❌ [LIVE PRICES] خطأ في جلب الأسعار: {str(e)}")
+            error_msg = str(e)
+            if "418" in error_msg or "1003" in error_msg:
+                final_err = "⚠️ تم حظر عنوان IP مؤقتاً من Binance. يرجى المحاولة بعد 15 دقيقة."
+            else:
+                final_err = f"⚠️ خطأ: {error_msg}"
+            await waiting_msg.edit_text(final_err)
+        finally:
+            await exchange.close()
 
     # --- ✅ تقرير التدريب: مُصحح ويعالج الجداول الفارغة ---
     elif "🧠 تقرير التدريب والتعلم" in text:

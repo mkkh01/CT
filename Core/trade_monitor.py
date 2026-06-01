@@ -104,7 +104,11 @@ class TradeMonitor:
                 )
             )
             
-            for trade in res.scalars().all():
+            open_trades_list = res.scalars().all()
+            if open_trades_list:
+                print(f"👀 [MONITOR] جاري مراقبة {len(open_trades_list)} صفقة مفتوحة لـ {symbol}")
+
+            for trade in open_trades_list:
                 closed, status = False, ""
 
                 # --- منطق الإغلاق المطور ---
@@ -140,6 +144,7 @@ class TradeMonitor:
                     trade.pnl = round((trade.amount * pnl_pct) / 100, 4)
 
                     await session.commit()
+                    print(f"💰 [MONITOR] تم إغلاق صفقة {symbol} بنتيجة {status} وربح/خسارة {trade.pnl} USDT")
 
                     # --- إرسال تقرير النتيجة للتليجرام ---
                     if self.bot:

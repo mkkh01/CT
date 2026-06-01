@@ -26,6 +26,7 @@ class AIEngine:
             return res.scalars().first()
 
     async def analyze_and_trade(self, symbol: str, whale_action: str = None, **kwargs):
+        print(f"🔍 [AI ENGINE] جاري تحليل العملة: {symbol}")
         # ✅ تم تحديث التوقيع لقبول وسائط إضافية مثل timeframe و capital لضمان التوافق مع المراقب
         timeframe_override = kwargs.get('timeframe')
         capital_override = kwargs.get('capital')
@@ -52,6 +53,7 @@ class AIEngine:
             
             regime = self.macro.get_market_regime()
             confidence = self.strategies.calculate_confidence(df, whale_action, regime)
+            print(f"📊 [AI ENGINE] تحليل {symbol}: اتجاه السوق={regime}, درجة الثقة={confidence}%")
             
             # لقطة فنية دقيقة لتقارير "الساعة 1 و 5" التي طلبتها
             snapshot = {
@@ -63,7 +65,10 @@ class AIEngine:
             # تنفيذ الصفقة برمجياً (سواء للتدريب أو للتداول الحقيقي)
             # خفضنا حد "النخبة" لـ 75% كما اتفقنا لكي يعطيك صفقات أكثر للتداول
             if confidence >= 50.0:
+                print(f"🚀 [AI ENGINE] تم اكتشاف فرصة شراء لـ {symbol}! جاري التنفيذ...")
                 await self.execute_open_trade(symbol, "BUY", current_price, atr, capital, confidence, snapshot, cfg)
+            else:
+                print(f"😴 [AI ENGINE] لا توجد فرصة كافية لـ {symbol} (الثقة أقل من 50%)")
             
             return "BUY" if confidence >= 50.0 else "HOLD", confidence
             
