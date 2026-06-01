@@ -26,6 +26,8 @@ class AIEngine:
             return res.scalars().first()
 
     async def analyze_and_trade(self, symbol: str, whale_action: str = None, **kwargs):
+        # إضافة تأخير زمني لتوزيع الثقل (Rate Limiting) كما طلبت باينانس والمستخدم
+        await asyncio.sleep(2) 
         print(f"🔍 [AI ENGINE] جاري تحليل العملة: {symbol}")
         # ✅ تم تحديث التوقيع لقبول وسائط إضافية مثل timeframe و capital لضمان التوافق مع المراقب
         timeframe_override = kwargs.get('timeframe')

@@ -84,13 +84,15 @@ class TradeMonitor:
                                 # 3. فحص الصفقات المفتوحة لهذه العملة
                                 await self._check_open_trades(symbol, current_price)
 
-                                # 4. تشغيل التحليل الدوري اللحظي (كل 60 ثانية لاقتناص الصفقات فوراً)
+                                # 4. تشغيل التحليل الدوري اللحظي (كل 60 ثانية)
                                 if (datetime.now() - last_analysis_time).seconds >= 60:
                                     if ai:
                                         print(f"🧠 [MONITOR] بدء جولة مراجعة الاستراتيجيات والبحث عن صفقات...")
-                                        # تشغيل التحليل لكل العملات بشكل متوازٍ لسرعة التنفيذ
-                                        tasks = [ai.analyze_and_trade(s) for s in symbols]
-                                        await asyncio.gather(*tasks)
+                                        # تشغيل التحليل بشكل تسلسلي مع فواصل زمنية (Rate Limiting) لتجنب الحظر
+                                        for s in symbols:
+                                            await ai.analyze_and_trade(s)
+                                            # فاصل إضافي بين كل عملة وأخرى
+                                            await asyncio.sleep(1) 
                                     last_analysis_time = datetime.now()
 
                             except asyncio.TimeoutError:
