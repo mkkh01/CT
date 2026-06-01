@@ -26,8 +26,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     elif isinstance(error, (NetworkError, TimedOut)):
         return
-    # ✅ تم إيقاف إرسال رسائل "حدث خطأ بسيط" المزعجة للمستخدم
-    # سنعالج الأخطاء يدوياً داخل كل وظيفة لضمان رسائل واضحة
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,7 +176,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             total_pnl = await session.scalar(select(func.sum(PaperTrade.pnl))) or 0.0
             count_coins = await session.scalar(select(func.count(TrackedCoin.id))) or 0
 
-            # ✅ معالجة مشكلة القسمة على صفر: إذا لم توجد صفقات
             if total_trades == 0:
                 accuracy = 0.0
                 note = "📌 ملاحظة: لا توجد صفقات منفذة حتى الآن لحساب الدقة."
@@ -232,21 +229,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price_text = "📈 *الأسعار الحية (للعملات المضافة لديك فقط)*\n\n"
         for coin_symbol in coins_in_db:
             try:
-                # ✅ طريقة ذكية لتحويل الاسم: نحذف USDT ونضع -USD
                 clean_symbol = coin_symbol.replace("USDT", "").replace("USD", "").replace(" ", "")
                 yahoo_symbol = f"{clean_symbol}-USD"
 
                 ticker = yf.Ticker(yahoo_symbol)
                 info = ticker.info
 
-                # التحقق مما إذا كان السعر متاحاً
                 if 'regularMarketPrice' in info and info['regularMarketPrice']:
                     price = info['regularMarketPrice']
                     price_text += f"🪙 {coin_symbol}: {price:,.2f} USDT 📊\n"
                 else:
                     price_text += f"🪙 {coin_symbol}: ⚠️ الرمز غير مدعوم أو لا توجد بيانات لهذه العملة\n"
 
-            except Exception as e:
+            except Exception:
                 price_text += f"🪙 {coin_symbol}: ❌ خطأ في جلب البيانات (الرمز قديم أو غير مدعوم)\n"
 
         await update.message.reply_text(price_text, parse_mode='Markdown')
@@ -277,14 +272,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(text_report, parse_mode='Markdown')
 
-    # --- ✅ إدارة رأس المال ---
+    # --- ✅ إدارة رأس المال: تم إصلاح الخطأ هنا نهائياً ---
     elif "💰 إدارة رأس المال" in text:
         async with AsyncSessionLocal() as session:
             total_capital = await session.scalar(select(func.sum(TrackedCoin.allocated_capital))) or 0
             cfg = await session.execute(select(UserConfig.risk_level, UserConfig.paper_capital).where(UserConfig.telegram_id == ADMIN_ID))
             cfg_data = cfg.first()
             risk = cfg_data[0] if cfg_data else "medium"
-            base_cap = cfg_data[1) if cfg_data else 0
+            base_cap = cfg_data[1] if cfg_data else 0  # ✅ تم تصليح القوس هنا
 
         text_capital = (
             "💰 *إدارة رأس المال (بيانات من قاعدة البيانات)*\n\n"
