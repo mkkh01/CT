@@ -41,6 +41,19 @@ def get_coins_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def get_capital_management_menu():
+    """قائمة إدارة رأس المال مع خيارات التعديل"""
+    keyboard = [
+        [InlineKeyboardButton("💵 تعديل رأس المال الأساسي", callback_data='edit_base_capital')],
+        [
+            InlineKeyboardButton("📉 مخاطرة منخفضة", callback_data='risk_low'),
+            InlineKeyboardButton("⚖️ متوسطة", callback_data='risk_medium'),
+            InlineKeyboardButton("🔥 عالية", callback_data='risk_high')
+        ],
+        [InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 def get_timeframe_menu():
     """قائمة اختيار الإطار الزمني (تظهر أثناء إضافة عملة)"""
     keyboard = [

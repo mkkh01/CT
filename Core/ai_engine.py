@@ -19,7 +19,16 @@ class AIEngine:
         # تم ضبط الإعدادات للتعامل مع Binance Spot بذكاء
         self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 
-    async def analyze_and_trade(self, symbol: str, whale_action: str = None):
+    async def get_coin_config(self, symbol: str):
+        """جلب إعدادات العملة من قاعدة البيانات"""
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
+            return res.scalars().first()
+
+    async def analyze_and_trade(self, symbol: str, whale_action: str = None, **kwargs):
+        # ✅ تم تحديث التوقيع لقبول وسائط إضافية مثل timeframe و capital لضمان التوافق مع المراقب
+        timeframe_override = kwargs.get('timeframe')
+        capital_override = kwargs.get('capital')
         # 1. جلب حالة المحرك من قاعدة البيانات
         async with AsyncSessionLocal() as session:
             res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
@@ -30,8 +39,8 @@ class AIEngine:
                 return "OFF", 0.0
 
         coin_config = await self.get_coin_config(symbol)
-        capital = coin_config.allocated_capital if coin_config else 20.0
-        tf = coin_config.timeframe if coin_config else "15m"
+        capital = capital_override if capital_override is not None else (coin_config.allocated_capital if coin_config else 20.0)
+        tf = timeframe_override if timeframe_override is not None else (coin_config.timeframe if coin_config else "15m")
         
         try:
             ohlcv = await self.exchange.fetch_ohlcv(symbol, tf, limit=100)

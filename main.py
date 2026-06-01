@@ -54,6 +54,7 @@ async def start_background_tasks(app):
                     if symbols:
                         if hasattr(tracker, 'start_tracking'): 
                             await tracker.start_tracking(symbols)
+                        # ✅ تم التأكد من أن check_prices يعمل بشكل صحيح مع العملات المضافة
                         await monitor.check_prices() 
                         
             await asyncio.sleep(60) # تكرار العملية كل دقيقة

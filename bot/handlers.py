@@ -164,6 +164,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"🪙 {sym}\n💵 رأس المال: {cap:.2f}\n⏱️ الإطار: {tf}\n📅 تاريخ الإضافة: {date.strftime('%Y-%m-%d')}\n➖➖➖➖➖➖\n"
         await query.edit_message_text(text, reply_markup=get_coins_menu(), parse_mode='Markdown')
 
+    elif data == 'edit_base_capital':
+        await query.edit_message_text("✍️ أرسل القيمة الجديدة لرأس المال الأساسي (رقم فقط):")
+        context.user_data['action'] = 'update_base_capital'
+
+    elif data.startswith('risk_'):
+        new_risk = data.replace('risk_', '')
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
+            cfg = res.scalars().first()
+            if cfg:
+                cfg.risk_level = new_risk
+                await session.commit()
+                await query.edit_message_text(f"✅ تم تحديث مستوى المخاطرة إلى: *{new_risk.upper()}*", parse_mode='Markdown')
+            else:
+                await query.edit_message_text("❌ خطأ: لم يتم العثور على إعدادات المستخدم.")
+
     elif data == 'elite_instant_report':
         async with AsyncSessionLocal() as session:
             cfg = await session.execute(select(UserConfig.elite_enabled, UserConfig.paper_capital).where(UserConfig.telegram_id == ADMIN_ID))
@@ -217,32 +233,54 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('action', None)
         return
 
-    # --- ✅ الأسعار الحية: مُصحح ليعالج جميع أنواع الرموز ---
+    if context.user_data.get('action') == 'update_base_capital':
+        try:
+            new_val = float(text)
+            if new_val < 0: raise ValueError
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
+                cfg = res.scalars().first()
+                if cfg:
+                    cfg.paper_capital = new_val
+                else:
+                    cfg = UserConfig(telegram_id=ADMIN_ID, paper_capital=new_val)
+                    session.add(cfg)
+                await session.commit()
+            await update.message.reply_text(f"✅ تم تحديث رأس المال الأساسي إلى: `{new_val:,.2f} USDT`", parse_mode='Markdown')
+        except:
+            await update.message.reply_text("⚠️ قيمة غير صالحة! أدخل رقماً موجباً.")
+        finally:
+            context.user_data.pop('action', None)
+        return
+
+    # --- ✅ الأسعار الحية: تم التحديث لاستخدام Binance مباشرة لضمان الدقة والسرعة ---
     if "📈 الأسعار الحية" in text:
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(TrackedCoin.symbol))
             coins_in_db = result.scalars().all()
         if not coins_in_db:
-            await update.message.reply_text("❌ لا توجد عملات مضافة.")
+            await update.message.reply_text("❌ لا توجد عملات مضافة لمتابعة أسعارها.")
             return
 
-        price_text = "📈 *الأسعار الحية (للعملات المضافة لديك فقط)*\n\n"
-        for coin_symbol in coins_in_db:
-            try:
-                clean_symbol = coin_symbol.replace("USDT", "").replace("USD", "").replace(" ", "")
-                yahoo_symbol = f"{clean_symbol}-USD"
-
-                ticker = yf.Ticker(yahoo_symbol)
-                info = ticker.info
-
-                if 'regularMarketPrice' in info and info['regularMarketPrice']:
-                    price = info['regularMarketPrice']
-                    price_text += f"🪙 {coin_symbol}: {price:,.2f} USDT 📊\n"
+        import ccxt.async_support as ccxt_async
+        exchange = ccxt_async.binance()
+        price_text = "📈 *الأسعار الحية من Binance*\n\n"
+        
+        try:
+            # جلب جميع الأسعار دفعة واحدة لسرعة الاستجابة
+            tickers = await exchange.fetch_tickers(list(coins_in_db))
+            for symbol in coins_in_db:
+                if symbol in tickers:
+                    price = tickers[symbol]['last']
+                    change = tickers[symbol]['percentage']
+                    icon = "🟢" if change >= 0 else "🔴"
+                    price_text += f"🪙 *{symbol}*: `{price:,.4f}` USDT ({icon} {change:+.2f}%)\n"
                 else:
-                    price_text += f"🪙 {coin_symbol}: ⚠️ الرمز غير مدعوم أو لا توجد بيانات لهذه العملة\n"
-
-            except Exception:
-                price_text += f"🪙 {coin_symbol}: ❌ خطأ في جلب البيانات (الرمز قديم أو غير مدعوم)\n"
+                    price_text += f"🪙 *{symbol}*: ⚠️ لا توجد بيانات حالية\n"
+        except Exception as e:
+            price_text += f"⚠️ خطأ أثناء جلب الأسعار: {str(e)}"
+        finally:
+            await exchange.close()
 
         await update.message.reply_text(price_text, parse_mode='Markdown')
 
@@ -272,23 +310,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(text_report, parse_mode='Markdown')
 
-    # --- ✅ إدارة رأس المال: تم إصلاح الخطأ هنا نهائياً ---
+    # --- ✅ إدارة رأس المال: تم جعلها ديناميكية بالكامل ---
     elif "💰 إدارة رأس المال" in text:
         async with AsyncSessionLocal() as session:
             total_capital = await session.scalar(select(func.sum(TrackedCoin.allocated_capital))) or 0
             cfg = await session.execute(select(UserConfig.risk_level, UserConfig.paper_capital).where(UserConfig.telegram_id == ADMIN_ID))
             cfg_data = cfg.first()
             risk = cfg_data[0] if cfg_data else "medium"
-            base_cap = cfg_data[1] if cfg_data else 0  # ✅ تم تصليح القوس هنا
+            base_cap = cfg_data[1] if cfg_data else 0
 
         text_capital = (
             "💰 *إدارة رأس المال (بيانات من قاعدة البيانات)*\n\n"
-            f"💵 رأس المال الأساسي: {base_cap:,.2f} USDT\n"
-            f"💵 الرصيد المخصص للعملات: {total_capital:,.2f} USDT\n"
-            f"⚠️ مستوى المخاطرة المحدد: {risk.upper()}\n"
-            f"💸 المخاطرة لكل صفقة: {'1%' if risk=='low' else '1.5%' if risk=='medium' else '2.5%'}"
+            f"💵 رأس المال الأساسي: `{base_cap:,.2f}` USDT\n"
+            f"💵 الرصيد المخصص للعملات: `{total_capital:,.2f}` USDT\n"
+            f"⚠️ مستوى المخاطرة الحالي: *{risk.upper()}*\n"
+            f"💸 المخاطرة لكل صفقة: *{'1%' if risk=='low' else '1.5%' if risk=='medium' else '2.5%'}*\n\n"
+            "يمكنك تعديل رأس المال الأساسي أو تغيير مستوى المخاطرة من الأزرار أدناه:"
         )
-        await update.message.reply_text(text_capital, parse_mode='Markdown')
+        await update.message.reply_text(text_capital, reply_markup=get_capital_management_menu(), parse_mode='Markdown')
 
     elif "🌟 الصفقات الخاصة" in text:
         await update.message.reply_text("🌟 مركز التحكم:", reply_markup=get_private_trades_menu())
