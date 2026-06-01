@@ -78,6 +78,9 @@ class TradeMonitor:
                                     'time': datetime.now().strftime('%H:%M:%S')
                                 }
                                 self._save_prices()
+                                # إضافة Log للتأكد من وصول السعر
+                                if len(self.live_prices) % 5 == 0: # تقليل عدد السجلات لتجنب الزحام
+                                    print(f"📊 [MONITOR] تحديث السعر: {symbol} -> {current_price}")
 
                                 # 3. فحص الصفقات المفتوحة لهذه العملة
                                 await self._check_open_trades(symbol, current_price)

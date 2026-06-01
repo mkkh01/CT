@@ -35,32 +35,31 @@ conv_handler = ConversationHandler(
 )
 
 async def start_background_tasks(app):
-    """تشغيل المهام الخلفية: الرادار والمراقبة"""
-    await asyncio.sleep(10) # تقليل وقت الانتظار ليبدأ أسرع قليلاً
+    """تشغيل المهام الخلفية: الرادار والمراقبة بشكل متوازٍ"""
+    await asyncio.sleep(5)
     tracker = WhaleTracker(bot=app.bot, chat_id=ADMIN_ID)
     monitor = TradeMonitor(bot=app.bot)
-    print(f"📡 تم تشغيل الرادار والمحلل التحليلي V3.2 بنجاح.")
     
+    # تشغيل المراقبة والرادار كمهام منفصلة لضمان عدم توقف إحداهما للأخرى
+    asyncio.create_task(monitor.check_prices())
+    print(f"📡 [SYSTEM] تم إطلاق مهمة مراقبة الأسعار والصفقات.")
+
     while True:
         try:
             async with AsyncSessionLocal() as session:
                 res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
                 cfg = res.scalars().first()
                 
-                # ✅ تعديل هام: استخدمنا cfg.elite_enabled بدلاً من is_active
                 if cfg and cfg.elite_enabled: 
                     coin_res = await session.execute(select(TrackedCoin.symbol))
                     symbols = coin_res.scalars().all()
-                    if symbols:
-                        if hasattr(tracker, 'start_tracking'): 
-                            await tracker.start_tracking(symbols)
-                        # ✅ تم التأكد من أن check_prices يعمل بشكل صحيح مع العملات المضافة
-                        await monitor.check_prices() 
+                    if symbols and hasattr(tracker, 'start_tracking'): 
+                        await tracker.start_tracking(symbols)
                         
-            await asyncio.sleep(60) # تكرار العملية كل دقيقة
+            await asyncio.sleep(60)
         except Exception as e:
-            print(f"⚠️ خطأ في دورة المهام الخلفية: {str(e)}")
-            await asyncio.sleep(30) # محاولة أسرع عند حدوث خطأ
+            print(f"⚠️ [SYSTEM] خطأ في تحديث الرادار: {str(e)}")
+            await asyncio.sleep(30)
 
 async def post_init(app: Application):
     """يتم تنفيذه مرة واحدة عند بدء التشغيل"""
