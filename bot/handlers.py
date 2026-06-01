@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy import select, delete, func
 from config import ADMIN_ID
 from database import AsyncSessionLocal, TrackedCoin, UserConfig, PaperTrade
-from bot.keyboards import get_main_menu, get_coins_menu, get_private_trades_menu, get_timeframe_menu
+from bot.keyboards import get_main_menu, get_coins_menu, get_private_trades_menu, get_timeframe_menu, get_capital_management_menu
 import yfinance as yf
 
 # تعريف حالات المحادثة لإضافة العملة
@@ -165,19 +165,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=get_coins_menu(), parse_mode='Markdown')
 
     elif data == 'edit_base_capital':
+        print(f"💰 [CAPITAL] المستخدم {update.effective_user.id} بدأ تعديل رأس المال الأساسي")
         await query.edit_message_text("✍️ أرسل القيمة الجديدة لرأس المال الأساسي (رقم فقط):")
         context.user_data['action'] = 'update_base_capital'
 
     elif data.startswith('risk_'):
         new_risk = data.replace('risk_', '')
+        print(f"⚠️ [RISK] طلب تغيير مستوى المخاطرة إلى: {new_risk}")
         async with AsyncSessionLocal() as session:
             res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
             cfg = res.scalars().first()
             if cfg:
                 cfg.risk_level = new_risk
                 await session.commit()
+                print(f"✅ [RISK] تم تحديث مستوى المخاطرة بنجاح إلى {new_risk}")
                 await query.edit_message_text(f"✅ تم تحديث مستوى المخاطرة إلى: *{new_risk.upper()}*", parse_mode='Markdown')
             else:
+                print(f"❌ [RISK] لم يتم العثور على إعدادات للمستخدم {ADMIN_ID}")
                 await query.edit_message_text("❌ خطأ: لم يتم العثور على إعدادات المستخدم.")
 
     elif data == 'elite_instant_report':
@@ -237,6 +241,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             new_val = float(text)
             if new_val < 0: raise ValueError
+            print(f"💰 [CAPITAL] جاري تحديث رأس المال الأساسي إلى: {new_val}")
             async with AsyncSessionLocal() as session:
                 res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))
                 cfg = res.scalars().first()
@@ -246,43 +251,67 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     cfg = UserConfig(telegram_id=ADMIN_ID, paper_capital=new_val)
                     session.add(cfg)
                 await session.commit()
+            print(f"✅ [CAPITAL] تم التحديث بنجاح.")
             await update.message.reply_text(f"✅ تم تحديث رأس المال الأساسي إلى: `{new_val:,.2f} USDT`", parse_mode='Markdown')
-        except:
+        except Exception as e:
+            print(f"❌ [CAPITAL] فشل التحديث: {str(e)}")
             await update.message.reply_text("⚠️ قيمة غير صالحة! أدخل رقماً موجباً.")
         finally:
             context.user_data.pop('action', None)
         return
 
-    # --- ✅ الأسعار الحية: تم التحديث لاستخدام Binance مباشرة لضمان الدقة والسرعة ---
+    # --- ✅ الأسعار الحية: تم التحديث لاستخدام WebSocket لتجنب الحظر (Bans) وضمان السرعة القصوى ---
     if "📈 الأسعار الحية" in text:
+        print(f"📊 [LIVE PRICES] طلب جلب الأسعار من المستخدم {update.effective_user.id}")
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(TrackedCoin.symbol))
             coins_in_db = result.scalars().all()
+        
         if not coins_in_db:
+            print("⚠️ [LIVE PRICES] لا توجد عملات مضافة في قاعدة البيانات.")
             await update.message.reply_text("❌ لا توجد عملات مضافة لمتابعة أسعارها.")
             return
 
-        import ccxt.async_support as ccxt_async
-        exchange = ccxt_async.binance()
-        price_text = "📈 *الأسعار الحية من Binance*\n\n"
+        import websockets
+        import json
         
+        price_text = "📈 *الأسعار الحية (عبر WebSocket)*\n\n"
+        streams = [f"{s.lower()}@miniTicker" for s in coins_in_db]
+        uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
+        
+        waiting_msg = await update.message.reply_text("⏳ جاري الاتصال بـ Binance وجلب الأسعار اللحظية...")
+        
+        prices_data = {}
         try:
-            # جلب جميع الأسعار دفعة واحدة لسرعة الاستجابة
-            tickers = await exchange.fetch_tickers(list(coins_in_db))
+            async with websockets.connect(uri) as ws:
+                # ننتظر قليلاً لجمع التحديثات لجميع العملات المطلوبة
+                start_time = datetime.now()
+                while len(prices_data) < len(coins_in_db) and (datetime.now() - start_time).seconds < 5:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=2)
+                    data = json.loads(msg)['data']
+                    sym = data['s']
+                    prices_data[sym] = {
+                        'price': float(data['c']),
+                        'open': float(data['o'])
+                    }
+            
             for symbol in coins_in_db:
-                if symbol in tickers:
-                    price = tickers[symbol]['last']
-                    change = tickers[symbol]['percentage']
+                if symbol in prices_data:
+                    p = prices_data[symbol]['price']
+                    o = prices_data[symbol]['open']
+                    change = ((p - o) / o) * 100
                     icon = "🟢" if change >= 0 else "🔴"
-                    price_text += f"🪙 *{symbol}*: `{price:,.4f}` USDT ({icon} {change:+.2f}%)\n"
+                    price_text += f"🪙 *{symbol}*: `{p:,.4f}` USDT ({icon} {change:+.2f}%)\n"
                 else:
-                    price_text += f"🪙 *{symbol}*: ⚠️ لا توجد بيانات حالية\n"
+                    price_text += f"🪙 *{symbol}*: ⚠️ لا توجد بيانات (حاول مرة أخرى)\n"
+            
+            print(f"✅ [LIVE PRICES] تم جلب {len(prices_data)} سعر بنجاح.")
+            await waiting_msg.delete()
+            await update.message.reply_text(price_text, parse_mode='Markdown')
+            
         except Exception as e:
-            price_text += f"⚠️ خطأ أثناء جلب الأسعار: {str(e)}"
-        finally:
-            await exchange.close()
-
-        await update.message.reply_text(price_text, parse_mode='Markdown')
+            print(f"❌ [LIVE PRICES] خطأ في WebSocket: {str(e)}")
+            await waiting_msg.edit_text(f"⚠️ خطأ في جلب الأسعار: {str(e)}\n\n_ملاحظة: قد يكون هناك حظر مؤقت على الـ IP، يرجى المحاولة لاحقاً._")
 
     # --- ✅ تقرير التدريب: مُصحح ويعالج الجداول الفارغة ---
     elif "🧠 تقرير التدريب والتعلم" in text:
