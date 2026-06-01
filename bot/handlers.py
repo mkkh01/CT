@@ -7,7 +7,6 @@ from telegram.error import Conflict, NetworkError, TimedOut
 from datetime import datetime
 from sqlalchemy import select, delete, func
 from config import ADMIN_ID
-# ✅ استيراد جميع الجداول الموجودة لديك
 from database import AsyncSessionLocal, TrackedCoin, UserConfig, PaperTrade
 from bot.keyboards import get_main_menu, get_coins_menu, get_private_trades_menu, get_timeframe_menu
 import yfinance as yf
@@ -27,11 +26,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     elif isinstance(error, (NetworkError, TimedOut)):
         return
-    if update and isinstance(update, Update) and update.effective_message:
-        try:
-            await update.effective_message.reply_text("❌ حدث خطأ بسيط، يرجى المحاولة مجدداً.")
-        except:
-            pass
+    # ✅ تم إيقاف إرسال رسائل "حدث خطأ بسيط" المزعجة للمستخدم
+    # سنعالج الأخطاء يدوياً داخل كل وظيفة لضمان رسائل واضحة
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,7 +137,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🪙 إدارة العملات المضافة:", reply_markup=get_coins_menu())
 
     elif data == 'add_coin':
-        await query.edit_message_text("✍️ أرسل رمز العملة (مثال: BTCUSDT):")
+        await query.edit_message_text("✍️ أرسل رمز العملة (مثل: BTCUSDT):")
         return NAME
 
     elif data == 'remove_coin':
@@ -171,31 +167,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=get_coins_menu(), parse_mode='Markdown')
 
     elif data == 'elite_instant_report':
-        # ✅ تقرير كامل باستخدام بيانات جدول PaperTrade
         async with AsyncSessionLocal() as session:
-            # حالة النظام
             cfg = await session.execute(select(UserConfig.elite_enabled, UserConfig.paper_capital).where(UserConfig.telegram_id == ADMIN_ID))
             cfg_data = cfg.first()
             status_sys = cfg_data[0] if cfg_data else False
             total_capital = cfg_data[1] if cfg_data else 0
 
-            # إحصائيات الصفقات الحقيقية
-            total_trades = await session.execute(select(PaperTrade).count())
-            win_trades = await session.execute(select(PaperTrade).where(PaperTrade.status == 'WON').count())
-            total_pnl = await session.execute(select(func.sum(PaperTrade.pnl)))
-            total_pnl = total_pnl.scalar() or 0
+            total_trades = await session.scalar(select(func.count(PaperTrade.id))) or 0
+            win_trades = await session.scalar(select(func.count(PaperTrade.id)).where(PaperTrade.status == 'WON')) or 0
+            total_pnl = await session.scalar(select(func.sum(PaperTrade.pnl))) or 0.0
+            count_coins = await session.scalar(select(func.count(TrackedCoin.id))) or 0
 
-            # حساب الدقة
-            accuracy = (win_trades.scalar() / total_trades.scalar()) * 100 if total_trades.scalar() > 0 else 0.0
+            # ✅ معالجة مشكلة القسمة على صفر: إذا لم توجد صفقات
+            if total_trades == 0:
+                accuracy = 0.0
+                note = "📌 ملاحظة: لا توجد صفقات منفذة حتى الآن لحساب الدقة."
+            else:
+                accuracy = (win_trades / total_trades) * 100
+                note = ""
 
         report_text = (
             "📊 *تقرير الأداء اللحظي (بيانات حقيقية)*\n\n"
             f"⚙️ حالة النظام: {'يعمل 🟢' if status_sys else 'متوقف 🔴'}\n"
             f"💵 رأس المال الأساسي: {total_capital:,.2f} USDT\n"
-            f"🪙 عدد العملات المضافة: {await session.scalar(select(TrackedCoin).count())}\n"
-            f"📈 إجمالي الصفقات المنفذة: {total_trades.scalar()}\n"
+            f"🪙 عدد العملات المضافة: {count_coins}\n"
+            f"📈 إجمالي الصفقات المنفذة: {total_trades}\n"
             f"✅ نسبة النجاح: {accuracy:.2f}%\n"
             f"💰 صافي الربح/الخسارة: {total_pnl:,.2f} USDT\n"
+            f"{note}\n"
             f"🕒 آخر تحديث: {datetime.now().strftime('%H:%M:%S')}"
         )
         await query.edit_message_text(report_text, reply_markup=get_private_trades_menu(), parse_mode='Markdown')
@@ -208,7 +207,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = update.message.text.strip()
 
-    # ✅ تنفيذ عملية الحذف
     if context.user_data.get('action') == 'delete_coin':
         try:
             coin_id = int(text)
@@ -222,7 +220,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('action', None)
         return
 
-    # --- ✅ الأسعار الحية: من قاعدة البيانات فقط ---
+    # --- ✅ الأسعار الحية: مُصحح ليعالج جميع أنواع الرموز ---
     if "📈 الأسعار الحية" in text:
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(TrackedCoin.symbol))
@@ -230,46 +228,63 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not coins_in_db:
             await update.message.reply_text("❌ لا توجد عملات مضافة.")
             return
+
         price_text = "📈 *الأسعار الحية (للعملات المضافة لديك فقط)*\n\n"
         for coin_symbol in coins_in_db:
             try:
-                yahoo_symbol = coin_symbol.replace("USDT", "-USD")
+                # ✅ طريقة ذكية لتحويل الاسم: نحذف USDT ونضع -USD
+                clean_symbol = coin_symbol.replace("USDT", "").replace("USD", "").replace(" ", "")
+                yahoo_symbol = f"{clean_symbol}-USD"
+
                 ticker = yf.Ticker(yahoo_symbol)
-                price = ticker.info.get('regularMarketPrice', 'غير متاح')
-                if isinstance(price, float):
+                info = ticker.info
+
+                # التحقق مما إذا كان السعر متاحاً
+                if 'regularMarketPrice' in info and info['regularMarketPrice']:
+                    price = info['regularMarketPrice']
                     price_text += f"🪙 {coin_symbol}: {price:,.2f} USDT 📊\n"
                 else:
-                    price_text += f"🪙 {coin_symbol}: {price} ⚠️\n"
-            except:
-                price_text += f"🪙 {coin_symbol}: خطأ في جلب السعر ❌\n"
+                    price_text += f"🪙 {coin_symbol}: ⚠️ الرمز غير مدعوم أو لا توجد بيانات لهذه العملة\n"
+
+            except Exception as e:
+                price_text += f"🪙 {coin_symbol}: ❌ خطأ في جلب البيانات (الرمز قديم أو غير مدعوم)\n"
+
         await update.message.reply_text(price_text, parse_mode='Markdown')
 
-    # --- ✅ تقرير التدريب (يستخدم جدول الصفقات) ---
+    # --- ✅ تقرير التدريب: مُصحح ويعالج الجداول الفارغة ---
     elif "🧠 تقرير التدريب والتعلم" in text:
         async with AsyncSessionLocal() as session:
-            total = await session.execute(select(PaperTrade).count())
-            wins = await session.execute(select(PaperTrade).where(PaperTrade.status == 'WON').count())
-            high_conf = await session.execute(select(PaperTrade).where(PaperTrade.confidence > 80).count())
-            accuracy = (wins.scalar() / total.scalar()) * 100 if total.scalar() > 0 else 0
+            total = await session.scalar(select(func.count(PaperTrade.id))) or 0
+            wins = await session.scalar(select(func.count(PaperTrade.id)).where(PaperTrade.status == 'WON')) or 0
+            high_conf = await session.scalar(select(func.count(PaperTrade.id)).where(PaperTrade.confidence > 80)) or 0
 
-        text_report = (
-            "🧠 *تقرير التدريب والتعلم الذكي*\n\n"
-            f"✅ دقة التنبؤ المحسوبة: {accuracy:.2f}%\n"
-            f"📚 عدد الصفقات المحللة: {total.scalar()}\n"
-            f"⭐ صفقات بثقة عالية (+80%): {high_conf.scalar()}\n"
-            f"🔄 حالة التعلم: نشط ومستمر 🧠"
-        )
+            if total == 0:
+                text_report = (
+                    "🧠 *تقرير التدريب والتعلم الذكي*\n\n"
+                    "📊 النظام جاهز ويعمل بكفاءة.\n"
+                    "📌 لم يتم تسجيل أي صفقات حتى الآن، لذا لا توجد بيانات تحليلية لعرضها.\n"
+                    "🔄 بمجرد بدء التداول، سيتم حساب الدقة والكفاءة تلقائياً."
+                )
+            else:
+                accuracy = (wins / total) * 100
+                text_report = (
+                    "🧠 *تقرير التدريب والتعلم الذكي*\n\n"
+                    f"✅ دقة التنبؤ المحسوبة: {accuracy:.2f}%\n"
+                    f"📚 عدد الصفقات المحللة: {total}\n"
+                    f"⭐ صفقات بثقة عالية (+80%): {high_conf}\n"
+                    f"🔄 حالة التعلم: نشط ومستمر 🧠"
+                )
+
         await update.message.reply_text(text_report, parse_mode='Markdown')
 
-    # --- ✅ إدارة رأس المال (يقرأ من UserConfig و TrackedCoin) ---
+    # --- ✅ إدارة رأس المال ---
     elif "💰 إدارة رأس المال" in text:
         async with AsyncSessionLocal() as session:
-            total_capital = await session.execute(select(func.sum(TrackedCoin.allocated_capital)))
-            total_capital = total_capital.scalar() or 0
+            total_capital = await session.scalar(select(func.sum(TrackedCoin.allocated_capital))) or 0
             cfg = await session.execute(select(UserConfig.risk_level, UserConfig.paper_capital).where(UserConfig.telegram_id == ADMIN_ID))
             cfg_data = cfg.first()
             risk = cfg_data[0] if cfg_data else "medium"
-            base_cap = cfg_data[1] if cfg_data else 0
+            base_cap = cfg_data[1) if cfg_data else 0
 
         text_capital = (
             "💰 *إدارة رأس المال (بيانات من قاعدة البيانات)*\n\n"
