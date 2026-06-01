@@ -69,7 +69,7 @@ class TradeMonitor:
                                 symbol = data['s']
                                 current_price = float(data['c'])
                                 
-                                # تحديث الذاكرة والملف
+                                # تحديث الذاكرة والملف بشكل لحظي
                                 self.live_prices[symbol] = {
                                     'price': current_price,
                                     'open': float(data['o']),
@@ -78,20 +78,19 @@ class TradeMonitor:
                                     'time': datetime.now().strftime('%H:%M:%S')
                                 }
                                 self._save_prices()
-                                # إضافة Log للتأكد من وصول السعر
-                                if len(self.live_prices) % 5 == 0: # تقليل عدد السجلات لتجنب الزحام
-                                    print(f"📊 [MONITOR] تحديث السعر: {symbol} -> {current_price}")
+                                # Log لحظي للأسعار (كل تحديث) للتأكد من السرعة
+                                print(f"⚡ [LIVE] {symbol}: {current_price}")
 
                                 # 3. فحص الصفقات المفتوحة لهذه العملة
                                 await self._check_open_trades(symbol, current_price)
 
-                                # 4. تشغيل التحليل الدوري (كل 5 دقائق لكل عملة لتقليل الضغط)
-                                if (datetime.now() - last_analysis_time).seconds > 300:
+                                # 4. تشغيل التحليل الدوري اللحظي (كل 60 ثانية لاقتناص الصفقات فوراً)
+                                if (datetime.now() - last_analysis_time).seconds >= 60:
                                     if ai:
-                                        print(f"🧠 [MONITOR] بدء جولة التحليل الدوري...")
-                                        for s in symbols:
-                                            await ai.analyze_and_trade(s)
-                                            await asyncio.sleep(1)
+                                        print(f"🧠 [MONITOR] بدء جولة مراجعة الاستراتيجيات والبحث عن صفقات...")
+                                        # تشغيل التحليل لكل العملات بشكل متوازٍ لسرعة التنفيذ
+                                        tasks = [ai.analyze_and_trade(s) for s in symbols]
+                                        await asyncio.gather(*tasks)
                                     last_analysis_time = datetime.now()
 
                             except asyncio.TimeoutError:
