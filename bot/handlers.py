@@ -261,56 +261,51 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('action', None)
         return
 
-    # --- ✅ الأسعار الحية: تم التحديث لاستخدام REST API مع معالجة ذكية لتجنب الحظر وضمان العمل على Render ---
+    # --- ✅ الأسعار الحية: تم التحديث لقراءة البيانات من بث WebSocket المركزي (أسرع وأكثر استقراراً) ---
     if "📈 الأسعار الحية" in text:
-        print(f"📊 [LIVE PRICES] طلب جلب الأسعار من المستخدم {update.effective_user.id}")
+        import json
+        import os
+        CACHE_FILE = "/tmp/live_prices.json"
+        
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(TrackedCoin.symbol))
             coins_in_db = result.scalars().all()
         
         if not coins_in_db:
-            print("⚠️ [LIVE PRICES] لا توجد عملات مضافة.")
             await update.message.reply_text("❌ لا توجد عملات مضافة لمتابعة أسعارها.")
             return
 
-        import ccxt.async_support as ccxt_async
-        # استخدام وكيل مستخدم (User-Agent) مختلف لتجنب بعض قيود الـ IP
-        exchange = ccxt_async.binance({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
-        })
+        price_text = "📈 *الأسعار الحية (بث مباشر WebSocket)*\n\n"
         
-        price_text = "📈 *الأسعار الحية (Binance REST API)*\n\n"
-        waiting_msg = await update.message.reply_text("⏳ جاري جلب الأسعار من Binance...")
-        
-        try:
-            # جلب الأسعار دفعة واحدة (أكثر كفاءة وأقل عرضة للحظر)
-            tickers = await exchange.fetch_tickers(list(coins_in_db))
-            
-            for symbol in coins_in_db:
-                if symbol in tickers:
-                    data = tickers[symbol]
-                    last = data['last']
-                    change = data['percentage']
-                    icon = "🟢" if change >= 0 else "🔴"
-                    price_text += f"🪙 *{symbol}*: `{last:,.4f}` USDT ({icon} {change:+.2f}%)\n"
+        # قراءة الأسعار من الملف الذي يحدثه الـ Monitor باستمرار
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, 'r') as f:
+                    live_data = json.load(f)
+                
+                found_any = False
+                for symbol in coins_in_db:
+                    if symbol in live_data:
+                        d = live_data[symbol]
+                        p = d['price']
+                        o = d['open']
+                        change = ((p - o) / o) * 100
+                        icon = "🟢" if change >= 0 else "🔴"
+                        price_text += f"🪙 *{symbol}*: `{p:,.4f}` USDT ({icon} {change:+.2f}%)\n"
+                        found_any = True
+                    else:
+                        price_text += f"🪙 *{symbol}*: ⏳ جاري الاتصال بالبث...\n"
+                
+                if not found_any:
+                    price_text = "⏳ جاري بدء بث الأسعار من باينانس... يرجى المحاولة بعد ثوانٍ قليلة."
                 else:
-                    price_text += f"🪙 *{symbol}*: ⚠️ لا توجد بيانات\n"
-            
-            print(f"✅ [LIVE PRICES] تم جلب الأسعار بنجاح لـ {len(coins_in_db)} عملة.")
-            await waiting_msg.delete()
-            await update.message.reply_text(price_text, parse_mode='Markdown')
-            
-        except Exception as e:
-            print(f"❌ [LIVE PRICES] خطأ في جلب الأسعار: {str(e)}")
-            error_msg = str(e)
-            if "418" in error_msg or "1003" in error_msg:
-                final_err = "⚠️ تم حظر عنوان IP مؤقتاً من Binance. يرجى المحاولة بعد 15 دقيقة."
-            else:
-                final_err = f"⚠️ خطأ: {error_msg}"
-            await waiting_msg.edit_text(final_err)
-        finally:
-            await exchange.close()
+                    price_text += f"\n🕒 _آخر تحديث: {datetime.now().strftime('%H:%M:%S')}_"
+            except:
+                price_text = "⚠️ خطأ في قراءة بيانات البث. تأكد من أن النظام يعمل."
+        else:
+            price_text = "📡 جاري تشغيل رادار الأسعار... يرجى الانتظار ثوانٍ قليلة ثم اضغط على الزر مرة أخرى."
+
+        await update.message.reply_text(price_text, parse_mode='Markdown')
 
     # --- ✅ تقرير التدريب: مُصحح ويعالج الجداول الفارغة ---
     elif "🧠 تقرير التدريب والتعلم" in text:
