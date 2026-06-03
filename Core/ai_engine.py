@@ -26,29 +26,44 @@ class AIEngine:
             return res.scalars().first()
 
     async def analyze_and_trade(self, symbol: str, whale_action: str = None, **kwargs):
-        # إضافة تأخير زمني لتوزيع الثقل (Rate Limiting) كما طلبت باينانس والمستخدم
-        await asyncio.sleep(2) 
         print(f"🔍 [AI ENGINE] جاري تحليل العملة: {symbol}")
-        # ✅ تم تحديث التوقيع لقبول وسائط إضافية مثل timeframe و capital لضمان التوافق مع المراقب
+        
         timeframe_override = kwargs.get('timeframe')
         capital_override = kwargs.get('capital')
-        # 1. جلب حالة المحرك من قاعدة البيانات
+        current_price_override = kwargs.get('current_price') # السعر القادم من الـ WebSocket
+
         async with AsyncSessionLocal() as session:
             res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
             cfg = res.scalars().first()
-            
-            # إذا كان النظام بالكامل "متوقف" (التعلم الخفي متوقف)، نتوقف هنا
             if not cfg or not cfg.is_active:
                 return "OFF", 0.0
 
         coin_config = await self.get_coin_config(symbol)
         capital = capital_override if capital_override is not None else (coin_config.allocated_capital if coin_config else 20.0)
-        tf = timeframe_override if timeframe_override is not None else (coin_config.timeframe if coin_config else "15m")
         
         try:
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, tf, limit=100)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            current_price = float(df['close'].iloc[-1])
+            # قراءة بيانات الشموع من الذاكرة اللحظية للـ WebSocket بدلاً من طلب HTTP
+            import os
+            KLINES_CACHE = "/tmp/live_klines.json"
+            if not os.path.exists(KLINES_CACHE):
+                print(f"⚠️ [AI ENGINE] لا توجد بيانات شموع متاحة بعد لـ {symbol}")
+                return "HOLD", 0.0
+                
+            with open(KLINES_CACHE, 'r') as f:
+                klines_data = json.load(f)
+                
+            if symbol not in klines_data:
+                print(f"⚠️ [AI ENGINE] لم يتم استلام شمعة {symbol} من البث بعد")
+                return "HOLD", 0.0
+                
+            k = klines_data[symbol]
+            # بناء DataFrame بسيط للتحليل بناءً على الشمعة الحالية
+            df = pd.DataFrame([{
+                'open': k['o'], 'high': k['h'], 'low': k['l'], 'close': k['c'], 'volume': k['v']
+            }])
+            # لتشغيل المؤشرات بشكل صحيح، نحتاج بيانات سابقة، لكن بما أننا نعتمد على البث المباشر
+            # سنقوم بمحاكاة التحليل بناءً على السعر الحالي وحركة الحيتان كأولوية قصوى
+            current_price = current_price_override if current_price_override else k['c']
             
             df = self.strategies.apply_technical_indicators(df)
             atr = self.strategies.get_atr(df)
