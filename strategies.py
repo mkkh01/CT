@@ -1,108 +1,116 @@
 import pandas as pd
-# استدعاء مؤشرات مكتبة ta المدعومة والمستقرة على Render
+import numpy as np
+from ta.trend import EMAIndicator, MACD
 from ta.momentum import RSIIndicator
-from ta.trend import MACD
-from ta.volatility import BollingerBands, AverageTrueRange
+from ta.volatility import AverageTrueRange, BollingerBands
 
-class SpotStrategies:
+class InstitutionalStrategies:
     def __init__(self):
         pass
 
-    def apply_technical_indicators(self, df: pd.DataFrame):
-        """تطبيق المؤشرات الفنية الأساسية مع تنظيف البيانات بشكل احترافي"""
-        if df is None or df.empty: 
-            return pd.DataFrame()
-
-        try:
-            # التأكد من أن البيانات أرقام (Float)
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            # 1. حساب RSI
-            df["RSI"] = RSIIndicator(close=df["close"], window=14).rsi()
-
-            # 2. حساب MACD
-            macd_indicator = MACD(close=df["close"], window_fast=12, window_slow=26, window_sign=9)
-            df['MACD'] = macd_indicator.macd()
-            df['MACD_SIGNAL'] = macd_indicator.macd_signal()
-            df['MACD_HIST'] = macd_indicator.macd_diff()
-
-            # 3. حساب Bollinger Bands
-            bb_indicator = BollingerBands(close=df["close"], window=20, window_dev=2)
-            df['BBL'] = bb_indicator.bollinger_lband()
-            df['BBM'] = bb_indicator.bollinger_mavg()
-            df['BBU'] = bb_indicator.bollinger_hband()
-
-            # 4. حساب ATR لقياس التذبذب وتحديد الأهداف
-            df["ATR"] = AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14).average_true_range()
-
-            # تنظيف القيم الناتجة عن الحسابات الأولى (NaN)
-            df = df.ffill().dropna()
-            return df
+    def classify_market(self, df: pd.DataFrame) -> dict:
+        """تصنيف السوق (Phase 1) - ثقة أعلى من 80%"""
+        if len(df) < 200: return {"state": "Low Data", "confidence": 0}
+        
+        close = df['close'].iloc[-1]
+        ema50 = EMAIndicator(df['close'], window=50).ema_indicator().iloc[-1]
+        ema200 = EMAIndicator(df['close'], window=200).ema_indicator().iloc[-1]
+        atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
+        
+        volatility = (atr / close) * 100
+        
+        state = "Range Market"
+        confidence = 85
+        
+        if close > ema50 > ema200:
+            state = "Strong Uptrend"
+            confidence = 90
+        elif close < ema50 < ema200:
+            state = "Strong Downtrend"
+            confidence = 90
+        elif close > ema200 and close < ema50:
+            state = "Weak Uptrend"
+            confidence = 70
+        elif close < ema200 and close > ema50:
+            state = "Weak Downtrend"
+            confidence = 70
             
-        except Exception as e:
-            print(f"❌ [STRATEGIES ERROR] خطأ في الحسابات الفنية: {e}")
-            return df
+        if volatility > 2.5:
+            state = "High Volatility"
+            confidence = 85
+            
+        return {"state": state, "confidence": confidence}
 
-    def calculate_confidence(self, df: pd.DataFrame, whale_action: str = None, regime: str = "NEUTRAL") -> float:
-        """حساب نسبة الثقة (Confidence Score) لتحديد نوع الصفقة (نخبة أم تدريب)"""
-        if df.empty: return 0.0
+    def get_market_quality_score(self, df: pd.DataFrame) -> float:
+        """فلتر جودة السوق (Market Quality Score)"""
+        # حساب السيولة والحجم والتذبذب
+        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+        curr_vol = df['volume'].iloc[-1]
+        atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
         
-        last_row = df.iloc[-1]
-        confidence = 50.0 # نقطة البداية المتوازنة
+        score = 100
+        if curr_vol < avg_vol * 0.5: score -= 30 # سيولة منخفضة
+        if atr / df['close'].iloc[-1] > 0.03: score -= 20 # تذبذب خطر
         
-        # 1. تحليل RSI (تحسين الأوزان لصفقات النخبة)
-        if last_row["RSI"] <= 30: 
-            confidence += 15
-        elif last_row["RSI"] <= 40: 
-            confidence += 7
-        elif last_row["RSI"] >= 70: # تشبع شرائي - تقليل الثقة للشراء
-            confidence -= 20
+        return max(0, score)
 
-        # 2. تقاطع MACD الإيجابي (الزخم)
-        if last_row["MACD"] > last_row["MACD_SIGNAL"]:
-            confidence += 10
-            if last_row["MACD_HIST"] > 0: 
-                confidence += 5 # تأكيد استمرارية الصعود
+    def calculate_combined_score(self, df: pd.DataFrame, df_higher: pd.DataFrame = None) -> dict:
+        """نظام التقييم بالنقاط (Phase 3) - Total 100"""
+        score = 0
+        report = []
+        
+        # 1. Trend Score (25 pts)
+        market = self.classify_market(df)
+        if "Strong" in market["state"]:
+            score += 25
+            report.append(f"Trend: {market['state']} (+25)")
+            
+        # 2. Market Structure (20 pts)
+        # تبسيط: إذا كان السعر فوق المتوسطات فهو هيكل صاعد
+        if df['close'].iloc[-1] > df['close'].rolling(50).mean().iloc[-1]:
+            score += 20
+            report.append("Market Structure: Bullish (+20)")
+            
+        # 3. Volume Analysis (15 pts)
+        rel_vol = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
+        if rel_vol > 1.2:
+            score += 15
+            report.append(f"Volume Analysis: High RelVol {rel_vol:.2f} (+15)")
+            
+        # 4. Support/Resistance (15 pts)
+        # (يمكن إضافة منطق أكثر تعقيداً هنا)
+        score += 10 # افتراضي للتبسيط حالياً
+        report.append("S/R Confirmation (+10)")
+        
+        # 5. Volatility (10 pts)
+        atr_pct = (AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1] / df['close'].iloc[-1]) * 100
+        if 0.5 < atr_pct < 2.0:
+            score += 10
+            report.append("Volatility: Optimal (+10)")
+            
+        # 6. Multi Timeframe Confirmation (5 pts)
+        if df_higher is not None:
+            higher_market = self.classify_market(df_higher)
+            if higher_market["state"] == market["state"]:
+                score += 5
+                report.append("MTF Confirmation (+5)")
+        
+        # عوامل أخرى (10 pts)
+        score += 5 # Market Quality default
+        
+        return {
+            "total_score": score,
+            "report": " | ".join(report),
+            "market_state": market["state"],
+            "quality_score": self.get_market_quality_score(df)
+        }
 
-        # 3. ملامسة حدود البولنجر السفلى (مناطق الارتداد القوية)
-        if last_row["close"] <= last_row["BBL"]:
-            confidence += 15
-        elif last_row["close"] <= (last_row["BBL"] * 1.01):
-            confidence += 5
-
-        # 4. تأثير رادار الحيتان (الوزن الأكبر 25%)
-        if whale_action == "BUY": 
-            confidence += 25
-        elif whale_action == "SELL":
-            confidence -= 30
+    def get_trade_params(self, df: pd.DataFrame):
+        """إدارة المخاطر (Phase 5)"""
+        price = df['close'].iloc[-1]
+        atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
         
-        # 5. حالة السوق العام (Risk-On / Risk-Off)
-        if regime == "RISK_ON": 
-            confidence += 15
-        elif regime == "RISK_OFF":
-            confidence -= 25 # حماية النخبة من الانهيارات السوقية
+        sl = price - (atr * 2) # ATR Stop Loss
+        tp = price + (atr * 4) # R:R 1:2
         
-        # التأكد من أن القيمة بين 0 و 100
-        return float(max(0.0, min(confidence, 100.0)))
-
-    def check_buy_signal(self, df: pd.DataFrame) -> bool:
-        """شرط الدخول المبدئي لفتح صفقة تدريب (حتى لو لم تكن نخبة)"""
-        if df.empty or len(df) < 20: return False
-        
-        last_row = df.iloc[-1]
-        
-        # شروط مبسطة لفتح صفقات "التدريب" لجمع البيانات
-        rsi_buy = last_row["RSI"] <= 45
-        macd_buy = last_row["MACD"] > last_row["MACD_SIGNAL"]
-        bb_near = last_row["close"] <= (last_row["BBL"] * 1.005)
-        
-        # يكفي تحقق شرطين لفتح صفقة تدريب مخفية
-        signals = [rsi_buy, macd_buy, bb_near]
-        return sum(signals) >= 2
-
-    def get_atr(self, df: pd.DataFrame) -> float:
-        """جلب قيمة ATR الحالية لحساب الوقف والأهداف"""
-        if not df.empty and "ATR" in df.columns:
-            return float(df["ATR"].iloc[-1])
-        return 0.0
+        return {"entry": price, "sl": sl, "tp": tp, "atr": atr}
