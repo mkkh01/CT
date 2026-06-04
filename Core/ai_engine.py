@@ -38,25 +38,44 @@ class AIEngine:
             coin = coin_res.scalars().first()
             if not coin or not coin.enabled: return
 
-            # 2. جلب بيانات تاريخية كافية للتحليل (Institutional Grade)
-            # المؤشرات المؤسسية تحتاج على الأقل 200 شمعة لحساب EMA200 بدقة
+            # 2. جلب البيانات من الذاكرة اللحظية (Institutional Grade via WebSocket Only)
+            # نعتمد على البيانات المخزنة في الذاكرة والتي يتم تحديثها بواسطة WebSocket
+            # لمنع حظر IP نهائياً (418 Error)
             try:
-                ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
-                if not ohlcv or len(ohlcv) < 200:
-                    print(f"⚠️ [SYSTEM] بيانات غير كافية لـ {symbol}")
-                    return
+                HISTORICAL_CACHE = f"/tmp/hist_{symbol}_{coin.timeframe}.json"
+                
+                # إذا لم توجد بيانات تاريخية مخزنة، نجلبها مرة واحدة فقط (مع تأخير لمنع الحظر)
+                if not os.path.exists(HISTORICAL_CACHE):
+                    print(f"📥 [SYSTEM] جلب بيانات تاريخية أولية لـ {symbol}...")
+                    await asyncio.sleep(2) # تأخير أمان
+                    ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
+                    with open(HISTORICAL_CACHE, 'w') as f:
+                        json.dump(ohlcv, f)
+                else:
+                    with open(HISTORICAL_CACHE, 'r') as f:
+                        ohlcv = json.load(f)
+                
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
-                # تحديث آخر شمعة بالسعر اللحظي من WebSocket إذا توفر
+                # تحديث الشمعة الأخيرة والبيانات التاريخية بالبيانات اللحظية من WebSocket
                 KLINES_CACHE = "/tmp/live_klines.json"
                 if os.path.exists(KLINES_CACHE):
                     with open(KLINES_CACHE, 'r') as f:
                         klines_data = json.load(f)
                     if symbol in klines_data:
                         k = klines_data[symbol]
+                        # إذا كانت الشمعة الحالية قد أغلقت (x=True)، نضيفها للبيانات التاريخية
+                        if k.get('x', False):
+                            new_row = [datetime.now().timestamp()*1000, k['o'], k['h'], k['l'], k['c'], k['v']]
+                            ohlcv.append(new_row)
+                            if len(ohlcv) > 300: ohlcv.pop(0) # الحفاظ على حجم البيانات
+                            with open(HISTORICAL_CACHE, 'w') as f:
+                                json.dump(ohlcv, f)
+                        
+                        # تحديث الشمعة الأخيرة دائماً للسعر اللحظي
                         df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
             except Exception as e:
-                print(f"⚠️ [SYSTEM] خطأ في جلب بيانات {symbol}: {e}")
+                print(f"⚠️ [SYSTEM] خطأ في معالجة بيانات {symbol}: {e}")
                 return
             
             # 3. تحليل الإطار الزمني الأعلى (Filter)
