@@ -38,16 +38,26 @@ class AIEngine:
             coin = coin_res.scalars().first()
             if not coin or not coin.enabled: return
 
-            # 2. جلب البيانات من الذاكرة اللحظية (WebSocket)
-            KLINES_CACHE = "/tmp/live_klines.json"
-            if not os.path.exists(KLINES_CACHE): return
-            
-            with open(KLINES_CACHE, 'r') as f:
-                klines_data = json.load(f)
-            
-            if symbol not in klines_data: return
-            k = klines_data[symbol]
-            df = pd.DataFrame([{'open': k['o'], 'high': k['h'], 'low': k['l'], 'close': k['c'], 'volume': k['v']}])
+            # 2. جلب بيانات تاريخية كافية للتحليل (Institutional Grade)
+            # المؤشرات المؤسسية تحتاج على الأقل 200 شمعة لحساب EMA200 بدقة
+            try:
+                ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
+                if not ohlcv or len(ohlcv) < 200:
+                    print(f"⚠️ [SYSTEM] بيانات غير كافية لـ {symbol}")
+                    return
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                
+                # تحديث آخر شمعة بالسعر اللحظي من WebSocket إذا توفر
+                KLINES_CACHE = "/tmp/live_klines.json"
+                if os.path.exists(KLINES_CACHE):
+                    with open(KLINES_CACHE, 'r') as f:
+                        klines_data = json.load(f)
+                    if symbol in klines_data:
+                        k = klines_data[symbol]
+                        df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
+            except Exception as e:
+                print(f"⚠️ [SYSTEM] خطأ في جلب بيانات {symbol}: {e}")
+                return
             
             # 3. تحليل الإطار الزمني الأعلى (Filter)
             df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)

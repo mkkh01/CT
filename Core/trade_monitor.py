@@ -48,10 +48,20 @@ class TradeMonitor:
                     async with websockets.connect(uri) as ws:
                         last_analysis_time = datetime.now()
                         while self.is_running:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=5)
-                            payload = json.loads(msg)
-                            data = payload['data']
-                            symbol = data['s']
+                            # التحقق من وجود عملات جديدة تمت إضافتها لإعادة الاتصال
+                            async with AsyncSessionLocal() as check_session:
+                                current_symbols = [c.symbol for c in (await check_session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))).scalars().all()]
+                                if set(current_symbols) != set(symbols):
+                                    print("🔄 [MONITOR] تم اكتشاف تغيير في العملات، إعادة تشغيل البث...")
+                                    break # سيخرج من الحلقة الداخلية ويعيد الاتصال بالقائمة الجديدة
+
+                            try:
+                                msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                                payload = json.loads(msg)
+                                data = payload['data']
+                                symbol = data['s']
+                            except asyncio.TimeoutError:
+                                continue
                             
                             if 'miniTicker' in payload['stream']:
                                 price = float(data['c'])
@@ -66,7 +76,7 @@ class TradeMonitor:
                             if (datetime.now() - last_analysis_time).seconds >= 60:
                                 for s in symbols:
                                     await ai.analyze_and_trade(s)
-                                    await asyncio.sleep(0.1)
+                                    await asyncio.sleep(1) # تأخير زمني لتجنب حظر باينانس (Rate Limit)
                                 last_analysis_time = datetime.now()
 
             except Exception as e:

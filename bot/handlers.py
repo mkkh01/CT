@@ -34,7 +34,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update): return
     text = update.message.text
+    action = context.user_data.get('action')
     
+    if action:
+        await process_text_input(update, context)
+        return
+
     if text == "📈 الأسعار المباشرة":
         await show_live_prices(update, context)
     elif text == "➕ إضافة عملة":
@@ -42,9 +47,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADD_SYMBOL
     elif text == "➖ حذف عملة":
         await show_remove_coin_list(update, context)
+    elif text == "⚙️ تعديل العملة":
+        await show_edit_coin_list(update, context)
     elif text == "💰 إدارة رأس المال":
         await show_capital_mgmt(update, context)
-    elif text == "📊 الإحصائيات":
+    elif text in ["📊 الإحصائيات", "🎯 تقرير الأداء"]:
         await show_statistics(update, context)
     elif text == "📋 سجل الصفقات":
         await show_trade_history(update, context)
@@ -56,6 +63,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await toggle_trading(update, context, False)
     elif text == "🧠 تقرير الذكاء الاصطناعي":
         await show_ai_report(update, context)
+
+async def show_edit_coin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async with AsyncSessionLocal() as session:
+        coins = (await session.execute(select(TrackedCoin))).scalars().all()
+        if not coins:
+            await update.message.reply_text("❌ لا توجد عملات لتعديلها.")
+            return
+        msg = "⚙️ *اختر العملة لتعديل إعداداتها:*\n━━━━━━━━━━━━━━\n"
+        for c in coins:
+            msg += f"🪙 {c.symbol} | الرأس مال: {c.capital} | الإطار: {c.timeframe}\n"
+        await update.message.reply_text(msg + "\nأرسل رمز العملة للبدء بالتعديل:", parse_mode='Markdown')
+        context.user_data['action'] = 'edit_coin_start'
+
+async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action = context.user_data.get('action')
+    text = update.message.text.strip().upper()
+
+    if action == 'delete_coin':
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(TrackedCoin).where(TrackedCoin.symbol == text))
+            await session.commit()
+        await update.message.reply_text(f"✅ تم حذف {text} بنجاح.")
+        context.user_data.pop('action')
+    elif action == 'edit_coin_start':
+        context.user_data['edit_target'] = text
+        await update.message.reply_text(f"💰 أدخل رأس المال الجديد لـ {text}:")
+        context.user_data['action'] = 'edit_coin_capital'
+    elif action == 'edit_coin_capital':
+        cap = float(text)
+        symbol = context.user_data['edit_target']
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
+            coin = res.scalars().first()
+            if coin:
+                coin.capital = cap
+                await session.commit()
+        await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
+        context.user_data.clear()
 
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     PRICES_CACHE = "/tmp/live_prices.json"
