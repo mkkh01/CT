@@ -19,10 +19,24 @@ class AIEngine:
         """جلب بيانات الإطار الزمني الأعلى للفلترة (Phase 2)"""
         tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
         higher_tf = tf_map.get(current_tf, "1d")
+        
+        # استخدام التخزين المؤقت للأطر الزمنية العالية لتقليل الطلبات
+        HTF_CACHE = f"/tmp/htf_{symbol}_{higher_tf}.json"
         try:
+            if os.path.exists(HTF_CACHE):
+                # إذا كان الملف موجوداً وتم تحديثه مؤخراً (أقل من 30 دقيقة)
+                if (datetime.now().timestamp() - os.path.getmtime(HTF_CACHE)) < 1800:
+                    with open(HTF_CACHE, 'r') as f:
+                        ohlcv = json.load(f)
+                        return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+            await asyncio.sleep(1) # تأخير أمان إضافي
             ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
+            with open(HTF_CACHE, 'w') as f:
+                json.dump(ohlcv, f)
             return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        except:
+        except Exception as e:
+            print(f"⚠️ [SYSTEM] HTF Fetch Error for {symbol}: {e}")
             return None
 
     async def analyze_and_trade(self, symbol: str, **kwargs):

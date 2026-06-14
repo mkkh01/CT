@@ -196,14 +196,22 @@ async def process_add_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ADD_CAPITAL
 
 async def process_add_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['new_coin_capital'] = float(update.message.text)
-    await update.message.reply_text("⚠️ أدخل نسبة المخاطرة (مثال: 1):")
-    return ADD_RISK
+    try:
+        context.user_data['new_coin_capital'] = float(update.message.text)
+        await update.message.reply_text("⚠️ أدخل نسبة المخاطرة (مثال: 1):")
+        return ADD_RISK
+    except ValueError:
+        await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة لرأس المال (مثال: 100).")
+        return ADD_CAPITAL
 
 async def process_add_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['new_coin_risk'] = float(update.message.text)
-    await update.message.reply_text("⏱ اختر الإطار الزمني:", reply_markup=get_timeframe_menu())
-    return ADD_TF
+    try:
+        context.user_data['new_coin_risk'] = float(update.message.text)
+        await update.message.reply_text("⏱ اختر الإطار الزمني:", reply_markup=get_timeframe_menu())
+        return ADD_TF
+    except ValueError:
+        await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة لنسبة المخاطرة (مثال: 1).")
+        return ADD_RISK
 
 async def process_add_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
