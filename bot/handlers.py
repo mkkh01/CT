@@ -138,7 +138,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_performance_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يعرض تقرير آخر 10 صفقات حقيقية"""
+    """يعرض تقرير مفصل لآخر 10 صفقات حقيقية تشمل الدخول والوقف والهدف"""
     async with AsyncSessionLocal() as session:
         recent_trades = (await session.execute(select(LiveTrade).order_by(LiveTrade.timestamp.desc()).limit(10))).scalars().all()
         
@@ -146,11 +146,18 @@ async def show_performance_report(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text("❌ لا توجد بيانات صفقات متاحة حالياً.")
             return
 
-        report_msg = "🎯 *تقرير آخر 10 صفقات حقيقية*\n━━━━━━━━━━━━━━\n"
+        report_msg = "🎯 *تقرير تفصيلي لآخر 10 صفقات*\n"
         for t in recent_trades:
             status_icon = "⏳" if t.status == "OPEN" else ("✅" if t.status == "WON" else "❌")
-            pnl_text = f"PnL: `{t.pnl:.2f}`" if t.status != "OPEN" else "في انتظار الإغلاق"
-            report_msg += f"{status_icon} {t.symbol} | {pnl_text} | {t.timestamp.strftime('%m-%d %H:%M')}\n"
+            pnl_info = f"💰 الربح/الخسارة: `{t.pnl:.2f} USDT`" if t.status != "OPEN" else "⏳ الحالة: *مفتوحة*"
+            
+            report_msg += (f"━━━━━━━━━━━━━━\n"
+                           f"{status_icon} *العملة: #{t.symbol}*\n"
+                           f"📅 التاريخ: `{t.timestamp.strftime('%Y-%m-%d %H:%M')}`\n"
+                           f"📥 الدخول: `{t.entry_price}`\n"
+                           f"🛡️ الوقف: `{t.stop_loss}`\n"
+                           f"🏁 الهدف: `{t.take_profit}`\n"
+                           f"{pnl_info}\n")
         
         await update.message.reply_text(report_msg, parse_mode='Markdown')
 
