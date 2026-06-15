@@ -98,13 +98,19 @@ class AIEngine:
             # 4. نظام التقييم (Scoring Engine)
             analysis = self.strategies.calculate_combined_score(df, df_higher)
             total_score = analysis["total_score"]
+            params = self.strategies.get_trade_params(df)
             
             # تسجيل صفقة ظل (Shadow Trade) دائماً للتعلم (Phase 8)
+            # نقوم بتسجيل الأهداف وسعر الدخول حتى لصفقات الظل لمتابعة أدائها
             new_shadow = ShadowTrade(
                 symbol=symbol,
+                entry_price=params["entry"],
+                stop_loss=params["sl"],
+                take_profit=params["tp"],
                 indicators_snapshot=analysis,
                 market_state=analysis["market_state"],
-                score=total_score
+                score=total_score,
+                status="OPEN"
             )
             session.add(new_shadow)
             await session.commit()

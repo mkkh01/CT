@@ -152,13 +152,33 @@ async def toggle_trading(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
 
 async def show_ai_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
+        # جلب آخر 5 صفقات ظل مفتوحة أو مغلقة حديثاً
         shadows = (await session.execute(select(ShadowTrade).order_by(ShadowTrade.timestamp.desc()).limit(5))).scalars().all()
+        
+        # حساب إحصائيات التعلم الكلية
+        total_shadows = (await session.execute(select(func.count(ShadowTrade.id)))).scalar()
+        won_shadows = (await session.execute(select(func.count(ShadowTrade.id)).where(ShadowTrade.status == "WON"))).scalar()
+        lost_shadows = (await session.execute(select(func.count(ShadowTrade.id)).where(ShadowTrade.status == "LOST"))).scalar()
+        
         if not shadows:
-            await update.message.reply_text("🧠 لا توجد بيانات تعلم كافية.")
+            await update.message.reply_text("🧠 لا توجد بيانات تعلم كافية حالياً.")
             return
-        msg = "🧠 *تقرير الذكاء الاصطناعي والتعلم*\n━━━━━━━━━━━━━━\n"
+            
+        win_rate = (won_shadows / (won_shadows + lost_shadows) * 100) if (won_shadows + lost_shadows) > 0 else 0
+        
+        msg = "🧠 *تقرير أداء التعلم الخفي (Shadow)*\n"
+        msg += f"📊 نسبة نجاح التعلم: `{win_rate:.1f}%`\n"
+        msg += f"✅ صفقات رابحة: {won_shadows} | ❌ خاسرة: {lost_shadows}\n"
+        msg += "━━━━━━━━━━━━━━\n"
+        
         for s in shadows:
-            msg += f"🪙 {s.symbol} | Score: {s.score}/100 | State: {s.market_state}\n"
+            status_icon = "⏳" if s.status == "OPEN" else ("✅" if s.status == "WON" else "❌")
+            msg += f"{status_icon} {s.symbol} | Score: {s.score}/100\n"
+            msg += f"   └ الحالة: {s.market_state}\n"
+            if s.status != "OPEN":
+                msg += f"   └ النتيجة: {'ربح' if s.status == 'WON' else 'خسارة'}\n"
+            msg += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            
         await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_trade_history(update: Update, context: ContextTypes.DEFAULT_TYPE):

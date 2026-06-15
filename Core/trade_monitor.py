@@ -4,7 +4,7 @@ import websockets
 import os
 from datetime import datetime
 from sqlalchemy import select
-from database import AsyncSessionLocal, LiveTrade, TrackedCoin, UserConfig
+from database import AsyncSessionLocal, LiveTrade, ShadowTrade, TrackedCoin, UserConfig
 from config import ADMIN_ID
 
 PRICES_CACHE_FILE = "/tmp/live_prices.json"
@@ -86,6 +86,19 @@ class TradeMonitor:
     async def _check_live_trades(self, symbol, price):
         """مراقبة الصفقات الحقيقية (Phase 4)"""
         async with AsyncSessionLocal() as session:
+            # --- مراقبة صفقات الظل (التعلم الخفي) ---
+            shadow_res = await session.execute(select(ShadowTrade).where((ShadowTrade.symbol == symbol) & (ShadowTrade.status == "OPEN")))
+            for shadow in shadow_res.scalars().all():
+                if price >= shadow.take_profit:
+                    shadow.status = "WON"
+                    shadow.result = "WIN"
+                    shadow.closed_at = datetime.utcnow()
+                elif price <= shadow.stop_loss:
+                    shadow.status = "LOST"
+                    shadow.result = "LOSS"
+                    shadow.closed_at = datetime.utcnow()
+            
+            # --- مراقبة الصفقات الحقيقية (بدون تغيير) ---
             res = await session.execute(select(LiveTrade).where((LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")))
             for trade in res.scalars().all():
                 closed = False
@@ -121,3 +134,5 @@ class TradeMonitor:
                     if self.bot:
                         icon = "✅" if trade.status == "WON" else "❌"
                         await self.bot.send_message(self.chat_id, f"{icon} *صفقة مغلقة*\n{symbol}: {trade.pnl:.2f} USDT")
+            
+            await session.commit() # حفظ تحديثات صفقات الظل والصفقات الحقيقية

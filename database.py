@@ -73,11 +73,16 @@ class ShadowTrade(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(nullable=False)
+    entry_price: Mapped[float] = mapped_column(default=0.0)
+    stop_loss: Mapped[Optional[float]] = mapped_column(nullable=True)
+    take_profit: Mapped[Optional[float]] = mapped_column(nullable=True)
     indicators_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     market_state: Mapped[Optional[str]] = mapped_column(Text)
     score: Mapped[float] = mapped_column(default=0.0)
+    status: Mapped[str] = mapped_column(default="OPEN") # OPEN, WON, LOST
     result: Mapped[Optional[str]] = mapped_column(Text) # WIN / LOSS
     timestamp: Mapped[datetime] = mapped_column(server_default=func.now())
+    closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
 async def init_db():
     async with engine.begin() as conn:
