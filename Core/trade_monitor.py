@@ -2,37 +2,29 @@ import asyncio
 import json
 import websockets
 import os
-import redis
 from datetime import datetime
 from sqlalchemy import select
-from database import AsyncSessionLocal, LiveTrade, ShadowTrade, TrackedCoin, UserConfig
-from config import ADMIN_ID, REDIS_URL
+from database import AsyncSessionLocal, LiveTrade, TrackedCoin, UserConfig
+from config import ADMIN_ID
 
-# إعداد اتصال Redis
-redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+PRICES_CACHE_FILE = "/tmp/live_prices.json"
+KLINES_CACHE_FILE = "/tmp/live_klines.json"
 
 class TradeMonitor:
     def __init__(self, bot=None):
         self.bot = bot
         self.chat_id = ADMIN_ID
         self.is_running = False
-        self.live_prices = self._load_data("live_prices")
-        self.live_klines = self._load_data("live_klines")
+        self.live_prices = {}
+        self.live_klines = {}
 
     def _save_data(self):
         try:
-            redis_client.set('live_prices', json.dumps(self.live_prices))
-            redis_client.set('live_klines', json.dumps(self.live_klines))
-        except Exception as e:
-            print(f"⚠️ [REDIS] Error saving data: {e}")
-
-    def _load_data(self, key):
-        try:
-            data = redis_client.get(key)
-            return json.loads(data) if data else {}
-        except Exception as e:
-            print(f"⚠️ [REDIS] Error loading data for {key}: {e}")
-            return {}
+            with open(PRICES_CACHE_FILE, 'w') as f:
+                json.dump(self.live_prices, f)
+            with open(KLINES_CACHE_FILE, 'w') as f:
+                json.dump(self.live_klines, f)
+        except: pass
 
     async def check_prices(self):
         from Core.ai_engine import AIEngine
@@ -66,8 +58,8 @@ class TradeMonitor:
                             try:
                                 msg = await asyncio.wait_for(ws.recv(), timeout=5)
                                 payload = json.loads(msg)
-                                data = payload["data"]
-                                symbol = data["s"]
+                                data = payload['data']
+                                symbol = data['s']
                             except asyncio.TimeoutError:
                                 continue
                             
@@ -94,19 +86,6 @@ class TradeMonitor:
     async def _check_live_trades(self, symbol, price):
         """مراقبة الصفقات الحقيقية (Phase 4)"""
         async with AsyncSessionLocal() as session:
-            # --- مراقبة صفقات الظل (التعلم الخفي) ---
-            shadow_res = await session.execute(select(ShadowTrade).where((ShadowTrade.symbol == symbol) & (ShadowTrade.status == "OPEN")))
-            for shadow in shadow_res.scalars().all():
-                if price >= shadow.take_profit:
-                    shadow.status = "WON"
-                    shadow.result = "WIN"
-                    shadow.closed_at = datetime.utcnow()
-                elif price <= shadow.stop_loss:
-                    shadow.status = "LOST"
-                    shadow.result = "LOSS"
-                    shadow.closed_at = datetime.utcnow()
-            
-            # --- مراقبة الصفقات الحقيقية (بدون تغيير) ---
             res = await session.execute(select(LiveTrade).where((LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")))
             for trade in res.scalars().all():
                 closed = False
@@ -122,23 +101,8 @@ class TradeMonitor:
                     trade.exit_price = price
                     trade.closed_at = datetime.utcnow()
                     trade.duration = (trade.closed_at - trade.timestamp).seconds
-                    # حساب عمولة Binance (0.1% لكل عملية شراء وبيع)
-                    BINANCE_COMMISSION_RATE = 0.001  # 0.1%
-
-                    # حساب الربح/الخسارة الإجمالي قبل العمولة
-                    gross_pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
-                    gross_pnl = (trade.amount * gross_pnl_pct) / 100
-
-                    # حساب العمولة على الشراء (من رأس المال الأساسي للصفقة)
-                    commission_buy = trade.amount * BINANCE_COMMISSION_RATE
-
-                    # حساب العمولة على البيع (من القيمة النهائية للصفقة)
-                    # القيمة النهائية = رأس المال + الربح/الخسارة الإجمالي
-                    final_trade_value = trade.amount + gross_pnl
-                    commission_sell = final_trade_value * BINANCE_COMMISSION_RATE
-
-                    # صافي الربح/الخسارة بعد خصم العمولة
-                    trade.pnl = gross_pnl - commission_buy - commission_sell
+                    pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
+                    trade.pnl = (trade.amount * pnl_pct) / 100
                     
                     # Capital Protection Engine (Phase 4)
                     if trade.status == "LOST":
@@ -157,5 +121,3 @@ class TradeMonitor:
                     if self.bot:
                         icon = "✅" if trade.status == "WON" else "❌"
                         await self.bot.send_message(self.chat_id, f"{icon} *صفقة مغلقة*\n{symbol}: {trade.pnl:.2f} USDT")
-            
-            await session.commit() # حفظ تحديثات صفقات الظل والصفقات الحقيقية

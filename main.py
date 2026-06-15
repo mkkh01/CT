@@ -7,8 +7,8 @@ from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, UserConfig
 from bot.handlers import (
     start, handle_message, process_add_symbol, process_add_capital, 
-    process_add_risk, process_add_tf, handle_callback_query,
-    ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF, EDIT_CAPITAL_AMOUNT, EDIT_RISK_PERCENTAGE
+    process_add_risk, process_add_tf,
+    ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF
 )
 from Core.trade_monitor import TradeMonitor
 
@@ -40,15 +40,13 @@ def main():
             ADD_CAPITAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_capital)],
             ADD_RISK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_risk)],
             ADD_TF: [CallbackQueryHandler(process_add_tf, pattern='^tf_')],
-            EDIT_CAPITAL_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_callback_query)],
-            EDIT_RISK_PERCENTAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_callback_query)],
         },
         fallbacks=[CommandHandler('start', start)],
+        per_message=False
     )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ النظام المؤسسي جاهز بالكامل.")

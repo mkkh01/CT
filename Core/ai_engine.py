@@ -7,11 +7,6 @@ from datetime import datetime
 import asyncio
 import json
 import os
-import redis
-from config import ADMIN_ID, REDIS_URL
-
-# إعداد اتصال Redis
-redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
@@ -20,40 +15,25 @@ class AIEngine:
         self.chat_id = chat_id
         self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 
-    def _get_historical_data_from_redis(self, symbol, timeframe):
-        key = f"hist_{symbol}_{timeframe}"
-        data = redis_client.get(key)
-        return json.loads(data) if data else None
-
-    def _set_historical_data_to_redis(self, symbol, timeframe, data):
-        key = f"hist_{symbol}_{timeframe}"
-        redis_client.set(key, json.dumps(data))
-
-    def _get_live_klines_from_redis(self, symbol):
-        data = redis_client.get("live_klines")
-        if data:
-            klines_data = json.loads(data)
-            return klines_data.get(symbol)
-        return None
-
     async def get_higher_timeframe_data(self, symbol, current_tf):
         """جلب بيانات الإطار الزمني الأعلى للفلترة (Phase 2)"""
         tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
         higher_tf = tf_map.get(current_tf, "1d")
         
         # استخدام التخزين المؤقت للأطر الزمنية العالية لتقليل الطلبات
-        HTF_CACHE_KEY = f"htf_{symbol}_{higher_tf}"
+        HTF_CACHE = f"/tmp/htf_{symbol}_{higher_tf}.json"
         try:
-            cached_ohlcv = redis_client.get(HTF_CACHE_KEY)
-            if cached_ohlcv:
-                cached_ohlcv = json.loads(cached_ohlcv)
-                # إذا كان الكاش موجوداً وتم تحديثه مؤخراً (أقل من 30 دقيقة)
-                if (datetime.now().timestamp() - cached_ohlcv['timestamp']) < 1800:
-                    return pd.DataFrame(cached_ohlcv['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            if os.path.exists(HTF_CACHE):
+                # إذا كان الملف موجوداً وتم تحديثه مؤخراً (أقل من 30 دقيقة)
+                if (datetime.now().timestamp() - os.path.getmtime(HTF_CACHE)) < 1800:
+                    with open(HTF_CACHE, 'r') as f:
+                        ohlcv = json.load(f)
+                        return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
             await asyncio.sleep(1) # تأخير أمان إضافي
             ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
-            redis_client.set(HTF_CACHE_KEY, json.dumps({'timestamp': datetime.now().timestamp(), 'data': ohlcv}))
+            with open(HTF_CACHE, 'w') as f:
+                json.dump(ohlcv, f)
             return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         except Exception as e:
             print(f"⚠️ [SYSTEM] HTF Fetch Error for {symbol}: {e}")
@@ -76,29 +56,38 @@ class AIEngine:
             # نعتمد على البيانات المخزنة في الذاكرة والتي يتم تحديثها بواسطة WebSocket
             # لمنع حظر IP نهائياً (418 Error)
             try:
-                ohlcv = self._get_historical_data_from_redis(symbol, coin.timeframe)
+                HISTORICAL_CACHE = f"/tmp/hist_{symbol}_{coin.timeframe}.json"
                 
-                # إذا لم توجد بيانات تاريخية مخزنة في Redis، نجلبها مرة واحدة فقط (مع تأخير لمنع الحظر)
-                if not ohlcv:
+                # إذا لم توجد بيانات تاريخية مخزنة، نجلبها مرة واحدة فقط (مع تأخير لمنع الحظر)
+                if not os.path.exists(HISTORICAL_CACHE):
                     print(f"📥 [SYSTEM] جلب بيانات تاريخية أولية لـ {symbol}...")
                     await asyncio.sleep(2) # تأخير أمان
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
-                    self._set_historical_data_to_redis(symbol, coin.timeframe, ohlcv)
+                    with open(HISTORICAL_CACHE, 'w') as f:
+                        json.dump(ohlcv, f)
+                else:
+                    with open(HISTORICAL_CACHE, 'r') as f:
+                        ohlcv = json.load(f)
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
-                # تحديث الشمعة الأخيرة والبيانات التاريخية بالبيانات اللحظية من Redis
-                k = self._get_live_klines_from_redis(symbol)
-                if k:
-                    # إذا كانت الشمعة الحالية قد أغلقت (x=True)، نضيفها للبيانات التاريخية
-                    if k.get('x', False):
-                        new_row = [datetime.now().timestamp()*1000, k['o'], k['h'], k['l'], k['c'], k['v']]
-                        ohlcv.append(new_row)
-                        if len(ohlcv) > 300: ohlcv.pop(0) # الحفاظ على حجم البيانات
-                        self._set_historical_data_to_redis(symbol, coin.timeframe, ohlcv)
-                    
-                    # تحديث الشمعة الأخيرة دائماً للسعر اللحظي
-                    df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
+                # تحديث الشمعة الأخيرة والبيانات التاريخية بالبيانات اللحظية من WebSocket
+                KLINES_CACHE = "/tmp/live_klines.json"
+                if os.path.exists(KLINES_CACHE):
+                    with open(KLINES_CACHE, 'r') as f:
+                        klines_data = json.load(f)
+                    if symbol in klines_data:
+                        k = klines_data[symbol]
+                        # إذا كانت الشمعة الحالية قد أغلقت (x=True)، نضيفها للبيانات التاريخية
+                        if k.get('x', False):
+                            new_row = [datetime.now().timestamp()*1000, k['o'], k['h'], k['l'], k['c'], k['v']]
+                            ohlcv.append(new_row)
+                            if len(ohlcv) > 300: ohlcv.pop(0) # الحفاظ على حجم البيانات
+                            with open(HISTORICAL_CACHE, 'w') as f:
+                                json.dump(ohlcv, f)
+                        
+                        # تحديث الشمعة الأخيرة دائماً للسعر اللحظي
+                        df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
             except Exception as e:
                 print(f"⚠️ [SYSTEM] خطأ في معالجة بيانات {symbol}: {e}")
                 return
@@ -109,19 +98,13 @@ class AIEngine:
             # 4. نظام التقييم (Scoring Engine)
             analysis = self.strategies.calculate_combined_score(df, df_higher)
             total_score = analysis["total_score"]
-            params = self.strategies.get_trade_params(df)
             
             # تسجيل صفقة ظل (Shadow Trade) دائماً للتعلم (Phase 8)
-            # نقوم بتسجيل الأهداف وسعر الدخول حتى لصفقات الظل لمتابعة أدائها
             new_shadow = ShadowTrade(
                 symbol=symbol,
-                entry_price=params["entry"],
-                stop_loss=params["sl"],
-                take_profit=params["tp"],
                 indicators_snapshot=analysis,
                 market_state=analysis["market_state"],
-                score=total_score,
-                status="OPEN"
+                score=total_score
             )
             session.add(new_shadow)
             await session.commit()

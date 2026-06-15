@@ -7,13 +7,10 @@ from sqlalchemy import select, delete, func
 from database import AsyncSessionLocal, UserConfig, TrackedCoin, LiveTrade, ShadowTrade
 from bot.keyboards import get_main_menu, get_capital_management_menu, get_timeframe_menu, get_risk_management_menu
 from datetime import datetime
-from config import ADMIN_ID, REDIS_URL
-import redis
-
-redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+from config import ADMIN_ID
 
 # States for ConversationHandler
-ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF, EDIT_CAPITAL_AMOUNT, EDIT_RISK_PERCENTAGE = range(6)
+ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF = range(4)
 EDIT_BASE_CAPITAL = 5
 
 async def check_admin(update: Update) -> bool:
@@ -54,10 +51,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_edit_coin_list(update, context)
     elif text == "💰 إدارة رأس المال":
         await show_capital_mgmt(update, context)
-    elif text == "📊 الإحصائيات":
+    elif text in ["📊 الإحصائيات", "🎯 تقرير الأداء"]:
         await show_statistics(update, context)
-    elif text == "📊 الصفقات الأخيرة":
-        await show_last_trades(update, context)
     elif text == "📋 سجل الصفقات":
         await show_trade_history(update, context)
     elif text == "🛑 إيقاف الطوارئ":
@@ -106,43 +101,14 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await session.commit()
         await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
         context.user_data.clear()
-    elif action == 'edit_total_capital':
-        try:
-            new_total_capital = float(text)
-            async with AsyncSessionLocal() as session:
-                cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
-                if cfg:
-                    cfg.total_capital = new_total_capital
-                    await session.commit()
-                    await update.message.reply_text(f"✅ تم تحديث رأس المال الكلي إلى {new_total_capital} USDT.")
-                else:
-                    await update.message.reply_text("❌ خطأ: لم يتم العثور على إعدادات المستخدم.")
-            context.user_data.clear()
-        except ValueError:
-            await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة لرأس المال الكلي.")
-            return EDIT_CAPITAL_AMOUNT
-    elif action == 'edit_risk_percentage':
-        try:
-            new_risk_percentage = float(text)
-            async with AsyncSessionLocal() as session:
-                cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
-                if cfg:
-                    cfg.risk_per_trade = new_risk_percentage
-                    await session.commit()
-                    await update.message.reply_text(f"✅ تم تحديث نسبة المخاطرة لكل صفقة إلى {new_risk_percentage}%.")
-                else:
-                    await update.message.reply_text("❌ خطأ: لم يتم العثور على إعدادات المستخدم.")
-            context.user_data.clear()
-        except ValueError:
-            await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة لنسبة المخاطرة.")
-            return EDIT_RISK_PERCENTAGE
 
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prices_str = redis_client.get("live_prices")
-    if not prices_str:
+    PRICES_CACHE = "/tmp/live_prices.json"
+    if not os.path.exists(PRICES_CACHE):
         await update.message.reply_text("⏳ جاري الاتصال بالرادار... حاول مرة أخرى.")
         return
-    prices = json.loads(prices_str)
+    with open(PRICES_CACHE, 'r') as f:
+        prices = json.load(f)
     if not prices:
         await update.message.reply_text("❌ لا توجد عملات مضافة.")
         return
@@ -186,33 +152,13 @@ async def toggle_trading(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
 
 async def show_ai_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
-        # جلب آخر 5 صفقات ظل مفتوحة أو مغلقة حديثاً
         shadows = (await session.execute(select(ShadowTrade).order_by(ShadowTrade.timestamp.desc()).limit(5))).scalars().all()
-        
-        # حساب إحصائيات التعلم الكلية
-        total_shadows = (await session.execute(select(func.count(ShadowTrade.id)))).scalar()
-        won_shadows = (await session.execute(select(func.count(ShadowTrade.id)).where(ShadowTrade.status == "WON"))).scalar()
-        lost_shadows = (await session.execute(select(func.count(ShadowTrade.id)).where(ShadowTrade.status == "LOST"))).scalar()
-        
         if not shadows:
-            await update.message.reply_text("🧠 لا توجد بيانات تعلم كافية حالياً.")
+            await update.message.reply_text("🧠 لا توجد بيانات تعلم كافية.")
             return
-            
-        win_rate = (won_shadows / (won_shadows + lost_shadows) * 100) if (won_shadows + lost_shadows) > 0 else 0
-        
-        msg = "🧠 *تقرير أداء التعلم الخفي (Shadow)*\n"
-        msg += f"📊 نسبة نجاح التعلم: `{win_rate:.1f}%`\n"
-        msg += f"✅ صفقات رابحة: {won_shadows} | ❌ خاسرة: {lost_shadows}\n"
-        msg += "━━━━━━━━━━━━━━\n"
-        
+        msg = "🧠 *تقرير الذكاء الاصطناعي والتعلم*\n━━━━━━━━━━━━━━\n"
         for s in shadows:
-            status_icon = "⏳" if s.status == "OPEN" else ("✅" if s.status == "WON" else "❌")
-            msg += f"{status_icon} {s.symbol} | Score: {s.score}/100\n"
-            msg += f"   └ الحالة: {s.market_state}\n"
-            if s.status != "OPEN":
-                msg += f"   └ النتيجة: {'ربح' if s.status == 'WON' else 'خسارة'}\n"
-            msg += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-            
+            msg += f"🪙 {s.symbol} | Score: {s.score}/100 | State: {s.market_state}\n"
         await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_trade_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -232,12 +178,6 @@ async def show_capital_mgmt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
         await update.message.reply_text(f"💰 *إدارة رأس المال*\n\nرأس المال الكلي: `{cfg.total_capital}` USDT", 
                                        reply_markup=get_capital_management_menu(), parse_mode='Markdown')
-
-async def show_risk_mgmt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    async with AsyncSessionLocal() as session:
-        cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
-        await update.message.reply_text(f"⚠️ *إدارة المخاطر*\n\nنسبة المخاطرة لكل صفقة: `{cfg.risk_per_trade}`%", 
-                                       reply_markup=get_risk_management_menu(), parse_mode='Markdown')
 
 async def show_remove_coin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
@@ -287,37 +227,4 @@ async def process_add_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.add(new_coin)
         await session.commit()
     await query.edit_message_text(f"✅ تمت إضافة {context.user_data['new_coin_symbol']} بنجاح!")
-    return ConversationHandler.END
-
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == 'edit_base_capital':
-        await query.edit_message_text("✍️ أدخل رأس المال الكلي الجديد:")
-        context.user_data['action'] = 'edit_total_capital'
-        return EDIT_CAPITAL_AMOUNT
-    elif data.startswith('set_risk_'):
-        try:
-            risk_percentage = float(data.replace('set_risk_', ''))
-            async with AsyncSessionLocal() as session:
-                cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
-                if cfg:
-                    cfg.risk_per_trade = risk_percentage
-                    await session.commit()
-                    await query.edit_message_text(f"✅ تم تحديث نسبة المخاطرة لكل صفقة إلى {risk_percentage}%.")
-                else:
-                    await query.edit_message_text("❌ خطأ: لم يتم العثور على إعدادات المستخدم.")
-            context.user_data.clear()
-        except ValueError:
-            await query.edit_message_text("❌ خطأ: قيمة نسبة المخاطرة غير صالحة.")
-        return ConversationHandler.END
-    elif data == 'main_menu':
-        await query.edit_message_text("🔙 العودة إلى القائمة الرئيسية.", reply_markup=get_main_menu())
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    # Fallback for other callbacks if needed
-    await query.edit_message_text(f"⚠️ لا يوجد معالج لـ: {data}")
     return ConversationHandler.END
