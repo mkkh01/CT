@@ -35,7 +35,13 @@ async def start_background_tasks(app):
     logger.info("📡 [SYSTEM] تم إطلاق الرادار المؤسسي والمراقبة اللحظية.")
 
 async def post_init(app: Application):
+    # حذف أي Webhook قديم لضمان عمل Polling بدون تعارض
+    await app.bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(start_background_tasks(app))
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """تسجيل الأخطاء التي تحدث أثناء تشغيل البوت"""
+    logger.error(f"Exception while handling an update: {context.error}")
 
 def main():
     logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
@@ -43,6 +49,9 @@ def main():
     loop.run_until_complete(init_db())
     
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    
+    # إضافة معالج الأخطاء
+    app.add_error_handler(error_handler)
     
     # إعداد المحادثة المؤسسية لإضافة عملة
     conv_handler = ConversationHandler(
