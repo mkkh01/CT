@@ -54,8 +54,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_edit_coin_list(update, context)
     elif text == "💰 إدارة رأس المال":
         await show_capital_mgmt(update, context)
-    elif text in ["📊 الإحصائيات", "🎯 تقرير الأداء"]:
+    elif text == "📊 الإحصائيات":
         await show_statistics(update, context)
+    elif text == "📊 الصفقات الأخيرة":
+        await show_last_trades(update, context)
     elif text == "📋 سجل الصفقات":
         await show_trade_history(update, context)
     elif text == "🛑 إيقاف الطوارئ":

@@ -122,8 +122,23 @@ class TradeMonitor:
                     trade.exit_price = price
                     trade.closed_at = datetime.utcnow()
                     trade.duration = (trade.closed_at - trade.timestamp).seconds
-                    pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
-                    trade.pnl = (trade.amount * pnl_pct) / 100
+                    # حساب عمولة Binance (0.1% لكل عملية شراء وبيع)
+                    BINANCE_COMMISSION_RATE = 0.001  # 0.1%
+
+                    # حساب الربح/الخسارة الإجمالي قبل العمولة
+                    gross_pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
+                    gross_pnl = (trade.amount * gross_pnl_pct) / 100
+
+                    # حساب العمولة على الشراء (من رأس المال الأساسي للصفقة)
+                    commission_buy = trade.amount * BINANCE_COMMISSION_RATE
+
+                    # حساب العمولة على البيع (من القيمة النهائية للصفقة)
+                    # القيمة النهائية = رأس المال + الربح/الخسارة الإجمالي
+                    final_trade_value = trade.amount + gross_pnl
+                    commission_sell = final_trade_value * BINANCE_COMMISSION_RATE
+
+                    # صافي الربح/الخسارة بعد خصم العمولة
+                    trade.pnl = gross_pnl - commission_buy - commission_sell
                     
                     # Capital Protection Engine (Phase 4)
                     if trade.status == "LOST":

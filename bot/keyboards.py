@@ -7,7 +7,7 @@ def get_main_menu():
         [KeyboardButton("➕ إضافة عملة"), KeyboardButton("➖ حذف عملة")],
         [KeyboardButton("⚙️ تعديل العملة"), KeyboardButton("💰 إدارة رأس المال"), KeyboardButton("⚠️ إدارة المخاطر")],
         [KeyboardButton("📊 الإحصائيات"), KeyboardButton("📋 سجل الصفقات")],
-        [KeyboardButton("🧠 تقرير الذكاء الاصطناعي"), KeyboardButton("🎯 تقرير الأداء")],
+        [KeyboardButton("🧠 تقرير الذكاء الاصطناعي"), KeyboardButton("📊 الصفقات الأخيرة")],
         [KeyboardButton("⏸ إيقاف التداول"), KeyboardButton("▶️ تشغيل التداول")],
         [KeyboardButton("🛑 إيقاف الطوارئ")]
     ]
