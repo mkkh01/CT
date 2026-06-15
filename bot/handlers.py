@@ -119,20 +119,36 @@ async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
-        trades = (await session.execute(select(LiveTrade).where(LiveTrade.status != "OPEN"))).scalars().all()
-        if not trades:
-            await update.message.reply_text("❌ لا توجد صفقات مغلقة.")
+        # جلب الإحصائيات العامة
+        all_closed_trades = (await session.execute(select(LiveTrade).where(LiveTrade.status != "OPEN"))).scalars().all()
+        
+        # جلب آخر 10 صفقات (مفتوحة أو مغلقة) لتقرير الأداء
+        recent_trades = (await session.execute(select(LiveTrade).order_by(LiveTrade.timestamp.desc()).limit(10))).scalars().all()
+        
+        if not recent_trades:
+            await update.message.reply_text("❌ لا توجد بيانات صفقات متاحة حالياً.")
             return
-        total = len(trades)
-        wins = len([t for t in trades if t.status == "WON"])
-        total_pnl = sum([t.pnl for t in trades])
-        msg = (f"📊 *إحصائيات الأداء المؤسسي*\n"
-               f"━━━━━━━━━━━━━━\n"
-               f"📈 إجمالي الصفقات: {total}\n"
-               f"✅ نسبة النجاح: {(wins/total)*100:.2f}%\n"
-               f"💰 صافي الربح: `{total_pnl:.2f} USDT`\n"
-               f"🏆 أفضل عملة: {max(trades, key=lambda t: t.pnl).symbol}")
-        await update.message.reply_text(msg, parse_mode='Markdown')
+
+        # بناء رسالة الإحصائيات العامة إذا وجدت
+        stats_msg = ""
+        if all_closed_trades:
+            total = len(all_closed_trades)
+            wins = len([t for t in all_closed_trades if t.status == "WON"])
+            total_pnl = sum([t.pnl for t in all_closed_trades])
+            stats_msg = (f"📊 *إحصائيات الأداء العام*\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"📈 إجمالي الصفقات: {total}\n"
+                        f"✅ نسبة النجاح: {(wins/total)*100:.2f}%\n"
+                        f"💰 صافي الربح: `{total_pnl:.2f} USDT`\n\n")
+
+        # بناء تقرير آخر 10 صفقات
+        report_msg = "🎯 *تقرير آخر 10 صفقات حقيقية*\n━━━━━━━━━━━━━━\n"
+        for t in recent_trades:
+            status_icon = "⏳" if t.status == "OPEN" else ("✅" if t.status == "WON" else "❌")
+            pnl_text = f"PnL: `{t.pnl:.2f}`" if t.status != "OPEN" else "في انتظار الإغلاق"
+            report_msg += f"{status_icon} {t.symbol} | {pnl_text} | {t.timestamp.strftime('%m-%d %H:%M')}\n"
+        
+        await update.message.reply_text(stats_msg + report_msg, parse_mode='Markdown')
 
 async def emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:

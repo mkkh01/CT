@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import logging
 from keep_alive import keep_alive
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from config import TELEGRAM_TOKEN, ADMIN_ID
@@ -12,6 +13,17 @@ from bot.handlers import (
 )
 from Core.trade_monitor import TradeMonitor
 
+# إعداد نظام السجلات (Logging)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # تشغيل خادم Keep-Alive
 keep_alive()
 
@@ -20,13 +32,13 @@ async def start_background_tasks(app):
     await asyncio.sleep(5)
     monitor = TradeMonitor(bot=app.bot)
     asyncio.create_task(monitor.check_prices())
-    print("📡 [SYSTEM] تم إطلاق الرادار المؤسسي والمراقبة اللحظية.")
+    logger.info("📡 [SYSTEM] تم إطلاق الرادار المؤسسي والمراقبة اللحظية.")
 
 async def post_init(app: Application):
     asyncio.create_task(start_background_tasks(app))
 
 def main():
-    print("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
+    logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
     
@@ -49,7 +61,7 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ النظام المؤسسي جاهز بالكامل.")
+    logger.info("✅ النظام المؤسسي جاهز بالكامل.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
