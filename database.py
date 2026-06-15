@@ -88,3 +88,19 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         print("✅ Institutional Database Schema V4 Initialized.")
+    
+    # Run manual migration for shadow_trades_v4 to ensure new columns exist
+    from sqlalchemy import text
+    async with engine.begin() as conn:
+        cols = ["entry_price", "stop_loss", "take_profit", "status", "closed_at"]
+        for col in cols:
+            try:
+                if col == "status":
+                    await conn.execute(text(f"ALTER TABLE shadow_trades_v4 ADD COLUMN {col} VARCHAR DEFAULT 'OPEN';"))
+                elif col == "closed_at":
+                    await conn.execute(text(f"ALTER TABLE shadow_trades_v4 ADD COLUMN {col} TIMESTAMP;"))
+                else:
+                    await conn.execute(text(f"ALTER TABLE shadow_trades_v4 ADD COLUMN {col} DOUBLE PRECISION DEFAULT 0.0;"))
+                print(f"✅ Migrated column: {col}")
+            except:
+                pass # Column already exists
