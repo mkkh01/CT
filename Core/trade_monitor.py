@@ -2,29 +2,37 @@ import asyncio
 import json
 import websockets
 import os
+import redis
 from datetime import datetime
 from sqlalchemy import select
 from database import AsyncSessionLocal, LiveTrade, ShadowTrade, TrackedCoin, UserConfig
-from config import ADMIN_ID
+from config import ADMIN_ID, REDIS_URL
 
-PRICES_CACHE_FILE = "/tmp/live_prices.json"
-KLINES_CACHE_FILE = "/tmp/live_klines.json"
+# إعداد اتصال Redis
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 class TradeMonitor:
     def __init__(self, bot=None):
         self.bot = bot
         self.chat_id = ADMIN_ID
         self.is_running = False
-        self.live_prices = {}
-        self.live_klines = {}
+        self.live_prices = self._load_data("live_prices")
+        self.live_klines = self._load_data("live_klines")
 
     def _save_data(self):
         try:
-            with open(PRICES_CACHE_FILE, 'w') as f:
-                json.dump(self.live_prices, f)
-            with open(KLINES_CACHE_FILE, 'w') as f:
-                json.dump(self.live_klines, f)
-        except: pass
+            redis_client.set('live_prices', json.dumps(self.live_prices))
+            redis_client.set('live_klines', json.dumps(self.live_klines))
+        except Exception as e:
+            print(f"⚠️ [REDIS] Error saving data: {e}")
+
+    def _load_data(self, key):
+        try:
+            data = redis_client.get(key)
+            return json.loads(data) if data else {}
+        except Exception as e:
+            print(f"⚠️ [REDIS] Error loading data for {key}: {e}")
+            return {}
 
     async def check_prices(self):
         from Core.ai_engine import AIEngine
@@ -58,8 +66,8 @@ class TradeMonitor:
                             try:
                                 msg = await asyncio.wait_for(ws.recv(), timeout=5)
                                 payload = json.loads(msg)
-                                data = payload['data']
-                                symbol = data['s']
+                                data = payload["data"]
+                                symbol = data["s"]
                             except asyncio.TimeoutError:
                                 continue
                             

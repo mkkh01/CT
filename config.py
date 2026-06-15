@@ -15,3 +15,6 @@ ADMIN_ID = 1503808643
 DEFAULT_CAPITAL = 10.0
 TRADE_FEE = 0.001
 BINANCE_WS_URL = "wss://stream.binance.com:9443"
+
+# 4. إعدادات Redis
+REDIS_URL = "redis://:OsYazrMladbKz5s1W2p4bbzv4NDNwGHy@moon-close-reaction-79072.db.redis.io:10184"

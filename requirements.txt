@@ -12,3 +12,4 @@ flask
 scikit-learn
 requests
 ccxt
+redis
