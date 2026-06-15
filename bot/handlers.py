@@ -138,26 +138,28 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_performance_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يعرض تقرير مفصل لآخر 10 صفقات حقيقية تشمل الدخول والوقف والهدف"""
+    """يعرض تقرير مفصل لآخر 10 صفقات حقيقية بتنسيق احترافي شامل"""
     async with AsyncSessionLocal() as session:
         recent_trades = (await session.execute(select(LiveTrade).order_by(LiveTrade.timestamp.desc()).limit(10))).scalars().all()
         
         if not recent_trades:
-            await update.message.reply_text("❌ لا توجد بيانات صفقات متاحة حالياً.")
+            await update.message.reply_text("❌ لا توجد بيانات صفقات حقيقية مسجلة حالياً.")
             return
 
-        report_msg = "🎯 *تقرير تفصيلي لآخر 10 صفقات*\n"
+        report_msg = "🎯 *تقرير الأداء المؤسسي - آخر 10 صفقات*\n"
         for t in recent_trades:
-            status_icon = "⏳" if t.status == "OPEN" else ("✅" if t.status == "WON" else "❌")
-            pnl_info = f"💰 الربح/الخسارة: `{t.pnl:.2f} USDT`" if t.status != "OPEN" else "⏳ الحالة: *مفتوحة*"
+            status_icon = "🔵" if t.status == "OPEN" else ("🟢" if t.status == "WON" else "🔴")
+            status_text = "مفتوحة الآن" if t.status == "OPEN" else ("ربح" if t.status == "WON" else "خسارة")
+            
+            pnl_val = f"`{t.pnl:.2f} USDT`" if t.status != "OPEN" else "*قيد التنفيذ*"
             
             report_msg += (f"━━━━━━━━━━━━━━\n"
-                           f"{status_icon} *العملة: #{t.symbol}*\n"
-                           f"📅 التاريخ: `{t.timestamp.strftime('%Y-%m-%d %H:%M')}`\n"
-                           f"📥 الدخول: `{t.entry_price}`\n"
-                           f"🛡️ الوقف: `{t.stop_loss}`\n"
-                           f"🏁 الهدف: `{t.take_profit}`\n"
-                           f"{pnl_info}\n")
+                           f"{status_icon} *العملة: #{t.symbol}* ({status_text})\n"
+                           f"📅 الوقت: `{t.timestamp.strftime('%Y-%m-%d %H:%M')}`\n"
+                           f"💰 الدخول: `{t.entry_price}`\n"
+                           f"🛡️ الوقف (SL): `{t.stop_loss}`\n"
+                           f"🏁 الهدف (TP): `{t.take_profit}`\n"
+                           f"📊 النتيجة: {pnl_val}\n")
         
         await update.message.reply_text(report_msg, parse_mode='Markdown')
 

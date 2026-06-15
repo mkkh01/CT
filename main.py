@@ -62,7 +62,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("✅ النظام المؤسسي جاهز بالكامل.")
-    app.run_polling(drop_pending_updates=True)
+    # استخدام drop_pending_updates=True لتجنب تعارض النسخ وتنظيف التحديثات القديمة
+    app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
     main()
