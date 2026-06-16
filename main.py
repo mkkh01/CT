@@ -12,6 +12,7 @@ from bot.handlers import (
     ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF
 )
 from Core.trade_monitor import TradeMonitor
+from Core.shadow_monitor import ShadowMonitor
 
 # إعداد نظام السجلات (Logging)
 logging.basicConfig(
@@ -28,11 +29,18 @@ logger = logging.getLogger(__name__)
 keep_alive()
 
 async def start_background_tasks(app):
-    """تشغيل الرادار المؤسسي والمراقبة"""
+    """تشغيل الرادار المؤسسي والمراقبة والتعلم الخفي"""
     await asyncio.sleep(5)
+    
+    # تشغيل مراقب التداول الحقيقي
     monitor = TradeMonitor(bot=app.bot)
     asyncio.create_task(monitor.check_prices())
-    logger.info("📡 [SYSTEM] تم إطلاق الرادار المؤسسي والمراقبة اللحظية.")
+    
+    # تشغيل مراقب التعلم الخفي (Shadow Monitor)
+    shadow = ShadowMonitor(bot=app.bot)
+    asyncio.create_task(shadow.check_shadow_trades())
+    
+    logger.info("📡 [SYSTEM] تم إطلاق الرادار المؤسسي ونظام التعلم الخفي.")
 
 async def post_init(app: Application):
     # حذف أي Webhook قديم لضمان عمل Polling بدون تعارض

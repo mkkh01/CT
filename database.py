@@ -69,17 +69,26 @@ class LiveTrade(Base):
     closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
 class ShadowTrade(Base):
-    __tablename__ = "shadow_trades_v4"
+    __tablename__ = "shadow_trades_v5" # ترقية الإصدار لدعم التغييرات الجديدة
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(nullable=False)
     indicators_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     market_state: Mapped[Optional[str]] = mapped_column(Text)
     score: Mapped[float] = mapped_column(default=0.0)
-    result: Mapped[Optional[str]] = mapped_column(Text) # WIN / LOSS
+    entry_price: Mapped[float] = mapped_column(nullable=False)
+    stop_loss: Mapped[float] = mapped_column(nullable=False)
+    take_profit: Mapped[float] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(default="OPEN") # OPEN, WON, LOST
+    exit_price: Mapped[Optional[float]] = mapped_column(nullable=True)
+    pnl: Mapped[float] = mapped_column(default=0.0)
+    trading_session: Mapped[Optional[str]] = mapped_column(Text) # London, NY, Tokyo
+    probability_score: Mapped[float] = mapped_column(default=0.0)
+    reasoning_report: Mapped[Optional[str]] = mapped_column(Text)
     timestamp: Mapped[datetime] = mapped_column(server_default=func.now())
+    closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        print("✅ Institutional Database Schema V4 Initialized.")
+        print("✅ Institutional Database Schema V5 Initialized.")
