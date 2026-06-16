@@ -3,9 +3,11 @@ import numpy as np
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
 
+from Core.gann_analysis import GannAnalyzer
+
 class InstitutionalStrategiesV2:
     def __init__(self):
-        pass
+        self.gann = GannAnalyzer()
 
     def detect_order_blocks(self, df: pd.DataFrame):
         """كشف كتل الطلب (Order Blocks) - مناطق تجمع سيولة المؤسسات"""
@@ -55,12 +57,21 @@ class InstitutionalStrategiesV2:
             score += 20
             report.append("Above Institutional EMA 200 (+20)")
 
-        # 4. Volatility Filter (15 pts)
+        # 4. Volatility Filter (10 pts)
         atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
         atr_pct = (atr / df['close'].iloc[-1]) * 100
         if 0.5 < atr_pct < 2.5:
+            score += 10
+            report.append("Volatility: Optimal (+10)")
+
+        # 5. Gann Analysis (15 pts)
+        gann_bias = self.gann.get_gann_bias(df)
+        if gann_bias == "BULLISH_CONTINUATION":
             score += 15
-            report.append("Volatility: Optimal (+15)")
+            report.append("Gann Square of 9: Bullish Bias (+15)")
+        elif gann_bias == "BEARISH_REVERSAL_ZONE":
+            score -= 30
+            report.append("Gann Alert: Reversal Zone Detected (-30)")
 
         return {
             "total_score": score,
