@@ -3,7 +3,7 @@ import sys
 import asyncio
 import logging
 from keep_alive import keep_alive
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler, ContextTypes
 from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, UserConfig
 from bot.handlers import (
