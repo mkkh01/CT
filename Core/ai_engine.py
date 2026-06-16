@@ -2,7 +2,9 @@ import pandas as pd
 import ccxt.async_support as ccxt
 from database import AsyncSessionLocal, LiveTrade, ShadowTrade, UserConfig, TrackedCoin
 from sqlalchemy import select
-from strategies import InstitutionalStrategies
+from strategies_v2 import InstitutionalStrategiesV2 as InstitutionalStrategies
+from Core.whale_tracker_v2 import WhaleTrackerV2
+from Core.news_analyzer import NewsAnalyzer
 from datetime import datetime, time
 import asyncio
 import json
@@ -14,6 +16,8 @@ class AIEngine:
         self.bot = bot
         self.chat_id = chat_id
         self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
+        self.whale_tracker = WhaleTrackerV2(bot=bot, chat_id=chat_id)
+        self.news_analyzer = NewsAnalyzer(bot=bot, chat_id=chat_id)
 
     def get_trading_session(self):
         """تحديد جلسة التداول الحالية بناءً على توقيت UTC"""
@@ -86,8 +90,20 @@ class AIEngine:
             except Exception as e:
                 return
             
+            # 1. تحليل الأخبار (Safety Check)
+            is_news_safe = await self.news_analyzer.get_safety_check(symbol)
+            if not is_news_safe:
+                return
+
+            # 2. تحليل هيكلة السوق و SMC
             df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
             analysis = self.strategies.calculate_combined_score(df, df_higher)
+            
+            # 3. انحياز الحيتان (Whale Bias)
+            whale_bias = self.whale_tracker.get_whale_bias(symbol)
+            if whale_bias == "BUY":
+                analysis["total_score"] += 15
+            
             total_score = analysis["total_score"]
             params = self.strategies.get_trade_params(df)
             current_session = self.get_trading_session()
