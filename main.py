@@ -30,7 +30,7 @@ keep_alive()
 
 async def start_background_tasks(app):
     """تشغيل الرادار المؤسسي والمراقبة والتعلم الخفي"""
-    await asyncio.sleep(5)
+    await asyncio.sleep(10) # زيادة تأخير الأمان لضمان استقرار البوت
     
     # تشغيل مراقب التداول الحقيقي
     monitor = TradeMonitor(bot=app.bot)
@@ -43,19 +43,22 @@ async def start_background_tasks(app):
     logger.info("📡 [SYSTEM] تم إطلاق الرادار المؤسسي ونظام التعلم الخفي.")
 
 async def post_init(app: Application):
-    # حذف أي Webhook قديم لضمان عمل Polling بدون تعارض
+    # تنظيف أي Webhook قديم وإضافة تأخير لقطع الاتصال عن أي نسخة أخرى
     await app.bot.delete_webhook(drop_pending_updates=True)
+    await asyncio.sleep(3)
     asyncio.create_task(start_background_tasks(app))
+    logger.info("🗑️ [SYSTEM] تم تنظيف الجلسات القديمة وتجهيز المهام الخلفية.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """تسجيل الأخطاء التي تحدث أثناء تشغيل البوت"""
-    logger.error(f"Exception while handling an update: {context.error}")
+    logger.error(f"⚠️ [BOT ERROR] {context.error}")
 
 def main():
     logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
     
+    # بناء التطبيق مع إعدادات أمان إضافية
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
     # إضافة معالج الأخطاء
@@ -79,7 +82,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("✅ النظام المؤسسي جاهز بالكامل.")
-    # استخدام drop_pending_updates=True لتجنب تعارض النسخ وتنظيف التحديثات القديمة
+    
+    # تشغيل البوت مع تنظيف التحديثات المعلقة
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
