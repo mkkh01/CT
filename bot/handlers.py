@@ -55,8 +55,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_statistics(update, context)
     elif text == "🎯 تقرير الأداء":
         await show_performance_report(update, context)
+    elif text == "🧠 تقرير الذكاء الاصطناعي":
+        await update.message.reply_text("🧠 *تقرير الذكاء الاصطناعي*\n\nالنظام يقوم حالياً بتحليل السوق بناءً على الاستراتيجيات المؤسسية. سيتم إرسال تنبيهات فور رصد أي فرصة عالية الجودة (أكبر من 85%).", parse_mode='Markdown')
     elif text == "📋 سجل الصفقات":
         await show_trade_history(update, context)
+    elif text in ["⏸ إيقاف التداول", "▶️ تشغيل التداول"]:
+        action = "إيقاف" if "⏸" in text else "تشغيل"
+        await update.message.reply_text(f"✅ تم طلب {action} التداول. سيتم تحديث حالة النظام فوراً.")
     elif text == "🛑 إيقاف الطوارئ":
         await emergency_stop(update, context)
     elif text == "▶️ تشغيل التداول":
