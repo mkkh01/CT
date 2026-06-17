@@ -19,7 +19,7 @@ TRADE_FEE = 0.001
 BINANCE_WS_URL = "wss://stream.binance.com:9443"
 
 # 4. إعدادات Redis (من الصورة المزودة)
-REDIS_HOST = "moon-close-reaction-79072.db.redis.io"
+REDIS_HOST = "moon-close-reaction-79072.db.redis.io" # تم التأكد من العنوان الصحيح
 REDIS_PORT = 10184
-REDIS_PASS = "OsYazrMladbKz5s1W2p4bbzv4NDNWGHy"
+REDIS_PASS = "OsYazrMladbKz5s1W2p4bbzv4NDNwGHy" # تم تحديث كلمة المرور بدقة
 REDIS_SSL = True # تم التثبيت على True لضمان استخدام بروتوكول rediss المشفر لـ Redis Cloud
