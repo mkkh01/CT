@@ -3,12 +3,18 @@ from datetime import datetime
 import json
 from openai import OpenAI
 import requests
+from config import OPENAI_API_KEY
 
 class NewsIntelligence:
     def __init__(self, bot=None, chat_id=None):
         self.bot = bot
         self.chat_id = chat_id
-        self.client = OpenAI() # يستخدم الإعدادات المسبقة في البيئة
+        # التحقق من وجود المفتاح قبل التشغيل لمنع الانهيار
+        if OPENAI_API_KEY and not OPENAI_API_KEY.startswith("sk-proj-..."):
+            self.client = OpenAI(api_key=OPENAI_API_KEY)
+        else:
+            self.client = None
+            print("⚠️ [NEWS AI] OpenAI API Key is missing. Real-time news analysis will be skipped.")
 
     async def fetch_realtime_news(self, symbol: str):
         """جلب أخبار حقيقية باستخدام محرك البحث"""
@@ -20,6 +26,9 @@ class NewsIntelligence:
 
     async def analyze_with_llm(self, symbol: str, news_context: str):
         """استخدام LLM لتحليل المشاعر والقرار المؤسسي"""
+        if not self.client:
+            return {"decision": "TRADE", "safety_score": 100, "reason": "AI Analysis skipped (No API Key)"}
+        
         prompt = f"""
         بصفتك محلل مخاطر في صندوق تحوط، حلل الأخبار التالية لعملة {symbol}:
         السياق: {news_context}

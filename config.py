@@ -1,7 +1,9 @@
 # config.py
 
+import os
 # 1. التوكن الخاص بك
 TELEGRAM_TOKEN = "8935169680:AAEPcVnGY58CZUmggvNZuGJrvE-FE9IxrxA"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-...") # سيتم جلبها من إعدادات Render
 
 # 2. الرابط الجديد من خانة Transaction pooler (الذي يدعم IPv4)
 # ملاحظة: تم استخدام المنفذ 6543 واسم المستخدم المدمج كما يظهر في صورتك
@@ -20,4 +22,4 @@ BINANCE_WS_URL = "wss://stream.binance.com:9443"
 REDIS_HOST = "moon-close-reaction-79072.db.redis.io"
 REDIS_PORT = 10184
 REDIS_PASS = "OsYazrMladbKz5s1W2p4bbzv4NDNWGHy"
-REDIS_SSL = True
+REDIS_SSL = False # تم التغيير لـ False لحل مشكلة SSL: WRONG_VERSION_NUMBER في بيئة Render
