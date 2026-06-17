@@ -12,3 +12,6 @@ flask
 scikit-learn
 requests
 ccxt
+redis
+openai
+aiohttp
