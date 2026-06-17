@@ -13,5 +13,4 @@ scikit-learn
 requests
 ccxt
 redis
-textblob
-aiohttp
+aiohttp # تمت إزالة textblob لعدم الحاجة لها بعد تعطيل تحليل الأخبار

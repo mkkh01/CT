@@ -86,10 +86,10 @@ class AIEngine:
             except Exception as e:
                 return
             
-            # 1. تحليل الأخبار (Safety Check)
-            is_news_safe = await self.news_analyzer.get_safety_check(symbol)
-            if not is_news_safe:
-                return
+            # 1. تحليل الأخبار (تم تعطيله لضمان الدقة والاعتماد على السعر والسيولة فقط)
+            # is_news_safe = await self.news_analyzer.get_safety_check(symbol)
+            # if not is_news_safe:
+            #     return
 
             # 2. تحليل هيكلة السوق و SMC
             df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
