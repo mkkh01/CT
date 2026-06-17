@@ -79,7 +79,9 @@ class TradeMonitor:
                                 last_analysis_time = datetime.now()
 
             except Exception as e:
-                print(f"⚠️ [MONITOR] Connection Error: {e}")
+                import traceback
+                print(f"⚠️ [MONITOR] Fatal Error: {e}")
+                traceback.print_exc()
                 await asyncio.sleep(5)
 
     async def _check_live_trades(self, symbol, price):

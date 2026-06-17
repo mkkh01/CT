@@ -11,28 +11,54 @@ class InstitutionalStrategiesV2:
 
     def detect_order_blocks(self, df: pd.DataFrame):
         """كشف كتل الطلب (Order Blocks) - مناطق تجمع سيولة المؤسسات"""
-        # منطق مبسط: آخر شمعة هابطة قبل حركة صعودية قوية (أو العكس)
-        df['body_size'] = abs(df['close'] - df['open'])
-        df['is_bullish'] = df['close'] > df['open']
-        
-        # كشف Bullish Order Block
-        last_bear_idx = df[~df['is_bullish']].index[-1]
-        following_bulls = df.loc[last_bear_idx+1:].is_bullish.all()
-        
-        if following_bulls and df.loc[last_bear_idx+1:].body_size.sum() > df.loc[last_bear_idx].body_size * 2:
-            return {"type": "BULLISH_OB", "price": df.loc[last_bear_idx].close}
+        try:
+            # منطق مبسط: آخر شمعة هابطة قبل حركة صعودية قوية (أو العكس)
+            df = df.copy()
+            df['body_size'] = abs(df['close'] - df['open'])
+            df['is_bullish'] = df['close'] > df['open']
+            
+            # التأكد من وجود شمعات هابطة
+            bear_candles = df[~df['is_bullish']]
+            if bear_candles.empty:
+                return None
+                
+            # كشف Bullish Order Block
+            last_bear_idx = bear_candles.index[-1]
+            
+            # التأكد من وجود شمعات بعد الشمعة الهابطة
+            if last_bear_idx >= df.index[-1]:
+                return None
+                
+            following_candles = df.loc[last_bear_idx+1:]
+            if following_candles.empty:
+                return None
+                
+            following_bulls = following_candles.is_bullish.all()
+            
+            if following_bulls and following_candles.body_size.sum() > df.loc[last_bear_idx].body_size * 2:
+                return {"type": "BULLISH_OB", "price": df.loc[last_bear_idx].close}
+        except Exception as e:
+            print(f"⚠️ [STRATEGY ERROR] Error in detect_order_blocks: {e}")
+            
         return None
 
     def check_market_structure(self, df: pd.DataFrame):
         """تحليل هيكلية السوق (Market Structure) - BOS/CHoCH"""
-        highs = df['high'].rolling(window=5).max()
-        lows = df['low'].rolling(window=5).min()
-        
-        current_close = df['close'].iloc[-1]
-        prev_high = highs.iloc[-6]
-        
-        if current_close > prev_high:
-            return "BOS_UP" # Break of Structure to the upside
+        try:
+            if len(df) < 10:
+                return "NEUTRAL"
+                
+            highs = df['high'].rolling(window=5).max()
+            current_close = df['close'].iloc[-1]
+            
+            # التأكد من وجود بيانات كافية للوصول للمؤشر -6
+            if len(highs) >= 6:
+                prev_high = highs.iloc[-6]
+                if current_close > prev_high:
+                    return "BOS_UP" # Break of Structure to the upside
+        except Exception as e:
+            print(f"⚠️ [STRATEGY ERROR] Error in check_market_structure: {e}")
+            
         return "NEUTRAL"
 
     def calculate_combined_score(self, df: pd.DataFrame, df_higher: pd.DataFrame = None) -> dict:

@@ -87,6 +87,7 @@ class AIEngine:
                         redis_client.set_data(hist_key, ohlcv, ex=3600)
                     df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
             except Exception as e:
+                print(f"⚠️ [SCANNER ERROR] Error fetching OHLCV for {symbol}: {e}")
                 return
             
             # 1. تحليل الأخبار (تم تعطيله لضمان الدقة والاعتماد على السعر والسيولة فقط)
@@ -142,8 +143,13 @@ class AIEngine:
             # منطق تنفيذ Live Trade
             risk_amount = coin.capital * (coin.risk_percentage / 100)
             sl_dist = abs(params["entry"] - params["sl"])
-            amount = risk_amount / (sl_dist / params["entry"]) if sl_dist > 0 else 0
-            if amount <= 0: return
+            if sl_dist <= 0:
+                print(f"⚠️ [RISK] تم رفض {symbol} بسبب عدم وجود مسافة وقف خسارة صالحة.")
+                return
+            amount = risk_amount / (sl_dist / params["entry"])
+            if amount <= 0: 
+                print(f"⚠️ [RISK] تم رفض {symbol} لأن حجم الصفقة المحسوب صفر.")
+                return
             
             # منع تكرار نفس العملة
             if any(t.symbol == symbol for t in open_trades): return
