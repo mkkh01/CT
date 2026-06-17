@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 import json
-from textblob import TextBlob
+# from textblob import TextBlob # تم تعطيلها لعدم الحاجة لها
 import requests
 
 class NewsIntelligence:
@@ -16,10 +16,8 @@ class NewsIntelligence:
         return f"Market sentiment analysis for {symbol} based on technical structure and volume."
 
     async def analyze_sentiment_free(self, text: str):
-        """تحليل المشاعر باستخدام TextBlob (مجاني ومحلي)"""
-        analysis = TextBlob(text)
-        # القطبية (Polarity) من -1 (سلبي جداً) إلى 1 (إيجابي جداً)
-        polarity = analysis.sentiment.polarity
+        """تحليل المشاعر (تم تعطيله للاعتماد على التحليل الفني فقط)"""
+        polarity = 0 # محايد افتراضياً
         
         if polarity > 0.1:
             impact = "Bullish"

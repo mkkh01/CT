@@ -4,13 +4,9 @@ from config import REDIS_HOST, REDIS_PORT, REDIS_PASS, REDIS_SSL
 
 class RedisManager:
     def __init__(self):
-        self.client = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            password=REDIS_PASS,
-            ssl=REDIS_SSL,
-            decode_responses=True
-        )
+        # استخدام رابط الاتصال الكامل (Connection String) لضمان التوافق وتجنب أخطاء المصادقة
+        redis_url = f"redis://:{REDIS_PASS}@{REDIS_HOST}:{REDIS_PORT}"
+        self.client = redis.from_url(redis_url, decode_responses=True)
 
     def set_data(self, key, value, ex=None):
         """حفظ البيانات في Redis مع إمكانية تحديد وقت انتهاء (expiry)"""
