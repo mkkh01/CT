@@ -65,6 +65,15 @@ class InstitutionalStrategiesV2:
         score = 0
         report = []
         
+        # التأكد من وجود بيانات كافية للتحليل
+        if df is None or df.empty or len(df) < 50:
+            return {
+                "total_score": 0,
+                "report": "بيانات غير كافية للتحليل",
+                "market_state": "UNKNOWN",
+                "quality_score": 0
+            }
+        
         # 0. Multi-Timeframe Bias (MTF) - الثعلب المؤسسي يبدأ من الفريم الأكبر
         if df_higher is not None:
             higher_ema200 = EMAIndicator(df_higher['close'], window=200).ema_indicator().iloc[-1]
@@ -128,8 +137,12 @@ class InstitutionalStrategiesV2:
         }
 
     def get_trade_params(self, df: pd.DataFrame):
+        if df is None or df.empty:
+            return {"entry": 0, "sl": 0, "tp": 0, "atr": 0}
+            
         price = df['close'].iloc[-1]
-        atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
+        atr_series = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range()
+        atr = atr_series.iloc[-1] if not atr_series.empty else 0
         
         # إدارة مخاطر مؤسسية: SL تحت أقرب قاع فني
         sl = price - (atr * 1.5)

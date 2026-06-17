@@ -83,8 +83,16 @@ def main():
     
     logger.info("✅ النظام المؤسسي جاهز بالكامل.")
     
-    # تشغيل البوت مع تنظيف التحديثات المعلقة
-    app.run_polling(drop_pending_updates=True, close_loop=False)
+    # تشغيل البوت مع إعدادات محسنة لتقليل تضارب الجلسات
+    # إضافة timeout أطول لتقليل وتيرة طلبات getUpdates
+    app.run_polling(
+        drop_pending_updates=True, 
+        close_loop=False,
+        read_timeout=30,
+        write_timeout=30,
+        connect_timeout=30,
+        pool_timeout=30
+    )
 
 if __name__ == "__main__":
     main()

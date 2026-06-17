@@ -71,9 +71,16 @@ class AIEngine:
                 ohlcv = redis_client.get_data(hist_key)
                 
                 if not ohlcv:
-                    await asyncio.sleep(2)
-                    ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
-                    redis_client.set_data(hist_key, ohlcv, ex=3600) # كاش لمدة ساعة
+                    # تقليل وتيرة جلب البيانات التاريخية لتجنب الحظر
+                    await asyncio.sleep(5)
+                    try:
+                        ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=100)
+                        redis_client.set_data(hist_key, ohlcv, ex=3600)
+                    except Exception as e:
+                        if "418" in str(e) or "1003" in str(e):
+                            print(f"🚫 [BINANCE] IP Banned or Rate Limited. Skipping {symbol}...")
+                            return
+                        raise e
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 

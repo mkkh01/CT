@@ -70,12 +70,14 @@ class TradeMonitor:
                             
                             self._save_data()
 
-                            if (datetime.now() - last_analysis_time).seconds >= 60: # فحص كل دقيقة لضمان ظهور الـ Logs
+                            if (datetime.now() - last_analysis_time).seconds >= 300: # زيادة الفاصل الزمني للفحص إلى 5 دقائق لتقليل الضغط
                                 print(f"📡 [MONITOR] جاري فحص {len(symbols)} عملة بحثاً عن فرص تداول...")
                                 for s in symbols:
-                                    print(f"🔍 [SCANNER] جاري تحليل {s}...")
-                                    await ai.analyze_and_trade(s)
-                                    await asyncio.sleep(1)
+                                    # لا نقوم بالتحليل إلا إذا كانت لدينا بيانات كافية من الـ WebSocket
+                                    if s in self.live_klines:
+                                        print(f"🔍 [SCANNER] جاري تحليل {s}...")
+                                        await ai.analyze_and_trade(s)
+                                        await asyncio.sleep(2) # زيادة التأخير بين العملات
                                 last_analysis_time = datetime.now()
 
             except Exception as e:
