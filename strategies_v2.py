@@ -39,17 +39,33 @@ class InstitutionalStrategiesV2:
         score = 0
         report = []
         
+        # 0. Multi-Timeframe Bias (MTF) - الثعلب المؤسسي يبدأ من الفريم الأكبر
+        if df_higher is not None:
+            higher_ema200 = EMAIndicator(df_higher['close'], window=200).ema_indicator().iloc[-1]
+            if df_higher['close'].iloc[-1] > higher_ema200:
+                score += 20
+                report.append("Higher TF Bias: Bullish (+20)")
+            else:
+                score -= 20
+                report.append("Higher TF Bias: Bearish (-20)")
+
         # 1. Market Structure (30 pts)
         structure = self.check_market_structure(df)
         if structure == "BOS_UP":
             score += 30
             report.append("Market Structure: Bullish BOS (+30)")
             
-        # 2. Order Block (25 pts)
+        # 2. Order Block & Liquidity (25 pts)
         ob = self.detect_order_blocks(df)
         if ob and ob["type"] == "BULLISH_OB":
-            score += 25
-            report.append("Institutional Order Block Detected (+25)")
+            # التحقق مما إذا كان السعر الحالي قريباً من الـ OB (منطقة الطلب)
+            current_price = df['close'].iloc[-1]
+            if abs(current_price - ob["price"]) / current_price < 0.01:
+                score += 35 # زيادة النقاط لقرب السعر من منطقة المؤسسات
+                report.append("Price in Institutional Demand Zone (+35)")
+            else:
+                score += 25
+                report.append("Institutional Order Block Detected (+25)")
             
         # 3. Trend Alignment (20 pts)
         ema200 = EMAIndicator(df['close'], window=200).ema_indicator().iloc[-1]

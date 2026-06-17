@@ -7,24 +7,21 @@ from sqlalchemy import select
 from database import AsyncSessionLocal, LiveTrade, TrackedCoin, UserConfig
 from config import ADMIN_ID
 
-PRICES_CACHE_FILE = "/tmp/live_prices.json"
-KLINES_CACHE_FILE = "/tmp/live_klines.json"
+from Core.redis_manager import redis_client
 
 class TradeMonitor:
     def __init__(self, bot=None):
         self.bot = bot
         self.chat_id = ADMIN_ID
         self.is_running = False
-        self.live_prices = {}
-        self.live_klines = {}
+        # استعادة البيانات من Redis عند البدء لضمان الاستمرارية
+        self.live_prices = redis_client.get_data("live_prices") or {}
+        self.live_klines = redis_client.get_data("live_klines") or {}
 
     def _save_data(self):
-        try:
-            with open(PRICES_CACHE_FILE, 'w') as f:
-                json.dump(self.live_prices, f)
-            with open(KLINES_CACHE_FILE, 'w') as f:
-                json.dump(self.live_klines, f)
-        except: pass
+        # حفظ البيانات في Redis بدلاً من الملفات المحلية
+        redis_client.set_data("live_prices", self.live_prices)
+        redis_client.set_data("live_klines", self.live_klines)
 
     async def check_prices(self):
         from Core.ai_engine import AIEngine

@@ -54,7 +54,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(f"⚠️ [BOT ERROR] {context.error}")
 
 def main():
-    logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
+    logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.0 (The Fox)... ")
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
     

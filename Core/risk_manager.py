@@ -78,3 +78,33 @@ class RiskManager:
         if price < 1: return 4
         if price < 100: return 3
         return 2
+
+    def check_correlation_risk(self, open_trades: list, new_symbol: str) -> bool:
+        """
+        محرك حماية الارتباط (Correlation Guard)
+        يمنع تكدس المخاطر في عملات تتحرك بنفس الاتجاه
+        """
+        # قائمة العملات المرتبطة تاريخياً (بشكل مبسط)
+        # في نظام أكثر تقدماً، يمكن حساب الارتباط لحظياً من البيانات
+        correlations = {
+            "BTC": ["ETH", "LTC", "BCH"],
+            "ETH": ["SOL", "AVAX", "MATIC", "OP", "ARB"],
+            "SOL": ["AVAX", "NEAR", "FTM"]
+        }
+        
+        related_count = 0
+        for trade in open_trades:
+            symbol = trade.symbol.replace("USDT", "")
+            target = new_symbol.replace("USDT", "")
+            
+            # إذا كانت العملة نفسها أو مرتبطة بها
+            if target == symbol: related_count += 1
+            for base, related in correlations.items():
+                if (target == base or target in related) and (symbol == base or symbol in related):
+                    related_count += 1
+        
+        # إذا كان هناك أكثر من صفقتين مرتبطتين، نمنع الثالثة لحماية رأس المال
+        if related_count >= 2:
+            print(f"⚠️ [CORRELATION GUARD] High correlation detected for {new_symbol}. Blocking trade.")
+            return False
+        return True

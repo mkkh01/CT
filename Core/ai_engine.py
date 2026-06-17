@@ -5,10 +5,12 @@ from sqlalchemy import select
 from strategies_v2 import InstitutionalStrategiesV2 as InstitutionalStrategies
 from Core.whale_tracker_v2 import WhaleTrackerV2
 from Core.news_analyzer import NewsAnalyzer
+from Core.risk_manager import RiskManager
 from datetime import datetime, time
 import asyncio
 import json
 import os
+from Core.redis_manager import redis_client
 
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
@@ -18,6 +20,7 @@ class AIEngine:
         self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
         self.whale_tracker = WhaleTrackerV2(bot=bot, chat_id=chat_id)
         self.news_analyzer = NewsAnalyzer(bot=bot, chat_id=chat_id)
+        self.risk_manager = RiskManager()
 
     def get_trading_session(self):
         """تحديد جلسة التداول الحالية بناءً على توقيت UTC"""
@@ -37,17 +40,15 @@ class AIEngine:
     async def get_higher_timeframe_data(self, symbol, current_tf):
         tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
         higher_tf = tf_map.get(current_tf, "1d")
-        HTF_CACHE = f"/tmp/htf_{symbol}_{higher_tf}.json"
+        redis_key = f"htf_cache_{symbol}_{higher_tf}"
         try:
-            if os.path.exists(HTF_CACHE):
-                if (datetime.now().timestamp() - os.path.getmtime(HTF_CACHE)) < 1800:
-                    with open(HTF_CACHE, 'r') as f:
-                        ohlcv = json.load(f)
-                        return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            cached_data = redis_client.get_data(redis_key)
+            if cached_data:
+                return pd.DataFrame(cached_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
             await asyncio.sleep(1)
             ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
-            with open(HTF_CACHE, 'w') as f:
-                json.dump(ohlcv, f)
+            redis_client.set_data(redis_key, ohlcv, ex=1800) # كاش لمدة 30 دقيقة
             return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         except Exception as e:
             return None
@@ -63,30 +64,25 @@ class AIEngine:
             if not coin or not coin.enabled: return
 
             try:
-                HISTORICAL_CACHE = f"/tmp/hist_{symbol}_{coin.timeframe}.json"
-                if not os.path.exists(HISTORICAL_CACHE):
+                hist_key = f"hist_cache_{symbol}_{coin.timeframe}"
+                ohlcv = redis_client.get_data(hist_key)
+                
+                if not ohlcv:
                     await asyncio.sleep(2)
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
-                    with open(HISTORICAL_CACHE, 'w') as f:
-                        json.dump(ohlcv, f)
-                else:
-                    with open(HISTORICAL_CACHE, 'r') as f:
-                        ohlcv = json.load(f)
+                    redis_client.set_data(hist_key, ohlcv, ex=3600) # كاش لمدة ساعة
+                
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
-                KLINES_CACHE = "/tmp/live_klines.json"
-                if os.path.exists(KLINES_CACHE):
-                    with open(KLINES_CACHE, 'r') as f:
-                        klines_data = json.load(f)
-                    if symbol in klines_data:
-                        k = klines_data[symbol]
-                        if k.get('x', False):
-                            new_row = [datetime.now().timestamp()*1000, k['o'], k['h'], k['l'], k['c'], k['v']]
-                            ohlcv.append(new_row)
-                            if len(ohlcv) > 300: ohlcv.pop(0)
-                            with open(HISTORICAL_CACHE, 'w') as f:
-                                json.dump(ohlcv, f)
-                        df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
+                klines_data = redis_client.get_data("live_klines")
+                if klines_data and symbol in klines_data:
+                    k = klines_data[symbol]
+                    if k.get('x', False):
+                        new_row = [datetime.now().timestamp()*1000, k['o'], k['h'], k['l'], k['c'], k['v']]
+                        ohlcv.append(new_row)
+                        if len(ohlcv) > 300: ohlcv.pop(0)
+                        redis_client.set_data(hist_key, ohlcv, ex=3600)
+                    df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
             except Exception as e:
                 return
             
@@ -125,17 +121,24 @@ class AIEngine:
             session.add(new_shadow)
             await session.commit()
 
-            # الفلترة لنظام الـ Live (لا يتم تعديله حالياً بناءً على طلبك)
+            # الفلترة لنظام الـ Live
             if total_score < 85 or analysis["quality_score"] < 70:
                 return
 
-            # منطق تنفيذ Live Trade (موجود مسبقاً)
+            # 4. حماية الارتباط (Correlation Guard)
+            open_trades_res = await session.execute(select(LiveTrade).where(LiveTrade.status == "OPEN"))
+            open_trades = open_trades_res.scalars().all()
+            if not self.risk_manager.check_correlation_risk(open_trades, symbol):
+                return
+
+            # منطق تنفيذ Live Trade
             risk_amount = coin.capital * (coin.risk_percentage / 100)
             sl_dist = abs(params["entry"] - params["sl"])
             amount = risk_amount / (sl_dist / params["entry"]) if sl_dist > 0 else 0
             if amount <= 0: return
-            check = await session.execute(select(LiveTrade).where((LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")))
-            if check.scalars().first(): return
+            
+            # منع تكرار نفس العملة
+            if any(t.symbol == symbol for t in open_trades): return
 
             new_live = LiveTrade(
                 symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
