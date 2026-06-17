@@ -22,4 +22,4 @@ BINANCE_WS_URL = "wss://stream.binance.com:9443"
 REDIS_HOST = "moon-close-reaction-79072.db.redis.io"
 REDIS_PORT = 10184
 REDIS_PASS = "OsYazrMladbKz5s1W2p4bbzv4NDNWGHy"
-REDIS_SSL = False # تم التغيير لـ False واستخدام redis:// العادي لتجنب تعارض SSL في بيئة Render
+REDIS_SSL = True # تم التثبيت على True لضمان استخدام بروتوكول rediss المشفر لـ Redis Cloud

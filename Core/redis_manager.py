@@ -4,11 +4,14 @@ from config import REDIS_HOST, REDIS_PORT, REDIS_PASS, REDIS_SSL
 
 class RedisManager:
     def __init__(self):
-        # استخدام بروتوكول redis:// العادي وتجربة الاتصال بدون SSL
-        redis_url = f"redis://:{REDIS_PASS}@{REDIS_HOST}:{REDIS_PORT}"
+        # الحل الجذري: استخدام بروتوكول rediss:// مع تعطيل فحص الشهادات تماماً
+        # ملاحظة: تم استخدام 'default' كاسم مستخدم افتراضي لـ Redis Cloud
+        redis_url = f"rediss://default:{REDIS_PASS}@{REDIS_HOST}:{REDIS_PORT}"
         self.client = redis.from_url(
             redis_url, 
-            decode_responses=True
+            decode_responses=True,
+            ssl_cert_reqs=None,
+            ssl_backlog_size=0 # لتقليل مشاكل الـ Handshake
         )
 
     def set_data(self, key, value, ex=None):
