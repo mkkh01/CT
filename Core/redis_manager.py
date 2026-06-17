@@ -1,48 +1,61 @@
-import redis
 import json
-from config import REDIS_HOST, REDIS_PORT, REDIS_PASS, REDIS_SSL
+import os
+import time
 
 class RedisManager:
+    """
+    نظام تخزين محلي ذكي (Smart Local Cache) 
+    يعمل كبديل لـ Redis باستخدام ملفات /tmp لضمان الاستمرارية والسرعة.
+    """
     def __init__(self):
-        # الحل الجذري: استخدام بروتوكول rediss:// مع تعطيل فحص الشهادات تماماً
-        # ملاحظة: تم استخدام 'default' كاسم مستخدم افتراضي لـ Redis Cloud
-        redis_url = f"rediss://default:{REDIS_PASS}@{REDIS_HOST}:{REDIS_PORT}"
-        self.client = redis.from_url(
-            redis_url, 
-            decode_responses=True,
-            ssl_cert_reqs=None,
-            ssl_backlog_size=0 # لتقليل مشاكل الـ Handshake
-        )
+        self.cache_dir = "/tmp/ct_cache"
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir, exist_ok=True)
+
+    def _get_path(self, key):
+        return os.path.join(self.cache_dir, f"{key}.json")
 
     def set_data(self, key, value, ex=None):
-        """حفظ البيانات في Redis مع إمكانية تحديد وقت انتهاء (expiry)"""
+        """حفظ البيانات محلياً مع دعم وقت الانتهاء"""
         try:
-            if isinstance(value, (dict, list)):
-                value = json.dumps(value)
-            self.client.set(key, value, ex=ex)
+            path = self._get_path(key)
+            data = {
+                "value": value,
+                "expiry": time.time() + ex if ex else None
+            }
+            with open(path, 'w') as f:
+                json.dump(data, f)
         except Exception as e:
-            print(f"❌ [REDIS ERROR] Failed to set {key}: {e}")
+            print(f"❌ [CACHE ERROR] Failed to set {key}: {e}")
 
     def get_data(self, key):
-        """جلب البيانات من Redis وتحويلها من JSON إذا لزم الأمر"""
+        """جلب البيانات والتحقق من صلاحيتها"""
         try:
-            data = self.client.get(key)
-            if data:
-                try:
-                    return json.loads(data)
-                except json.JSONDecodeError:
-                    return data
-            return None
+            path = self._get_path(key)
+            if not os.path.exists(path):
+                return None
+            
+            with open(path, 'r') as f:
+                data = json.load(f)
+            
+            # التحقق من وقت الانتهاء
+            if data["expiry"] and time.time() > data["expiry"]:
+                os.remove(path)
+                return None
+                
+            return data["value"]
         except Exception as e:
-            print(f"❌ [REDIS ERROR] Failed to get {key}: {e}")
+            # في حال وجود خطأ في القراءة، نعتبر البيانات غير موجودة
             return None
 
     def delete_data(self, key):
-        """حذف مفتاح من Redis"""
+        """حذف مفتاح الكاش"""
         try:
-            self.client.delete(key)
+            path = self._get_path(key)
+            if os.path.exists(path):
+                os.remove(path)
         except Exception as e:
-            print(f"❌ [REDIS ERROR] Failed to delete {key}: {e}")
+            print(f"❌ [CACHE ERROR] Failed to delete {key}: {e}")
 
-# إنشاء نسخة وحيدة (Singleton) للاستخدام في كامل النظام
+# تصدير النسخة الموحدة لضمان التوافق مع بقية الكود دون تعديله
 redis_client = RedisManager()

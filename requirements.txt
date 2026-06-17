@@ -12,5 +12,4 @@ flask
 scikit-learn
 requests
 ccxt
-redis
-aiohttp # تمت إزالة textblob لعدم الحاجة لها بعد تعطيل تحليل الأخبار
+aiohttp # تمت إزالة redis و textblob للاعتماد على التخزين المحلي والتحليل الفني فقط
