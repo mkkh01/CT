@@ -43,7 +43,10 @@ class TradeMonitor:
                     uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
                     
                     async with websockets.connect(uri) as ws:
-                        last_analysis_time = datetime.now()
+                        # ضبط الوقت الأولي ليبدأ الفحص بعد 30 ثانية من استقرار الاتصال
+                        from datetime import timedelta
+                        last_analysis_time = datetime.now() - timedelta(seconds=90)
+                        
                         while self.is_running:
                             # التحقق من وجود عملات جديدة تمت إضافتها لإعادة الاتصال
                             async with AsyncSessionLocal() as check_session:
@@ -70,14 +73,14 @@ class TradeMonitor:
                             
                             self._save_data()
 
-                            if (datetime.now() - last_analysis_time).seconds >= 300: # زيادة الفاصل الزمني للفحص إلى 5 دقائق لتقليل الضغط
+                            if (datetime.now() - last_analysis_time).total_seconds() >= 120: # تقليل الفاصل الزمني إلى دقيقتين ليكون أكثر استجابة
                                 print(f"📡 [MONITOR] جاري فحص {len(symbols)} عملة بحثاً عن فرص تداول...")
                                 for s in symbols:
-                                    # لا نقوم بالتحليل إلا إذا كانت لدينا بيانات كافية من الـ WebSocket
-                                    if s in self.live_klines:
+                                    # نقوم بالتحليل إذا توفرت بيانات من الـ WebSocket أو الـ Redis
+                                    if s in self.live_klines or s in self.live_prices:
                                         print(f"🔍 [SCANNER] جاري تحليل {s}...")
                                         await ai.analyze_and_trade(s)
-                                        await asyncio.sleep(2) # زيادة التأخير بين العملات
+                                        await asyncio.sleep(1.5) # تأخير معقول بين العملات
                                 last_analysis_time = datetime.now()
 
             except Exception as e:

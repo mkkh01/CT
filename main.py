@@ -29,18 +29,21 @@ logger = logging.getLogger(__name__)
 keep_alive()
 
 async def start_background_tasks(app):
-    """تشغيل الرادار المؤسسي والمراقبة والتعلم الخفي"""
-    await asyncio.sleep(10) # زيادة تأخير الأمان لضمان استقرار البوت
-    
-    # تشغيل مراقب التداول الحقيقي
-    monitor = TradeMonitor(bot=app.bot)
-    asyncio.create_task(monitor.check_prices())
-    
-    # تشغيل مراقب التعلم الخفي (Shadow Monitor)
-    shadow = ShadowMonitor(bot=app.bot)
-    asyncio.create_task(shadow.check_shadow_trades())
-    
-    logger.info("📡 [SYSTEM] تم إطلاق الرادار المؤسسي ونظام التعلم الخفي.")
+    """تشغيل الرادار المؤسسي والمراقبة والتعلم الخفي مع معالجة الأخطاء"""
+    try:
+        await asyncio.sleep(15) # تأخير كافٍ لضمان استقرار البوت
+        
+        # تشغيل مراقب التداول الحقيقي
+        monitor = TradeMonitor(bot=app.bot)
+        asyncio.create_task(monitor.check_prices())
+        
+        # تشغيل مراقب التعلم الخفي (Shadow Monitor)
+        shadow = ShadowMonitor(bot=app.bot)
+        asyncio.create_task(shadow.check_shadow_trades())
+        
+        logger.info("📡 [SYSTEM] تم إطلاق الرادار المؤسسي ونظام التعلم الخفي.")
+    except Exception as e:
+        logger.error(f"❌ [CRITICAL] فشل إطلاق المهام الخلفية: {e}")
 
 async def post_init(app: Application):
     # تنظيف أي Webhook قديم وإضافة تأخير لقطع الاتصال عن أي نسخة أخرى
