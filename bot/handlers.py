@@ -137,7 +137,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
                f"📈 إجمالي الصفقات: {total}\n"
                f"✅ نسبة النجاح: {(wins/total)*100:.2f}%\n"
                f"💰 صافي الربح: `{total_pnl:.2f} USDT`\n"
-               f"🏆 أفضل عملة: {max(trades, key=lambda t: t.pnl).symbol}")
+               f"🏆 أفضل عملة: {max(trades, key=lambda t: t.pnl).symbol if trades else 'N/A'}")
         await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_performance_report(update: Update, context: ContextTypes.DEFAULT_TYPE):

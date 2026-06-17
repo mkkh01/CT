@@ -23,8 +23,11 @@ class GannAnalyzer:
         levels = self.calculate_gann_square_of_9(current_price)
         
         # البحث عن أقرب مستوى دعم ومقاومة من مربع التسعة
-        resistance = min([v for v in levels.values() if v > current_price])
-        support = max([v for v in levels.values() if v < current_price])
+        upper_levels = [v for v in levels.values() if v > current_price]
+        lower_levels = [v for v in levels.values() if v < current_price]
+        
+        resistance = min(upper_levels) if upper_levels else current_price * 1.01
+        support = max(lower_levels) if lower_levels else current_price * 0.99
         
         # إذا كان السعر قريباً جداً من زاوية 360 أو 180، فهناك احتمال انعكاس كبير
         dist_to_res = (resistance - current_price) / current_price
