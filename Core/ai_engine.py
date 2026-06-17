@@ -54,6 +54,7 @@ class AIEngine:
             return None
 
     async def analyze_and_trade(self, symbol: str, **kwargs):
+        print(f"🔍 [SCANNER] جاري فحص العملة: {symbol}...")
         async with AsyncSessionLocal() as session:
             cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
             cfg = cfg_res.scalars().first()
@@ -61,7 +62,9 @@ class AIEngine:
             
             coin_res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
             coin = coin_res.scalars().first()
-            if not coin or not coin.enabled: return
+            if not coin or not coin.enabled: 
+                print(f"⚠️ [SCANNER] العملة {symbol} غير مفعلة في الإعدادات.")
+                return
 
             try:
                 hist_key = f"hist_cache_{symbol}_{coin.timeframe}"
@@ -92,8 +95,10 @@ class AIEngine:
             #     return
 
             # 2. تحليل هيكلة السوق و SMC
+            print(f"📊 [ANALYSIS] جاري تحليل الاستراتيجيات الفنية لـ {symbol}...")
             df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
             analysis = self.strategies.calculate_combined_score(df, df_higher)
+            print(f"📈 [SCORE] {symbol} | Total Score: {analysis['total_score']} | Quality: {analysis['quality_score']}")
             
             # 3. انحياز الحيتان (Whale Bias)
             whale_bias = self.whale_tracker.get_whale_bias(symbol)
@@ -123,12 +128,15 @@ class AIEngine:
 
             # الفلترة لنظام الـ Live
             if total_score < 85 or analysis["quality_score"] < 70:
+                print(f"⏭️ [SCANNER] تم تخطي {symbol} (النقاط غير كافية للدخول الحقيقي).")
                 return
 
             # 4. حماية الارتباط (Correlation Guard)
+            print(f"🛡️ [RISK] جاري فحص مخاطر الارتباط لـ {symbol}...")
             open_trades_res = await session.execute(select(LiveTrade).where(LiveTrade.status == "OPEN"))
             open_trades = open_trades_res.scalars().all()
             if not self.risk_manager.check_correlation_risk(open_trades, symbol):
+                print(f"🚫 [RISK] تم رفض {symbol} بسبب وجود ارتباط عالٍ مع صفقات مفتوحة.")
                 return
 
             # منطق تنفيذ Live Trade
@@ -140,6 +148,7 @@ class AIEngine:
             # منع تكرار نفس العملة
             if any(t.symbol == symbol for t in open_trades): return
 
+            print(f"🚀 [EXECUTION] تم العثور على فرصة ذهبية! جاري فتح صفقة {symbol}...")
             new_live = LiveTrade(
                 symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
                 take_profit=params["tp"], amount=amount, score=total_score,
@@ -147,3 +156,4 @@ class AIEngine:
             )
             session.add(new_live)
             await session.commit()
+            print(f"✅ [SUCCESS] تم تسجيل صفقة {symbol} بنجاح في النظام.")
