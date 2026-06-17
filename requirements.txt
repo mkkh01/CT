@@ -13,5 +13,5 @@ scikit-learn
 requests
 ccxt
 redis
-openai
+textblob
 aiohttp
