@@ -128,7 +128,8 @@ class AIEngine:
             await session.commit()
 
             # الفلترة لنظام الـ Live
-            if total_score < 85 or analysis["quality_score"] < 70:
+            # تم تعديل الشروط لتكون أكثر مرونة مع نظام الجودة الجديد
+            if total_score < 70 or analysis["quality_score"] < 60:
                 print(f"⏭️ [SCANNER] تم تخطي {symbol} (النقاط غير كافية للدخول الحقيقي).")
                 return
 

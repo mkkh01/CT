@@ -115,11 +115,16 @@ class InstitutionalStrategiesV2:
             score -= 30
             report.append("Gann Alert: Reversal Zone Detected (-30)")
 
+        # حساب جودة الصفقة بشكل ديناميكي بناءً على عدد الشروط المحققة
+        total_conditions = 6 # MTF, Structure, OB, EMA, Volatility, Gann
+        met_conditions = len([r for r in report if "+" in r])
+        quality_score = (met_conditions / total_conditions) * 100
+        
         return {
             "total_score": score,
             "report": " | ".join(report),
             "market_state": structure,
-            "quality_score": 100 if score > 50 else 50
+            "quality_score": round(quality_score, 2)
         }
 
     def get_trade_params(self, df: pd.DataFrame):
