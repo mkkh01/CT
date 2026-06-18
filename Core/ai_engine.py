@@ -45,7 +45,6 @@ class AIEngine:
         return None
 
     async def analyze_and_trade(self, symbol: str, live_data=None, **kwargs):
-        print(f"🔍 [SCANNER] جاري فحص {symbol} (Request Weight: {api_guard.current_weight}/{api_guard.max_weight})...")
         async with AsyncSessionLocal() as session:
             cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
             cfg = cfg_res.scalars().first()
@@ -60,16 +59,17 @@ class AIEngine:
                 ohlcv = redis_client.get_data(hist_key)
                 
                 if not ohlcv:
-                    # سيتم التعامل مع جلب البيانات التاريخية في مرحلة لاحقة
                     return
                 
                 if not live_data or len(ohlcv) < state_manager.data_threshold:
                     return
                 
+                # إنشاء DataFrame مع تحديد أنواع البيانات لتجنب التحذيرات
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df = df.astype({'timestamp': 'float64', 'open': 'float64', 'high': 'float64', 'low': 'float64', 'close': 'float64', 'volume': 'float64'})
                 
                 if live_data:
-                    new_row = [datetime.now().timestamp()*1000, live_data['o'], live_data['h'], live_data['l'], live_data['c'], live_data['v']]
+                    new_row = [float(datetime.now().timestamp()*1000), float(live_data['o']), float(live_data['h']), float(live_data['l']), float(live_data['c']), float(live_data['v'])]
                     df.iloc[-1] = new_row
             except Exception as e:
                 print(f"⚠️ [SCANNER ERROR] Error processing OHLCV for {symbol}: {e}")
