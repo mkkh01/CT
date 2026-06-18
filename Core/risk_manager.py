@@ -6,6 +6,8 @@ class RiskManager:
         self.max_risk_per_trade = 0.02 
         # الدقة الافتراضية للعملات (8 خانات للعملات الصفرية والصغيرة)
         self.precision = 8
+        self.max_daily_loss = 0.05 # 5% max daily loss
+        self.max_drawdown = 0.10 # 10% max drawdown protection
 
     def calculate_kelly_position(self, capital: float, win_rate: float, risk_reward_ratio: float) -> float:
         """

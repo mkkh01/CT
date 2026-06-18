@@ -77,12 +77,13 @@ class InstitutionalStrategiesV2:
         # 0. Multi-Timeframe Bias (MTF) - الثعلب المؤسسي يبدأ من الفريم الأكبر
         if df_higher is not None:
             higher_ema200 = EMAIndicator(df_higher['close'], window=200).ema_indicator().iloc[-1]
-            if df_higher['close'].iloc[-1] > higher_ema200:
-                score += 20
-                report.append("Higher TF Bias: Bullish (+20)")
+            higher_close = df_higher['close'].iloc[-1]
+            if higher_close > higher_ema200:
+                score += 25
+                report.append("MTF Structure: Bullish (+25)")
             else:
-                score -= 20
-                report.append("Higher TF Bias: Bearish (-20)")
+                score -= 25
+                report.append("MTF Structure: Bearish (-25)")
 
         # 1. Market Structure (30 pts)
         structure = self.check_market_structure(df)

@@ -6,6 +6,9 @@ from strategies_v2 import InstitutionalStrategiesV2 as InstitutionalStrategies
 from Core.whale_tracker_v2 import WhaleTrackerV2
 from Core.news_analyzer import NewsAnalyzer
 from Core.risk_manager import RiskManager
+from Core.smc_engine import SMCEngine
+from Core.volume_engine import VolumeEngine
+from Core.market_context import MarketContext
 from datetime import datetime, time
 import asyncio
 import json
@@ -21,6 +24,9 @@ class AIEngine:
         self.whale_tracker = WhaleTrackerV2(bot=bot, chat_id=chat_id)
         self.news_analyzer = NewsAnalyzer(bot=bot, chat_id=chat_id)
         self.risk_manager = RiskManager()
+        self.smc_engine = SMCEngine()
+        self.volume_engine = VolumeEngine()
+        self.market_context = MarketContext()
 
     def get_trading_session(self):
         """تحديد جلسة التداول الحالية بناءً على توقيت UTC"""
@@ -108,7 +114,28 @@ class AIEngine:
             analysis = self.strategies.calculate_combined_score(df, df_higher)
             print(f"📈 [SCORE] {symbol} | Total Score: {analysis['total_score']} | Quality: {analysis['quality_score']}")
             
-            # 3. انحياز الحيتان (Whale Bias)
+            # 3. SMC & Volume Analysis (New)
+            smc_structure = self.smc_engine.detect_structure(df)
+            fvgs = self.smc_engine.detect_fvg(df)
+            sweeps = self.smc_engine.detect_liquidity_sweeps(df)
+            vol_analysis = self.volume_engine.get_volume_profile_bias(df)
+            
+            # تحديث النقاط بناءً على SMC
+            smc_score = 0
+            if smc_structure == "BOS_UP": smc_score += 20
+            if smc_structure == "CHoCH_UP": smc_score += 30
+            if any(f['type'] == 'BULLISH' for f in fvgs[-3:]): smc_score += 15
+            if any(s['type'] == 'SELL_SIDE_SWEEP' for s in sweeps): smc_score += 25
+            if vol_analysis['bias'] == "BULLISH": smc_score += 10
+            
+            analysis["total_score"] += smc_score
+            analysis["report"] += f" | SMC Score: +{smc_score} ({smc_structure})"
+            
+            # 4. Market Context (BTC/Market Regime)
+            market_regime = await self.market_context.get_market_regime()
+            if market_regime == "BULLISH_MARKET": analysis["total_score"] += 10
+            
+            # 5. انحياز الحيتان (Whale Bias)
             whale_bias = self.whale_tracker.get_whale_bias(symbol)
             if whale_bias == "BUY":
                 analysis["total_score"] += 15
@@ -116,6 +143,11 @@ class AIEngine:
             total_score = analysis["total_score"]
             params = self.strategies.get_trade_params(df)
             current_session = self.get_trading_session()
+            
+            # Dynamic Weighting based on Session
+            if current_session in ["London", "New York"]:
+                total_score *= 1.1 # زيادة الثقة في جلسات السيولة العالية
+                
             prob = await self.calculate_probability(symbol, total_score, current_session)
 
             # تسجيل صفقة ظل (Shadow Trade) للتعلم
