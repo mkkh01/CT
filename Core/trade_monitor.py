@@ -19,7 +19,6 @@ class TradeMonitor:
         self.live_klines = {}
 
     async def _save_data(self):
-        # تم إزالة القفل من هنا لمنع الـ Deadlock حيث يتم استدعاؤه داخل قفل بالفعل
         for symbol, data in self.live_prices.items():
             await redis_client.set_data(f"live_prices_{symbol}", data)
         for symbol, data in self.live_klines.items():
@@ -39,23 +38,27 @@ class TradeMonitor:
                 await api_guard.check_wait(1)
                 async with AsyncSessionLocal() as session:
                     coins_res = await session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
-                    symbols = [c.symbol.strip() for c in coins_res.scalars().all() if c.symbol and c.symbol.strip()]
+                    coins = coins_res.scalars().all()
+                    symbols = [c.symbol.strip() for c in coins if c.symbol and c.symbol.strip()]
                     
                     if not symbols:
                         await asyncio.sleep(10)
                         continue
 
-                    # تنظيف صارم للرموز لضمان عدم وجود رموز غير صالحة تسبب HTTP 400
                     clean_symbols = [s.strip().lower() for s in symbols if s and s.strip()]
                     if not clean_symbols:
                         await asyncio.sleep(10)
                         continue
                         
                     streams = []
+                    # خريطة لربط الرمز بـ timeframe الخاص به
+                    symbol_to_tf = {c.symbol.strip().lower(): c.timeframe for c in coins}
+                    
                     for s in clean_symbols:
                         if s.isalnum():
                             streams.append(f"{s}@miniTicker")
-                            streams.append(f"{s}@kline_15m")
+                            tf = symbol_to_tf.get(s, "15m")
+                            streams.append(f"{s}@kline_{tf}")
                     
                     if not streams:
                         await asyncio.sleep(10)
@@ -70,7 +73,6 @@ class TradeMonitor:
                             
                             while self.is_running:
                                 try:
-                                    # التحقق من وجود عملات جديدة تمت إضافتها لإعادة الاتصال
                                     async with AsyncSessionLocal() as check_session:
                                         current_symbols = [c.symbol for c in (await check_session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))).scalars().all()]
                                         if set(current_symbols) != set(symbols):
@@ -109,7 +111,6 @@ class TradeMonitor:
                                     
                                     await self._save_data()
 
-                                # لا يسمح بالتحليل إلا إذا كان النظام READY
                                 if state_manager.is_ready() and (datetime.now() - last_analysis_time).total_seconds() >= 120:
                                     print(f"📡 [MONITOR] بدأت دورة التحليل المؤسسي لـ {len(symbols)} عملة...")
                                     processed_symbols_count = 0

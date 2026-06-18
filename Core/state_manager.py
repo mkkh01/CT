@@ -23,7 +23,7 @@ class StateManager:
             cls._instance.cache_lock = asyncio.Lock()
             cls._instance.startup_time = None
             cls._instance.min_warmup_sec = 30
-            cls._instance.data_threshold = 50 # تم رفعه لضمان تحليل فني دقيق
+            cls._instance.data_threshold = 50 
         return cls._instance
 
     def set_state(self, new_state: SystemState):
@@ -34,7 +34,6 @@ class StateManager:
         return self.state == SystemState.READY
 
     async def fetch_historical_data(self, symbol, timeframe):
-        """جلب البيانات التاريخية من Binance API لتعبئة الكاش"""
         from Core.api_guard import api_guard
         from Core.redis_manager import redis_client
         
@@ -46,7 +45,6 @@ class StateManager:
                 response = await client.get(url, timeout=10)
                 if response.status_code == 200:
                     klines = response.json()
-                    # تنسيق البيانات: [timestamp, open, high, low, close, volume]
                     formatted_data = [
                         [k[0], float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])]
                         for k in klines
@@ -80,19 +78,32 @@ class StateManager:
             symbol = coin.symbol.strip()
             timeframe = coin.timeframe
             
-            # 1. التحقق من البيانات التاريخية
             hist_key = f"hist_cache_{symbol}_{timeframe}"
             hist_data = redis_client.get_data(hist_key)
             if not hist_data or len(hist_data) < self.data_threshold:
                 logger.info(f"⏳ [WARMUP] جلب بيانات تاريخية لـ {symbol}...")
-                await self.fetch_historical_data(symbol, timeframe)
-                all_warmed = False
+                success = await self.fetch_historical_data(symbol, timeframe)
+                if not success:
+                    all_warmed = False
+                    continue
             
-            # 2. التحقق من بيانات WebSocket الحية
             kline_data = redis_client.get_data(f"live_klines_{symbol}")
             if not isinstance(kline_data, dict) or not all(key in kline_data for key in ["o", "h", "l", "c", "v", "x"]):
-                logger.info(f"⏳ [WARMUP] {symbol} بانتظار أول شمعة حية من WebSocket...")
-                all_warmed = False
+                # محاولة تعبئة بيانات لايف أولية من البيانات التاريخية إذا لم تصل بيانات WebSocket بعد
+                # لتجنب التوقف اللانهائي في مرحلة الـ Warmup
+                hist_data = redis_client.get_data(hist_key)
+                if hist_data and len(hist_data) > 0:
+                    last_k = hist_data[-1]
+                    # محاكاة هيكل بيانات WebSocket
+                    initial_live = {
+                        'o': last_k[1], 'h': last_k[2], 'l': last_k[3], 
+                        'c': last_k[4], 'v': last_k[5], 'x': True
+                    }
+                    await redis_client.set_data(f"live_klines_{symbol}", initial_live)
+                    logger.info(f"⚡ [WARMUP] تم استخدام آخر شمعة تاريخية كبيانات أولية لـ {symbol}")
+                else:
+                    logger.info(f"⏳ [WARMUP] {symbol} بانتظار أول شمعة حية...")
+                    all_warmed = False
                 
         return all_warmed
 
