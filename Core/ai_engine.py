@@ -1,5 +1,4 @@
 import pandas as pd
-
 from database import AsyncSessionLocal, LiveTrade, ShadowTrade, UserConfig, TrackedCoin
 from sqlalchemy import select
 from strategies_v2 import InstitutionalStrategiesV2 as InstitutionalStrategies
@@ -15,6 +14,7 @@ import asyncio
 import json
 import os
 from Core.redis_manager import redis_client
+from Core.state_manager import state_manager
 
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
@@ -30,7 +30,6 @@ class AIEngine:
         self.market_context = MarketContext()
 
     def get_trading_session(self):
-        """تحديد جلسة التداول الحالية بناءً على توقيت UTC"""
         now = datetime.utcnow().time()
         if time(8, 0) <= now <= time(16, 0): return "London"
         if time(13, 0) <= now <= time(21, 0): return "New York"
@@ -38,14 +37,12 @@ class AIEngine:
         return "Asian/Late NY"
 
     async def calculate_probability(self, symbol, score, session):
-        """محرك الاحتمالات (Probability Engine)"""
         base_prob = score * 0.8
         if session in ["London", "New York"]: base_prob += 10
         return min(95, base_prob)
 
     async def get_higher_timeframe_data(self, symbol, current_tf):
-        # البيانات يجب أن تأتي من الكاش فقط
-        return None # لا يوجد دعم لـ higher timeframe من الكاش حالياً، يمكن تطويره لاحقاً
+        return None
 
     async def analyze_and_trade(self, symbol: str, live_data=None, **kwargs):
         print(f"🔍 [SCANNER] جاري فحص {symbol} (Request Weight: {api_guard.current_weight}/{api_guard.max_weight})...")
@@ -63,12 +60,10 @@ class AIEngine:
                 ohlcv = redis_client.get_data(hist_key)
                 
                 if not ohlcv:
-                    print(f"⚠️ [SCANNER] تخطي {symbol} لعدم توفر بيانات تاريخية كافية في الكاش.")
+                    # سيتم التعامل مع جلب البيانات التاريخية في مرحلة لاحقة
                     return
                 
-                # فلتر صارم: التحقق من وجود الكاش وعدم كونه فارغ وأن طوله أكبر من الحد الأدنى
                 if not live_data or len(ohlcv) < state_manager.data_threshold:
-                    print(f"⚠️ [SCANNER] تخطي {symbol} لعدم توفر بيانات كافية في الكاش (الحد الأدنى: {state_manager.data_threshold}).")
                     return
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -76,7 +71,6 @@ class AIEngine:
                 if live_data:
                     new_row = [datetime.now().timestamp()*1000, live_data['o'], live_data['h'], live_data['l'], live_data['c'], live_data['v']]
                     df.iloc[-1] = new_row
-                    print(f"⚡ [CACHE] تم استخدام بيانات WebSocket الحية لـ {symbol}")
             except Exception as e:
                 print(f"⚠️ [SCANNER ERROR] Error processing OHLCV for {symbol}: {e}")
                 return
@@ -85,7 +79,7 @@ class AIEngine:
             df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
             params = self.strategies.get_trade_params(df)
             
-            # 2. Decision Engine: SMC, Volume, Context
+            # 2. Decision Engine
             smc_data = self.smc_engine.detect_structure(df)
             pd_zones = self.smc_engine.get_premium_discount(df)
             liq_data = self.smc_engine.detect_liquidity(df)
@@ -132,7 +126,6 @@ class AIEngine:
             current_session = self.get_trading_session()
             prob = await self.calculate_probability(symbol, total_score, current_session)
 
-            # تسجيل صفقة ظل
             new_shadow = ShadowTrade(
                 symbol=symbol, score=total_score, entry_price=params["entry"],
                 stop_loss=params["sl"], take_profit=params["tp"],
@@ -141,28 +134,21 @@ class AIEngine:
             )
             session.add(new_shadow)
             await session.commit()
-            print(f"📝 [SHADOW] تسجيل صفقة ظل لـ {symbol} (Prob: {prob:.1f}%)")
 
-            # الفلترة للـ Live
             if total_score < 70:
-                print(f"⏭️ [SCANNER] {symbol} لم يجتز المعايير (Score: {total_score:.1f}).")
                 return
 
-            # حماية الارتباط
             open_trades_res = await session.execute(select(LiveTrade).where(LiveTrade.status == "OPEN"))
             open_trades = open_trades_res.scalars().all()
             if any(t.symbol == symbol for t in open_trades): return
             if not self.risk_manager.check_correlation_risk(open_trades, symbol):
-                print(f"🚫 [RISK] تم رفض {symbol} بسبب الارتباط العالي.")
                 return
 
-            # تنفيذ الصفقة
             risk_amount = coin.capital * (coin.risk_percentage / 100)
             sl_dist = abs(params["entry"] - params["sl"])
             if sl_dist <= 0: return
             amount = risk_amount / (sl_dist / params["entry"])
             
-            print(f"🚀 [EXECUTION] بناء صفقة {symbol} (Amount: {amount:.2f} USDT)...")
             new_live = LiveTrade(
                 symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
                 take_profit=params["tp"], amount=amount, score=total_score,
@@ -170,4 +156,3 @@ class AIEngine:
             )
             session.add(new_live)
             await session.commit()
-            print(f"✅ [SUCCESS] تم تفعيل الصفقة الحقيقية لـ {symbol} بنجاح.")

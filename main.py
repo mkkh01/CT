@@ -35,7 +35,7 @@ async def start_background_tasks(app):
     """التحكم في دورة التشغيل: Connect -> Warm-up -> Ready"""
     try:
         state_manager.set_state(SystemState.WARMING_UP)
-        logger.info("🕒 [STARTUP] بدء مرحلة الـ Warm-up (30 ثانية) لتجهيز الكاش...")
+        logger.info("🕒 [STARTUP] بدء مرحلة الـ Warm-up لتجهيز الكاش...")
         
         # تشغيل مراقب التداول الحقيقي (سيبدأ بجمع البيانات فوراً)
         monitor = TradeMonitor(bot=app.bot)
@@ -92,10 +92,13 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(init_db())
-    app.bot_data = {'trade_monitor_task': None, 'shadow_monitor_task': None}
     
-    # بناء التطبيق
+    # بناء التطبيق أولاً
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    
+    # ثم تهيئة bot_data
+    app.bot_data['trade_monitor_task'] = None
+    app.bot_data['shadow_monitor_task'] = None
     
     # تشغيل Flask Webhook Server للحفاظ على الخدمة حية
     keep_alive(app)
@@ -118,7 +121,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # تشغيل البوت باستخدام Polling لتجنب تضارب المنافذ
-    # Flask يعمل على المنفذ 10000 و Polling يستقبل الرسائل من Telegram مباشرة
     logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling.")
     try:
         app.run_polling()
