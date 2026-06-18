@@ -21,8 +21,7 @@ class StateManager:
             cls._instance.cache_lock = asyncio.Lock()
             cls._instance.startup_time = None
             cls._instance.min_warmup_sec = 30 # هذا لم يعد يستخدم بشكل مباشر للانتظار الثابت
-            cls._instance.data_threshold = 50 # Minimum klines/tickers before ready
-            cls._instance.data_threshold = 5 # Minimum klines/tickers before ready
+            cls._instance.data_threshold = 5 # Minimum data points (e.g., kline keys) before ready, adjusted for single kline dict
         return cls._instance
 
     def set_state(self, new_state: SystemState):
@@ -45,7 +44,9 @@ class StateManager:
 
         for symbol in symbols:
             kline_data = redis_client.get_data(f"live_klines_{symbol}") # Assuming klines are stored per symbol
-            if not kline_data or len(kline_data) < self.data_threshold:
+            # Check if kline_data exists and is a dictionary with expected keys
+            # Assuming a single kline dict is stored, not a list of klines
+            if not isinstance(kline_data, dict) or not all(key in kline_data for key in ["o", "h", "l", "c", "v", "x"]):
                 logger.info(f"⏳ [WARMUP] {symbol} لا يزال يحتاج إلى بيانات إضافية في الكاش. (الحد الأدنى: {self.data_threshold})")
                 return False
         logger.info("✅ [WARMUP] الكاش مكتمل لجميع الرموز المطلوبة.")

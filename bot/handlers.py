@@ -114,13 +114,21 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 from Core.redis_manager import redis_client
 
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prices = redis_client.get_data("live_prices")
+    async with AsyncSessionLocal() as session:
+        coins_res = await session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
+        tracked_symbols = [c.symbol.strip() for c in coins_res.scalars().all() if c.symbol and c.symbol.strip()]
+
+    prices = {}
+    for symbol in tracked_symbols:
+        price_data = redis_client.get_data(f"live_prices_{symbol}")
+        if price_data:
+            prices[symbol] = price_data
     if not prices:
         await update.message.reply_text("⏳ جاري الاتصال بالرادار أو لا توجد عملات مضافة.")
         return
     msg = "📈 *الأسعار المباشرة (Institutional Radar)*\n━━━━━━━━━━━━━━\n"
-    for s, d in prices.items():
-        msg += f"🪙 {s}: `{d['price']}` | 🕒 {d['time']}\n"
+    for symbol, data in prices.items():
+        msg += f"🪙 {symbol}: `{data["price"]}` | 🕒 {data["time"]}\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):

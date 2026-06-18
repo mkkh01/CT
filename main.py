@@ -39,11 +39,11 @@ async def start_background_tasks(app):
         
         # تشغيل مراقب التداول الحقيقي (سيبدأ بجمع البيانات فوراً)
         monitor = TradeMonitor(bot=app.bot)
-        asyncio.create_task(monitor.check_prices())
+        app.bot_data['trade_monitor_task'] = asyncio.create_task(monitor.check_prices())
         
         # تشغيل مراقب التعلم الخفي (Shadow Monitor)
         shadow = ShadowMonitor(bot=app.bot)
-        asyncio.create_task(shadow.check_shadow_trades())
+        app.bot_data['shadow_monitor_task'] = asyncio.create_task(shadow.check_shadow_trades())
         
         # انتظار اكتمال الـ Warm-up: يجب أن ينتظر حتى يصبح لكل رمز بيانات كافية
         logger.info("⏳ [WARMUP] انتظار اكتمال الكاش لكل الرموز...")
@@ -68,11 +68,31 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """تسجيل الأخطاء التي تحدث أثناء تشغيل البوت"""
     logger.error(f"⚠️ [BOT ERROR] {context.error}")
 
+async def shutdown_tasks(app):
+    logger.info("🛑 [SHUTDOWN] إيقاف المهام الخلفية...")
+    if app.bot_data.get('trade_monitor_task'):
+        app.bot_data['trade_monitor_task'].cancel()
+    if app.bot_data.get('shadow_monitor_task'):
+        app.bot_data['shadow_monitor_task'].cancel()
+    
+    # Wait for tasks to finish cancellation
+    tasks = [t for t in [app.bot_data.get('trade_monitor_task'), app.bot_data.get('shadow_monitor_task')] if t]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("✅ [SHUTDOWN] تم إيقاف المهام الخلفية.")
+
+async def dispose_db_engine():
+    from database import engine
+    logger.info("🛑 [SHUTDOWN] إغلاق اتصال قاعدة البيانات...")
+    await engine.dispose()
+    logger.info("✅ [SHUTDOWN] تم إغلاق اتصال قاعدة البيانات.")
+
 def main():
     logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.0 (The Fox)... ")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(init_db())
+    app.bot_data = {'trade_monitor_task': None, 'shadow_monitor_task': None}
     
     # بناء التطبيق
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
@@ -100,7 +120,11 @@ def main():
     # تشغيل البوت باستخدام Polling لتجنب تضارب المنافذ
     # Flask يعمل على المنفذ 10000 و Polling يستقبل الرسائل من Telegram مباشرة
     logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling.")
-    app.run_polling()
+    try:
+        app.run_polling()
+    finally:
+        loop.run_until_complete(shutdown_tasks(app))
+        loop.run_until_complete(dispose_db_engine())
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ class ShadowMonitor:
 
     async def check_shadow_trades(self):
         """مراقبة صفقات الظل المفتوحة وتحديث نتائجها"""
-        while True:
+        self.is_running = True
+        while self.is_running:
             try:
                 async with AsyncSessionLocal() as session:
                     # جلب الصفقات المفتوحة
@@ -60,7 +61,16 @@ class ShadowMonitor:
                             print(f"📉 [SHADOW LEARN] تم إغلاق صفقة ظل لـ {trade.symbol} بنتيجة: {trade.status}")
                     
                     await session.commit()
+            except asyncio.CancelledError:
+                print("🛑 [SHADOW MONITOR] Task was cancelled. Shutting down gracefully.")
+                self.is_running = False
+                break
             except Exception as e:
                 print(f"⚠️ [SHADOW MONITOR] Error: {e}")
             
-            await asyncio.sleep(10)
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                print("🛑 [SHADOW MONITOR] Task was cancelled during sleep. Shutting down gracefully.")
+                self.is_running = False
+                break
