@@ -51,19 +51,12 @@ async def start_background_tasks(app):
         logger.error(f"❌ [CRITICAL] فشل إطلاق المهام الخلفية: {e}")
 
 async def post_init(app: Application):
-    # إعداد الـ Webhook لضمان جلسة واحدة فقط (Render URL)
-    webhook_url = os.environ.get("RENDER_EXTERNAL_URL", "")
-    if webhook_url:
-        full_url = f"{webhook_url}/webhook"
-        await app.bot.set_webhook(url=full_url, drop_pending_updates=True)
-        logger.info(f"🌐 [WEBHOOK] تم تفعيل الـ Webhook على: {full_url}")
-    else:
-        # Fallback لـ Polling في بيئة التطوير فقط مع تنظيف صارم
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        logger.warning("⚠️ [SYSTEM] RENDER_EXTERNAL_URL غير موجود، استخدام Polling كبديل.")
+    # تنظيف صارم لأي Webhook قديم لضمان عمل الـ Polling بدون تعارض (Conflict)
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    await asyncio.sleep(2) # تأخير قصير لضمان قطع اتصال أي نسخة قديمة تماماً
     
     asyncio.create_task(start_background_tasks(app))
-    logger.info("🗑️ [SYSTEM] تم تنظيف الجلسات وتجهيز الـ Startup Sequence.")
+    logger.info("🗑️ [SYSTEM] تم تنظيف الجلسات القديمة وتجهيز الـ Startup Sequence.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """تسجيل الأخطاء التي تحدث أثناء تشغيل البوت"""
@@ -98,18 +91,11 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # تشغيل البوت: Webhook لبيئة الإنتاج، Polling للتطوير
-    if os.environ.get("RENDER_EXTERNAL_URL"):
-        logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Webhook.")
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=int(os.environ.get("PORT", 10000)),
-            url_path="webhook",
-            webhook_url=f"{os.environ.get('RENDER_EXTERNAL_URL')}/webhook"
-        )
-    else:
-        logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling (بيئة تطوير).")
-        app.run_polling(drop_pending_updates=True)
+    # تشغيل البوت: استخدام Polling مع آلية تنظيف صارمة لتجنب الـ Conflict
+    # ملاحظة: تم الرجوع للـ Polling مع تحسين الـ Startup Sequence و الـ Session Cleaning
+    # لأن run_webhook يتطلب إعدادات سيرفر معينة قد تتعارض مع Flask
+    logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling المحسن.")
+    app.run_polling(drop_pending_updates=True, close_loop=False)
 
 
 if __name__ == "__main__":
