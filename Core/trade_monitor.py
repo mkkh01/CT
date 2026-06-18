@@ -25,12 +25,16 @@ class TradeMonitor:
 
     async def check_prices(self):
         from Core.ai_engine import AIEngine
+        from Core.api_guard import api_guard
         ai = AIEngine(bot=self.bot, chat_id=self.chat_id)
         self.is_running = True
-        print("📡 [MONITOR] انطلاق الرادار المؤسسي V4.0")
+        print("🚀 [SYSTEM] انطلاق محرك التداول المؤسسي CT V5.0")
+        print("📡 [MONITOR] بدء مراقبة الأسعار عبر WebSocket...")
         
+        reconnect_delay = 5
         while self.is_running:
             try:
+                await api_guard.check_wait(1)
                 async with AsyncSessionLocal() as session:
                     coins_res = await session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
                     symbols = [c.symbol.strip() for c in coins_res.scalars().all() if c.symbol and c.symbol.strip()]
@@ -103,20 +107,25 @@ class TradeMonitor:
                             self._save_data()
 
                             if (datetime.now() - last_analysis_time).total_seconds() >= 120: # تقليل الفاصل الزمني إلى دقيقتين ليكون أكثر استجابة
-                                print(f"📡 [MONITOR] جاري فحص {len(symbols)} عملة بحثاً عن فرص تداول...")
+                                print(f"📡 [MONITOR] بدأت دورة التحليل المؤسسي لـ {len(symbols)} عملة...")
                                 for s in symbols:
-                                    # نقوم بالتحليل إذا توفرت بيانات من الـ WebSocket أو الـ Redis
-                                    if s in self.live_klines or s in self.live_prices:
-                                        print(f"🔍 [SCANNER] جاري تحليل {s}...")
-                                        await ai.analyze_and_trade(s)
-                                        await asyncio.sleep(1.5) # تأخير معقول بين العملات
+                                    # استخدام البيانات المخزنة مؤقتاً (Cache) لتقليل طلبات REST
+                                    if s in self.live_klines:
+                                        print(f"🔍 [SCANNER] جاري تحليل {s} بناءً على بيانات الـ WebSocket المحدثة...")
+                                        await ai.analyze_and_trade(s, live_data=self.live_klines[s])
+                                        await asyncio.sleep(0.5) # تقليل التأخير لاعتمادنا على الكاش
+                                    else:
+                                        print(f"⚠️ [SCANNER] تخطي {s} لعدم توفر بيانات كافية في الكاش.")
+                                
+                                print("✅ [SYSTEM] اكتملت دورة التحليل بنجاح. بانتظار الدورة القادمة.")
                                 last_analysis_time = datetime.now()
+                                reconnect_delay = 5 # Reset delay on success
 
             except Exception as e:
                 import traceback
-                print(f"⚠️ [MONITOR] Fatal Error: {e}")
-                traceback.print_exc()
-                await asyncio.sleep(5)
+                print(f"⚠️ [MONITOR] Connection Error: {e}. Reconnecting in {reconnect_delay}s...")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 300) # Exponential backoff for WS reconnect
 
     async def _check_live_trades(self, symbol, price):
         """مراقبة الصفقات الحقيقية (Phase 4)"""

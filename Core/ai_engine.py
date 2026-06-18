@@ -9,6 +9,7 @@ from Core.risk_manager import RiskManager
 from Core.smc_engine import SMCEngine
 from Core.volume_engine import VolumeEngine
 from Core.market_context import MarketContext
+from Core.api_guard import api_guard
 from datetime import datetime, time
 import asyncio
 import json
@@ -59,8 +60,8 @@ class AIEngine:
         except Exception as e:
             return None
 
-    async def analyze_and_trade(self, symbol: str, **kwargs):
-        print(f"🔍 [SCANNER] جاري فحص العملة: {symbol}...")
+    async def analyze_and_trade(self, symbol: str, live_data=None, **kwargs):
+        print(f"🔍 [SCANNER] جاري فحص {symbol} (Request Weight: {api_guard.current_weight}/{api_guard.max_weight})...")
         async with AsyncSessionLocal() as session:
             cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
             cfg = cfg_res.scalars().first()
@@ -68,9 +69,29 @@ class AIEngine:
             
             coin_res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
             coin = coin_res.scalars().first()
-            if not coin or not coin.enabled: 
-                print(f"⚠️ [SCANNER] العملة {symbol} غير مفعلة في الإعدادات.")
-                return
+            if not coin or not coin.enabled: return
+
+            try:
+                hist_key = f"hist_cache_{symbol}_{coin.timeframe}"
+                ohlcv = redis_client.get_data(hist_key)
+                
+                if not ohlcv:
+                    await api_guard.check_wait(1)
+                    try:
+                        ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=100)
+                        api_guard.update_weight(self.exchange.last_response_headers.get('X-MBX-USED-WEIGHT-1M', 0))
+                        redis_client.set_data(hist_key, ohlcv, ex=3600)
+                    except Exception as e:
+                        if hasattr(e, 'status_code'): api_guard.report_error(e.status_code)
+                        return
+                
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                
+                # دمج بيانات الـ WebSocket الحية في الـ DataFrame لضمان No Repaint وأحدث سعر
+                if live_data:
+                    new_row = [datetime.now().timestamp()*1000, live_data['o'], live_data['h'], live_data['l'], live_data['c'], live_data['v']]
+                    df.iloc[-1] = new_row
+                    print(f"⚡ [CACHE] تم استخدام بيانات WebSocket الحية لـ {symbol} (توفير 1 REST Weight)")
 
             try:
                 hist_key = f"hist_cache_{symbol}_{coin.timeframe}"
@@ -192,11 +213,11 @@ class AIEngine:
             )
             session.add(new_shadow)
             await session.commit()
+            print(f"📝 [SHADOW] تم تسجيل صفقة ظل لـ {symbol} (الاحتمالية: {prob:.1f}%)")
 
             # الفلترة لنظام الـ Live
-            # تم تعديل الشروط لتكون أكثر مرونة مع نظام الجودة الجديد
             if total_score < 70 or analysis["quality_score"] < 60:
-                print(f"⏭️ [SCANNER] تم تخطي {symbol} (النقاط غير كافية للدخول الحقيقي).")
+                print(f"⏭️ [SCANNER] {symbol} لم يجتز معايير الدخول المؤسسية (Score: {total_score:.1f}).")
                 return
 
             # 4. حماية الارتباط (Correlation Guard)
@@ -221,7 +242,7 @@ class AIEngine:
             # منع تكرار نفس العملة
             if any(t.symbol == symbol for t in open_trades): return
 
-            print(f"🚀 [EXECUTION] تم العثور على فرصة ذهبية! جاري فتح صفقة {symbol}...")
+            print(f"🚀 [EXECUTION] فرصة ذهبية! جاري بناء صفقة {symbol} (Amount: {amount:.2f} USDT)...")
             new_live = LiveTrade(
                 symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
                 take_profit=params["tp"], amount=amount, score=total_score,
@@ -229,4 +250,4 @@ class AIEngine:
             )
             session.add(new_live)
             await session.commit()
-            print(f"✅ [SUCCESS] تم تسجيل صفقة {symbol} بنجاح في النظام.")
+            print(f"✅ [SUCCESS] تم تفعيل الصفقة الحقيقية لـ {symbol} بنجاح.")
