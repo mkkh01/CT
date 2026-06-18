@@ -223,8 +223,16 @@ async def show_remove_coin_list(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(msg, parse_mode='Markdown')
         context.user_data['action'] = 'delete_coin'
 
+import re
+
 async def process_add_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['new_coin_symbol'] = update.message.text.strip().upper()
+    symbol = update.message.text.strip().upper()
+    # فلتر صارم: الرمز يجب أن يتكون من حروف إنجليزية وأرقام فقط (بدون مسافات، بدون لغة عربية)
+    if not re.match(r'^[A-Z0-9]{2,20}$', symbol):
+        await update.message.reply_text("❌ رمز غير صالح! يجب أن يتكون الرمز من حروف إنجليزية وأرقام فقط (مثال: BTCUSDT). يرجى إرسال الرمز مرة أخرى:")
+        return ADD_SYMBOL
+        
+    context.user_data['new_coin_symbol'] = symbol
     await update.message.reply_text("💰 أدخل رأس المال المخصص لهذه العملة:")
     return ADD_CAPITAL
 
