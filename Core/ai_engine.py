@@ -114,63 +114,68 @@ class AIEngine:
             analysis = self.strategies.calculate_combined_score(df, df_higher)
             print(f"📈 [SCORE] {symbol} | Total Score: {analysis['total_score']} | Quality: {analysis['quality_score']}")
             
-            # 3. Decision Engine: SMC, Volume, Context (Advanced)
+            # 3. Decision Engine: SMC, Volume, Context (Quant/HFT Level)
             smc_data = self.smc_engine.detect_structure(df)
             fvgs = self.smc_engine.detect_fvgs(df)
             obs = self.smc_engine.detect_order_blocks(df)
             pd_zones = self.smc_engine.get_premium_discount(df)
-            vol_flow = self.volume_engine.get_order_flow_bias(df)
-            global_context = await self.market_context.get_global_market_data()
-            trend_strength = self.market_context.get_trend_strength(df)
+            liq_data = self.smc_engine.detect_liquidity(df)
+            vol_data = self.volume_engine.get_volume_bias(df)
+            market_regime = self.market_context.detect_market_regime(df)
+            global_context = await self.market_context.get_market_correlations()
             
-            # نظام تقييم ديناميكي (Dynamic Weighting System)
-            smc_score = 0
-            reasons = []
+            # Multi-Timeframe Adaptive Logic
+            df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
+            higher_regime = self.market_context.detect_market_regime(df_higher) if df_higher is not None else "UNKNOWN"
             
-            if smc_data['state'] in ["BOS_UP", "CHoCH_UP", "STRONG_BULLISH"]: 
-                smc_score += 35
-                reasons.append(f"Structure: {smc_data['state']}")
-                
-            if any(not f['mitigated'] and f['type'] == 'BULLISH_FVG' for f in fvgs[-5:]):
-                smc_score += 15
-                reasons.append("Unmitigated Bullish FVG")
-                
-            if any(not o['mitigated'] and o['type'] == 'BULLISH_OB' for o in obs[-3:]):
-                smc_score += 25
-                reasons.append("Active Bullish Order Block")
-                
+            # نظام تقييم ديناميكي متطور (Dynamic Weighting)
+            total_score = 0
+            decision_report = []
+            
+            # التحقق من سحب السيولة قبل الدخول (شرط أساسي)
+            if not liq_data['liquidity_sweep']:
+                total_score -= 20
+                decision_report.append("Waiting for Liquidity Sweep")
+            else:
+                total_score += 25
+                decision_report.append("Liquidity Sweep Detected")
+
+            # بنية السوق
+            if smc_data['state'] in ["BOS_UP", "CHoCH_UP"]:
+                total_score += 30
+                decision_report.append(f"Structure Shift: {smc_data['state']}")
+            
+            # مناطق السعر
             if pd_zones['zone'] == "DISCOUNT":
-                smc_score += 10
-                reasons.append("Price in Discount Zone")
-                
-            if vol_flow['bias'] == "AGGRESSIVE_BUYING":
-                smc_score += 15
-                reasons.append("Aggressive Buying Volume")
-                
+                total_score += 15
+                decision_report.append("Discount Zone (Institutional Buy)")
+            else:
+                total_score -= 15
+                decision_report.append("Premium Zone (Avoid Buying)")
+
+            # حجم التداول
+            if vol_data['bias'] == "AGGRESSIVE_BUYING":
+                total_score += 20
+                decision_report.append("Institutional Buying Pressure (CVD/RVOL)")
+            
+            # سياق السوق العام
             if global_context['btc_bias'] == "BULLISH":
-                smc_score += 10
-                reasons.append("BTC Market Alignment")
+                total_score += 10
+            elif global_context['btc_bias'] == "BEARISH":
+                total_score -= 30
+                decision_report.append("Global Market Bias: Bearish (BTC)")
 
-            # إزالة الإشارات المتعارضة (Conflict Removal)
-            if smc_data['state'] == "BOS_DOWN" or pd_zones['zone'] == "PREMIUM":
-                smc_score -= 40
-                reasons.append("Conflict: Bearish Structure or Premium Price")
+            # إزالة الإشارات المتعارضة
+            if higher_regime == "TRENDING_DOWN" and smc_data['state'] == "CHoCH_UP":
+                total_score -= 25
+                decision_report.append("Conflict: Counter-Trend Signal")
 
-            analysis["total_score"] = smc_score
-            analysis["report"] = " | ".join(reasons)
-            analysis["quality_score"] = min(100, smc_score)
+            analysis["total_score"] = max(0, total_score)
+            analysis["report"] = " | ".join(decision_report)
+            analysis["quality_score"] = min(100, total_score)
             
-            total_score = analysis["total_score"]
-            params = self.strategies.get_trade_params(df)
             current_session = self.get_trading_session()
-            
-            # Dynamic Weights based on Session & Trend
-            weight = 1.0
-            if current_session in ["London", "New York"]: weight += 0.2
-            if trend_strength == "STRONG": weight += 0.1
-            
-            total_score *= weight
-            prob = await self.calculate_probability(symbol, total_score, current_session)
+            prob = await self.calculate_probability(symbol, analysis["total_score"], current_session)
 
             # تسجيل صفقة ظل (Shadow Trade) للتعلم
             new_shadow = ShadowTrade(

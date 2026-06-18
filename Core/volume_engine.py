@@ -6,41 +6,38 @@ class VolumeEngine:
         pass
 
     def calculate_advanced_volume(self, df: pd.DataFrame):
-        """حساب CVD, Delta, Relative Volume, و Volume Imbalance"""
+        """حساب CVD, Delta, RVOL, و Volume Imbalance"""
         df = df.copy()
         
-        # Delta & CVD (Proxy)
+        # Delta & CVD
         df['delta'] = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
         df['cvd'] = df['delta'].cumsum()
         
         # Relative Volume (RVOL)
-        avg_vol = df['volume'].rolling(window=20).mean()
-        df['rvol'] = df['volume'] / avg_vol
-        
-        # Volume Spikes
-        df['vol_spike'] = df['rvol'] > 2.0
+        df['rvol'] = df['volume'] / df['volume'].rolling(window=20).mean()
         
         # Volume Imbalance
-        df['vol_imbalance'] = False
-        for i in range(1, len(df)):
-            if abs(df['open'].iloc[i] - df['close'].iloc[i-1]) > 0 and df['vol_spike'].iloc[i]:
-                df.at[df.index[i], 'vol_imbalance'] = True
-                
+        df['vol_imbalance'] = (df['volume'] > df['volume'].shift(1) * 2) & (abs(df['close'] - df['open']) > abs(df['close'].shift(1) - df['open'].shift(1)))
+        
+        # Open Interest & Funding Rate (Proxy for Spot/Simulated)
+        # In real HFT, these come from specific exchange APIs
+        df['oi_proxy'] = df['volume'].rolling(window=10).sum()
+        
         return df
 
-    def get_order_flow_bias(self, df: pd.DataFrame):
-        """تحليل تدفق الأوامر (Order Flow Bias)"""
+    def get_volume_bias(self, df: pd.DataFrame):
         df = self.calculate_advanced_volume(df)
-        last_cvd_slope = df['cvd'].iloc[-1] - df['cvd'].iloc[-5]
+        last_cvd_change = df['cvd'].iloc[-1] - df['cvd'].iloc[-5]
         
         bias = "NEUTRAL"
-        if last_cvd_slope > 0 and df['close'].iloc[-1] > df['open'].iloc[-1]:
+        if last_cvd_change > 0 and df['rvol'].iloc[-1] > 1.2:
             bias = "AGGRESSIVE_BUYING"
-        elif last_cvd_slope < 0 and df['close'].iloc[-1] < df['open'].iloc[-1]:
+        elif last_cvd_change < 0 and df['rvol'].iloc[-1] > 1.2:
             bias = "AGGRESSIVE_SELLING"
             
         return {
             "bias": bias,
             "rvol": df['rvol'].iloc[-1],
-            "cvd_trend": "UP" if last_cvd_slope > 0 else "DOWN"
+            "cvd_trend": "UP" if last_cvd_change > 0 else "DOWN",
+            "imbalance": df['vol_imbalance'].iloc[-1]
         }
