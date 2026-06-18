@@ -77,7 +77,7 @@ def main():
     # بناء التطبيق
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
-    # تشغيل Flask Webhook Server
+    # تشغيل Flask Webhook Server للحفاظ على الخدمة حية
     keep_alive(app)
     
     # إضافة معالجات الأوامر
@@ -97,15 +97,10 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # تشغيل البوت: استخدام Webhook بدلاً من Polling لتجنب التعارضات
-    # يجب أن يكون Flask يعمل بالفعل ويستمع على المنفذ الصحيح
-    webhook_url = os.environ.get("WEBHOOK_URL") # يجب توفير هذا المتغير البيئي
-    if not webhook_url:
-        logger.error("❌ [CRITICAL] متغير البيئة WEBHOOK_URL غير موجود. لا يمكن تشغيل الـ Webhook.")
-        sys.exit(1)
-    
-    logger.info(f"✅ [RUN] بدء تشغيل البوت بنظام الـ Webhook على {webhook_url}.")
-    app.run_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", "8080")), url_path="/webhook", webhook_url=webhook_url + "/webhook")
+    # تشغيل البوت باستخدام Polling لتجنب تضارب المنافذ
+    # Flask يعمل على المنفذ 10000 و Polling يستقبل الرسائل من Telegram مباشرة
+    logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling.")
+    app.run_polling()
 
 
 if __name__ == "__main__":
