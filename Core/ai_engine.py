@@ -38,8 +38,7 @@ class AIEngine:
         return "Asian/Late NY"
 
     async def calculate_probability(self, symbol, score, session):
-        """محرك الاحتمالات (Probability Engine) - تجريبي بناءً على المعطيات"""
-        # في المستقبل سيتم ربط هذا بقاعدة بيانات صفقات الظل التاريخية
+        """محرك الاحتمالات (Probability Engine)"""
         base_prob = score * 0.8
         if session in ["London", "New York"]: base_prob += 10
         return min(95, base_prob)
@@ -53,11 +52,13 @@ class AIEngine:
             if cached_data:
                 return pd.DataFrame(cached_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            await asyncio.sleep(1)
+            await api_guard.check_wait(1)
             ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
-            redis_client.set_data(redis_key, ohlcv, ex=1800) # كاش لمدة 30 دقيقة
+            api_guard.update_weight(self.exchange.last_response_headers.get('X-MBX-USED-WEIGHT-1M', 0))
+            redis_client.set_data(redis_key, ohlcv, ex=1800)
             return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         except Exception as e:
+            if hasattr(e, 'status_code'): api_guard.report_error(e.status_code)
             return None
 
     async def analyze_and_trade(self, symbol: str, live_data=None, **kwargs):
@@ -87,73 +88,29 @@ class AIEngine:
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
-                # دمج بيانات الـ WebSocket الحية في الـ DataFrame لضمان No Repaint وأحدث سعر
                 if live_data:
                     new_row = [datetime.now().timestamp()*1000, live_data['o'], live_data['h'], live_data['l'], live_data['c'], live_data['v']]
                     df.iloc[-1] = new_row
-                    print(f"⚡ [CACHE] تم استخدام بيانات WebSocket الحية لـ {symbol} (توفير 1 REST Weight)")
-
-            try:
-                hist_key = f"hist_cache_{symbol}_{coin.timeframe}"
-                ohlcv = redis_client.get_data(hist_key)
-                
-                if not ohlcv:
-                    # تقليل وتيرة جلب البيانات التاريخية لتجنب الحظر
-                    await asyncio.sleep(5)
-                    try:
-                        ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=100)
-                        redis_client.set_data(hist_key, ohlcv, ex=3600)
-                    except Exception as e:
-                        if "418" in str(e) or "1003" in str(e):
-                            print(f"🚫 [BINANCE] IP Banned or Rate Limited. Skipping {symbol}...")
-                            return
-                        raise e
-                
-                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                
-                klines_data = redis_client.get_data("live_klines")
-                if klines_data and symbol in klines_data:
-                    k = klines_data[symbol]
-                    if k.get('x', False):
-                        new_row = [datetime.now().timestamp()*1000, k['o'], k['h'], k['l'], k['c'], k['v']]
-                        ohlcv.append(new_row)
-                        if len(ohlcv) > 300: ohlcv.pop(0)
-                        redis_client.set_data(hist_key, ohlcv, ex=3600)
-                    df.iloc[-1] = [df.iloc[-1]['timestamp'], k['o'], k['h'], k['l'], k['c'], k['v']]
+                    print(f"⚡ [CACHE] تم استخدام بيانات WebSocket الحية لـ {symbol}")
             except Exception as e:
-                print(f"⚠️ [SCANNER ERROR] Error fetching OHLCV for {symbol}: {e}")
+                print(f"⚠️ [SCANNER ERROR] Error processing OHLCV for {symbol}: {e}")
                 return
             
-            # 1. تحليل الأخبار (تم تعطيله لضمان الدقة والاعتماد على السعر والسيولة فقط)
-            # is_news_safe = await self.news_analyzer.get_safety_check(symbol)
-            # if not is_news_safe:
-            #     return
-
-            # 2. تحليل هيكلة السوق و SMC
-            print(f"📊 [ANALYSIS] جاري تحليل الاستراتيجيات الفنية لـ {symbol}...")
+            # 1. تحليل الاستراتيجيات الفنية
             df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
-            analysis = self.strategies.calculate_combined_score(df, df_higher)
-            print(f"📈 [SCORE] {symbol} | Total Score: {analysis['total_score']} | Quality: {analysis['quality_score']}")
+            params = self.strategies.get_trade_params(df)
             
-            # 3. Decision Engine: SMC, Volume, Context (Quant/HFT Level)
+            # 2. Decision Engine: SMC, Volume, Context
             smc_data = self.smc_engine.detect_structure(df)
-            fvgs = self.smc_engine.detect_fvgs(df)
-            obs = self.smc_engine.detect_order_blocks(df)
             pd_zones = self.smc_engine.get_premium_discount(df)
             liq_data = self.smc_engine.detect_liquidity(df)
             vol_data = self.volume_engine.get_volume_bias(df)
-            market_regime = self.market_context.detect_market_regime(df)
             global_context = await self.market_context.get_market_correlations()
-            
-            # Multi-Timeframe Adaptive Logic
-            df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
             higher_regime = self.market_context.detect_market_regime(df_higher) if df_higher is not None else "UNKNOWN"
             
-            # نظام تقييم ديناميكي متطور (Dynamic Weighting)
             total_score = 0
             decision_report = []
             
-            # التحقق من سحب السيولة قبل الدخول (شرط أساسي)
             if not liq_data['liquidity_sweep']:
                 total_score -= 20
                 decision_report.append("Waiting for Liquidity Sweep")
@@ -161,92 +118,70 @@ class AIEngine:
                 total_score += 25
                 decision_report.append("Liquidity Sweep Detected")
 
-            # بنية السوق
             if smc_data['state'] in ["BOS_UP", "CHoCH_UP"]:
                 total_score += 30
                 decision_report.append(f"Structure Shift: {smc_data['state']}")
             
-            # مناطق السعر
             if pd_zones['zone'] == "DISCOUNT":
                 total_score += 15
-                decision_report.append("Discount Zone (Institutional Buy)")
+                decision_report.append("Discount Zone")
             else:
                 total_score -= 15
-                decision_report.append("Premium Zone (Avoid Buying)")
+                decision_report.append("Premium Zone")
 
-            # حجم التداول
             if vol_data['bias'] == "AGGRESSIVE_BUYING":
                 total_score += 20
-                decision_report.append("Institutional Buying Pressure (CVD/RVOL)")
+                decision_report.append("Institutional Buying Pressure")
             
-            # سياق السوق العام
             if global_context['btc_bias'] == "BULLISH":
                 total_score += 10
             elif global_context['btc_bias'] == "BEARISH":
                 total_score -= 30
-                decision_report.append("Global Market Bias: Bearish (BTC)")
+                decision_report.append("Global Market Bias: Bearish")
 
-            # إزالة الإشارات المتعارضة
             if higher_regime == "TRENDING_DOWN" and smc_data['state'] == "CHoCH_UP":
                 total_score -= 25
-                decision_report.append("Conflict: Counter-Trend Signal")
+                decision_report.append("Conflict: Counter-Trend")
 
-            analysis["total_score"] = max(0, total_score)
-            analysis["report"] = " | ".join(decision_report)
-            analysis["quality_score"] = min(100, total_score)
-            
+            total_score = max(0, total_score)
             current_session = self.get_trading_session()
-            prob = await self.calculate_probability(symbol, analysis["total_score"], current_session)
+            prob = await self.calculate_probability(symbol, total_score, current_session)
 
-            # تسجيل صفقة ظل (Shadow Trade) للتعلم
+            # تسجيل صفقة ظل
             new_shadow = ShadowTrade(
-                symbol=symbol,
-                indicators_snapshot=analysis,
-                market_state=analysis["market_state"],
-                score=total_score,
-                entry_price=params["entry"],
-                stop_loss=params["sl"],
-                take_profit=params["tp"],
-                trading_session=current_session,
-                probability_score=prob,
-                reasoning_report=f"تحليل آلي: {analysis['report']} | الجلسة: {current_session}"
+                symbol=symbol, score=total_score, entry_price=params["entry"],
+                stop_loss=params["sl"], take_profit=params["tp"],
+                trading_session=current_session, probability_score=prob,
+                reasoning_report=" | ".join(decision_report)
             )
             session.add(new_shadow)
             await session.commit()
-            print(f"📝 [SHADOW] تم تسجيل صفقة ظل لـ {symbol} (الاحتمالية: {prob:.1f}%)")
+            print(f"📝 [SHADOW] تسجيل صفقة ظل لـ {symbol} (Prob: {prob:.1f}%)")
 
-            # الفلترة لنظام الـ Live
-            if total_score < 70 or analysis["quality_score"] < 60:
-                print(f"⏭️ [SCANNER] {symbol} لم يجتز معايير الدخول المؤسسية (Score: {total_score:.1f}).")
+            # الفلترة للـ Live
+            if total_score < 70:
+                print(f"⏭️ [SCANNER] {symbol} لم يجتز المعايير (Score: {total_score:.1f}).")
                 return
 
-            # 4. حماية الارتباط (Correlation Guard)
-            print(f"🛡️ [RISK] جاري فحص مخاطر الارتباط لـ {symbol}...")
+            # حماية الارتباط
             open_trades_res = await session.execute(select(LiveTrade).where(LiveTrade.status == "OPEN"))
             open_trades = open_trades_res.scalars().all()
+            if any(t.symbol == symbol for t in open_trades): return
             if not self.risk_manager.check_correlation_risk(open_trades, symbol):
-                print(f"🚫 [RISK] تم رفض {symbol} بسبب وجود ارتباط عالٍ مع صفقات مفتوحة.")
+                print(f"🚫 [RISK] تم رفض {symbol} بسبب الارتباط العالي.")
                 return
 
-            # منطق تنفيذ Live Trade
+            # تنفيذ الصفقة
             risk_amount = coin.capital * (coin.risk_percentage / 100)
             sl_dist = abs(params["entry"] - params["sl"])
-            if sl_dist <= 0:
-                print(f"⚠️ [RISK] تم رفض {symbol} بسبب عدم وجود مسافة وقف خسارة صالحة.")
-                return
+            if sl_dist <= 0: return
             amount = risk_amount / (sl_dist / params["entry"])
-            if amount <= 0: 
-                print(f"⚠️ [RISK] تم رفض {symbol} لأن حجم الصفقة المحسوب صفر.")
-                return
             
-            # منع تكرار نفس العملة
-            if any(t.symbol == symbol for t in open_trades): return
-
-            print(f"🚀 [EXECUTION] فرصة ذهبية! جاري بناء صفقة {symbol} (Amount: {amount:.2f} USDT)...")
+            print(f"🚀 [EXECUTION] بناء صفقة {symbol} (Amount: {amount:.2f} USDT)...")
             new_live = LiveTrade(
                 symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
                 take_profit=params["tp"], amount=amount, score=total_score,
-                entry_reason=analysis["report"], market_state=analysis["market_state"]
+                entry_reason=" | ".join(decision_report)
             )
             session.add(new_live)
             await session.commit()
