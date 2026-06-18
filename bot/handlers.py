@@ -128,7 +128,7 @@ async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = "📈 *الأسعار المباشرة (Institutional Radar)*\n━━━━━━━━━━━━━━\n"
     for symbol, data in prices.items():
-        msg += f"🪙 {symbol}: `{data["price"]}` | 🕒 {data["time"]}\n"
+        msg += f"🪙 {symbol}: `{data['price']}` | 🕒 {data['time']}\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
