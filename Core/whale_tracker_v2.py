@@ -13,6 +13,7 @@ class WhaleTrackerV2:
 
     async def process_trade_stream(self, symbol):
         """مراقبة تدفق الصفقات لاكتشاف الحيتان"""
+        symbol = symbol.strip()
         uri = f"{BINANCE_WS_URL}/ws/{symbol.lower()}@trade"
         try:
             async with websockets.connect(uri) as ws:

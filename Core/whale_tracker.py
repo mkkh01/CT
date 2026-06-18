@@ -26,7 +26,7 @@ class WhaleTracker:
 
     async def start_tracking(self, symbols: list):
         """بدء تتبع الحيتان الكبار لجميع عملات قاعدة البيانات الممررة"""
-        new_set = {s.lower() for s in symbols}
+        new_set = {s.strip().lower() for s in symbols if s and s.strip()}
         
         # ✅ مقارنة القوائم، إذا تغيرت نعيد التشغيل
         if new_set != self.tracking_symbols:
@@ -48,7 +48,7 @@ class WhaleTracker:
         """الاتصال بخدمة البث المباشر لـ Binance"""
         while True:
             try:
-                streams = [f"{symbol}@trade" for symbol in self.tracking_symbols]
+                streams = [f"{symbol.strip()}@trade" for symbol in self.tracking_symbols if symbol and symbol.strip()]
                 if not streams:
                     print("⚠️ [RADAR V3] قاعدة البيانات فارغة من العملات، إعادة الفحص بعد 10 ثوانٍ...")
                     await asyncio.sleep(10)

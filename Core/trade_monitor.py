@@ -33,13 +33,15 @@ class TradeMonitor:
             try:
                 async with AsyncSessionLocal() as session:
                     coins_res = await session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
-                    symbols = [c.symbol for c in coins_res.scalars().all()]
+                    symbols = [c.symbol.strip() for c in coins_res.scalars().all() if c.symbol and c.symbol.strip()]
                     
                     if not symbols:
                         await asyncio.sleep(10)
                         continue
 
+                    # تنظيف الرموز لضمان عدم وجود مسافات أو رموز فارغة تسبب HTTP 400
                     streams = [f"{s.lower()}@miniTicker" for s in symbols] + [f"{s.lower()}@kline_15m" for s in symbols]
+                    streams = [st for st in streams if st]
                     uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
                     
                     async with websockets.connect(uri) as ws:
