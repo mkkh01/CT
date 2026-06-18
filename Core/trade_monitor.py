@@ -39,12 +39,26 @@ class TradeMonitor:
                         await asyncio.sleep(10)
                         continue
 
-                    # تنظيف الرموز لضمان عدم وجود مسافات أو رموز فارغة تسبب HTTP 400
-                    streams = [f"{s.lower()}@miniTicker" for s in symbols] + [f"{s.lower()}@kline_15m" for s in symbols]
-                    streams = [st for st in streams if st]
+                    # تنظيف صارم للرموز لضمان عدم وجود رموز غير صالحة تسبب HTTP 400
+                    clean_symbols = [s.strip().lower() for s in symbols if s and s.strip()]
+                    if not clean_symbols:
+                        await asyncio.sleep(10)
+                        continue
+                        
+                    streams = []
+                    for s in clean_symbols:
+                        # التأكد من أن الرمز لا يحتوي على مسافات داخلية أو رموز غريبة
+                        if s.isalnum():
+                            streams.append(f"{s}@miniTicker")
+                            streams.append(f"{s}@kline_15m")
+                    
+                    if not streams:
+                        await asyncio.sleep(10)
+                        continue
+
                     uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
                     
-                    async with websockets.connect(uri) as ws:
+                    async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
                         # ضبط الوقت الأولي ليبدأ الفحص بعد 30 ثانية من استقرار الاتصال
                         from datetime import timedelta
                         last_analysis_time = datetime.now() - timedelta(seconds=90)
@@ -58,11 +72,24 @@ class TradeMonitor:
                                     break # سيخرج من الحلقة الداخلية ويعيد الاتصال بالقائمة الجديدة
 
                             try:
-                                msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                                msg = await asyncio.wait_for(ws.recv(), timeout=20)
                                 payload = json.loads(msg)
+                                if 'data' not in payload or 'stream' not in payload:
+                                    continue
                                 data = payload['data']
-                                symbol = data['s']
+                                symbol = data.get('s')
+                                if not symbol:
+                                    continue
                             except asyncio.TimeoutError:
+                                # إرسال Ping للحفاظ على الاتصال
+                                try:
+                                    pong_waiter = await ws.ping()
+                                    await asyncio.wait_for(pong_waiter, timeout=5)
+                                except:
+                                    break # إعادة الاتصال إذا فشل الـ Ping
+                                continue
+                            except Exception as e:
+                                print(f"⚠️ [MONITOR] Error processing message: {e}")
                                 continue
                             
                             if 'miniTicker' in payload['stream']:
