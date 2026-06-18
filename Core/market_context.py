@@ -1,37 +1,46 @@
+import pandas as pd
+import numpy as np
 import aiohttp
-import asyncio
 
 class MarketContext:
     def __init__(self):
         self.base_url = "https://api.binance.com/api/v3"
 
-    async def get_symbol_price(self, symbol):
+    def calculate_vwap(self, df: pd.DataFrame):
+        """حساب VWAP (Volume Weighted Average Price)"""
+        v = df['volume'].values
+        p = (df['high'] + df['low'] + df['close']).values / 3
+        return (p * v).cumsum() / v.cumsum()
+
+    def calculate_anchored_vwap(self, df: pd.DataFrame, anchor_idx):
+        """حساب Anchored VWAP من نقطة محددة (مثل بداية الجلسة أو قمة/قاع رئيسي)"""
+        if anchor_idx >= len(df): anchor_idx = 0
+        df_sub = df.iloc[anchor_idx:]
+        v = df_sub['volume'].values
+        p = (df_sub['high'] + df_sub['low'] + df_sub['close']).values / 3
+        avwap = (p * v).cumsum() / v.cumsum()
+        return pd.Series(avwap, index=df_sub.index)
+
+    def get_trend_strength(self, df: pd.DataFrame):
+        """حساب قوة الاتجاه (Trend Strength) باستخدام ADX تقريبي أو Slope"""
+        df = df.copy()
+        df['ema_fast'] = df['close'].ewm(span=12).mean()
+        df['ema_slow'] = df['close'].ewm(span=26).mean()
+        slope = (df['ema_fast'].iloc[-1] - df['ema_fast'].iloc[-5]) / df['ema_fast'].iloc[-5]
+        
+        strength = abs(slope) * 1000
+        return "STRONG" if strength > 5 else "WEAK"
+
+    async def get_global_market_data(self):
+        """جلب بيانات السوق العالمي (BTC, Dominance - Proxy)"""
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(f"{self.base_url}/ticker/price?symbol={symbol}") as resp:
-                    data = await resp.json()
-                    return float(data['price'])
+                async with session.get(f"{self.base_url}/ticker/24hr?symbol=BTCUSDT") as resp:
+                    btc_data = await resp.json()
+                    btc_change = float(btc_data['priceChangePercent'])
+                    return {
+                        "btc_bias": "BULLISH" if btc_change > 0 else "BEARISH",
+                        "market_regime": "TRENDING" if abs(btc_change) > 2 else "RANGING"
+                    }
             except:
-                return None
-
-    async def get_market_regime(self):
-        """تحليل حالة السوق العامة (BTC, ETH, Dominance)"""
-        btc_price = await self.get_symbol_price("BTCUSDT")
-        eth_price = await self.get_symbol_price("ETHUSDT")
-        
-        # ملاحظة: في النسخة الحقيقية يفضل جلب Dominance من TradingView أو API متخصص
-        # هنا سنفترض بناءً على حركة BTC
-        if not btc_price: return "NEUTRAL"
-        
-        # محاكاة بسيطة للارتباط
-        if btc_price > 0: # مجرد فحص للوجود
-            return "BULLISH_MARKET" if btc_price > 50000 else "BEARISH_MARKET"
-        
-        return "NEUTRAL"
-
-    def check_correlation_safety(self, symbol, market_regime):
-        """التأكد من أن الصفقة تتماشى مع اتجاه السوق العام"""
-        if market_regime == "BEARISH_MARKET" and "USDT" in symbol:
-            # في سوق هابط، نفضل عدم الشراء إلا بشروط قوية جداً
-            return False
-        return True
+                return {"btc_bias": "NEUTRAL", "market_regime": "UNKNOWN"}

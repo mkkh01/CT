@@ -114,40 +114,62 @@ class AIEngine:
             analysis = self.strategies.calculate_combined_score(df, df_higher)
             print(f"📈 [SCORE] {symbol} | Total Score: {analysis['total_score']} | Quality: {analysis['quality_score']}")
             
-            # 3. SMC & Volume Analysis (New)
-            smc_structure = self.smc_engine.detect_structure(df)
-            fvgs = self.smc_engine.detect_fvg(df)
-            sweeps = self.smc_engine.detect_liquidity_sweeps(df)
-            vol_analysis = self.volume_engine.get_volume_profile_bias(df)
+            # 3. Decision Engine: SMC, Volume, Context (Advanced)
+            smc_data = self.smc_engine.detect_structure(df)
+            fvgs = self.smc_engine.detect_fvgs(df)
+            obs = self.smc_engine.detect_order_blocks(df)
+            pd_zones = self.smc_engine.get_premium_discount(df)
+            vol_flow = self.volume_engine.get_order_flow_bias(df)
+            global_context = await self.market_context.get_global_market_data()
+            trend_strength = self.market_context.get_trend_strength(df)
             
-            # تحديث النقاط بناءً على SMC
+            # نظام تقييم ديناميكي (Dynamic Weighting System)
             smc_score = 0
-            if smc_structure == "BOS_UP": smc_score += 20
-            if smc_structure == "CHoCH_UP": smc_score += 30
-            if any(f['type'] == 'BULLISH' for f in fvgs[-3:]): smc_score += 15
-            if any(s['type'] == 'SELL_SIDE_SWEEP' for s in sweeps): smc_score += 25
-            if vol_analysis['bias'] == "BULLISH": smc_score += 10
+            reasons = []
             
-            analysis["total_score"] += smc_score
-            analysis["report"] += f" | SMC Score: +{smc_score} ({smc_structure})"
-            
-            # 4. Market Context (BTC/Market Regime)
-            market_regime = await self.market_context.get_market_regime()
-            if market_regime == "BULLISH_MARKET": analysis["total_score"] += 10
-            
-            # 5. انحياز الحيتان (Whale Bias)
-            whale_bias = self.whale_tracker.get_whale_bias(symbol)
-            if whale_bias == "BUY":
-                analysis["total_score"] += 15
+            if smc_data['state'] in ["BOS_UP", "CHoCH_UP", "STRONG_BULLISH"]: 
+                smc_score += 35
+                reasons.append(f"Structure: {smc_data['state']}")
+                
+            if any(not f['mitigated'] and f['type'] == 'BULLISH_FVG' for f in fvgs[-5:]):
+                smc_score += 15
+                reasons.append("Unmitigated Bullish FVG")
+                
+            if any(not o['mitigated'] and o['type'] == 'BULLISH_OB' for o in obs[-3:]):
+                smc_score += 25
+                reasons.append("Active Bullish Order Block")
+                
+            if pd_zones['zone'] == "DISCOUNT":
+                smc_score += 10
+                reasons.append("Price in Discount Zone")
+                
+            if vol_flow['bias'] == "AGGRESSIVE_BUYING":
+                smc_score += 15
+                reasons.append("Aggressive Buying Volume")
+                
+            if global_context['btc_bias'] == "BULLISH":
+                smc_score += 10
+                reasons.append("BTC Market Alignment")
+
+            # إزالة الإشارات المتعارضة (Conflict Removal)
+            if smc_data['state'] == "BOS_DOWN" or pd_zones['zone'] == "PREMIUM":
+                smc_score -= 40
+                reasons.append("Conflict: Bearish Structure or Premium Price")
+
+            analysis["total_score"] = smc_score
+            analysis["report"] = " | ".join(reasons)
+            analysis["quality_score"] = min(100, smc_score)
             
             total_score = analysis["total_score"]
             params = self.strategies.get_trade_params(df)
             current_session = self.get_trading_session()
             
-            # Dynamic Weighting based on Session
-            if current_session in ["London", "New York"]:
-                total_score *= 1.1 # زيادة الثقة في جلسات السيولة العالية
-                
+            # Dynamic Weights based on Session & Trend
+            weight = 1.0
+            if current_session in ["London", "New York"]: weight += 0.2
+            if trend_strength == "STRONG": weight += 0.1
+            
+            total_score *= weight
             prob = await self.calculate_probability(symbol, total_score, current_session)
 
             # تسجيل صفقة ظل (Shadow Trade) للتعلم

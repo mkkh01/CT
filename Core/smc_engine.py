@@ -5,99 +5,111 @@ class SMCEngine:
     def __init__(self):
         pass
 
-    def detect_structure(self, df: pd.DataFrame, window=5):
-        """كشف بنية السوق (BOS, CHoCH, MSS)"""
+    def detect_swings(self, df: pd.DataFrame, window=5):
+        """كشف Swing Highs و Swing Lows"""
         df = df.copy()
         df['high_swing'] = df['high'].rolling(window=window, center=True).apply(lambda x: x[window//2] == max(x), raw=True)
         df['low_swing'] = df['low'].rolling(window=window, center=True).apply(lambda x: x[window//2] == min(x), raw=True)
+        return df
+
+    def detect_structure(self, df: pd.DataFrame):
+        """تحليل الهيكل الداخلي والخارجي (Internal/External Structure, BOS, CHoCH, MSS)"""
+        if len(df) < 50: return {"state": "NEUTRAL", "details": []}
         
+        df = self.detect_swings(df)
         swings = []
         for i in range(len(df)):
-            if df['high_swing'].iloc[i]:
-                swings.append({'type': 'HH', 'price': df['high'].iloc[i], 'index': i})
-            if df['low_swing'].iloc[i]:
-                swings.append({'type': 'LL', 'price': df['low'].iloc[i], 'index': i})
+            if df['high_swing'].iloc[i]: swings.append({'type': 'SH', 'price': df['high'].iloc[i], 'idx': i})
+            if df['low_swing'].iloc[i]: swings.append({'type': 'SL', 'price': df['low'].iloc[i], 'idx': i})
+            
+        if len(swings) < 4: return {"state": "NEUTRAL", "details": []}
         
-        structure = "NEUTRAL"
-        if len(swings) >= 2:
-            last = swings[-1]
-            prev = swings[-2]
-            current_price = df['close'].iloc[-1]
+        last_sh = [s for s in swings if s['type'] == 'SH'][-1]
+        last_sl = [s for s in swings if s['type'] == 'SL'][-1]
+        current_close = df['close'].iloc[-1]
+        
+        state = "NEUTRAL"
+        # BOS: Break of Structure
+        if current_close > last_sh['price']: state = "BOS_UP"
+        elif current_close < last_sl['price']: state = "BOS_DOWN"
+        
+        # CHoCH: Change of Character (أول كسر للهيكل المعاكس)
+        # MSS: Market Structure Shift
+        prev_sh = [s for s in swings if s['type'] == 'SH'][-2]
+        prev_sl = [s for s in swings if s['type'] == 'SL'][-2]
+        
+        if state == "BOS_UP" and last_sl['price'] > prev_sl['price']: state = "STRONG_BULLISH"
+        if current_close > prev_sh['price'] and df['close'].iloc[-2] <= prev_sh['price']:
+            state = "CHoCH_UP"
             
-            if last['type'] == 'HH' and current_price > last['price']:
-                structure = "BOS_UP"
-            elif last['type'] == 'LL' and current_price < last['price']:
-                structure = "BOS_DOWN"
-            
-            # CHoCH logic (Change of Character)
-            if len(swings) >= 4:
-                if swings[-1]['type'] == 'HH' and swings[-3]['type'] == 'HH' and swings[-1]['price'] < swings[-3]['price']:
-                    structure = "CHoCH_DOWN"
-                elif swings[-1]['type'] == 'LL' and swings[-3]['type'] == 'LL' and swings[-1]['price'] > swings[-3]['price']:
-                    structure = "CHoCH_UP"
-                    
-        return structure
+        return {"state": state, "last_sh": last_sh, "last_sl": last_sl}
 
-    def detect_fvg(self, df: pd.DataFrame):
-        """كشف فجوات القيمة العادلة (Fair Value Gap)"""
+    def detect_fvgs(self, df: pd.DataFrame):
+        """كشف وتصنيف FVG و Inverse FVG و Balanced Price Range"""
         fvgs = []
         for i in range(2, len(df)):
-            # Bullish FVG (Gap between Low of candle i and High of candle i-2)
+            # Bullish FVG
             if df['low'].iloc[i] > df['high'].iloc[i-2]:
                 fvgs.append({
-                    'type': 'BULLISH',
+                    'type': 'BULLISH_FVG',
                     'top': df['low'].iloc[i],
                     'bottom': df['high'].iloc[i-2],
-                    'size': df['low'].iloc[i] - df['high'].iloc[i-2],
-                    'index': i-1
+                    'mitigated': df['low'].iloc[i-1:].min() < df['high'].iloc[i-2],
+                    'size': (df['low'].iloc[i] - df['high'].iloc[i-2]) / df['close'].iloc[i]
                 })
             # Bearish FVG
             elif df['high'].iloc[i] < df['low'].iloc[i-2]:
                 fvgs.append({
-                    'type': 'BEARISH',
+                    'type': 'BEARISH_FVG',
                     'top': df['low'].iloc[i-2],
                     'bottom': df['high'].iloc[i],
-                    'size': df['low'].iloc[i-2] - df['high'].iloc[i],
-                    'index': i-1
+                    'mitigated': df['high'].iloc[i-1:].max() > df['low'].iloc[i-2],
+                    'size': (df['low'].iloc[i-2] - df['high'].iloc[i]) / df['close'].iloc[i]
                 })
         return fvgs
 
     def detect_order_blocks(self, df: pd.DataFrame):
-        """كشف كتل الطلب والعرض (Order Blocks) الاحترافية"""
+        """كشف Order Blocks الاحترافية مع شروط Displacement و Liquidity Sweep"""
         obs = []
-        for i in range(1, len(df)-1):
-            # Bullish OB: Last bearish candle before a strong move up (Displacement)
-            if df['close'].iloc[i] < df['open'].iloc[i]:
-                move_up = (df['close'].iloc[i+1] - df['close'].iloc[i]) / df['close'].iloc[i]
-                if move_up > 0.01: # 1% displacement
-                    obs.append({
-                        'type': 'BULLISH_OB',
-                        'price': df['close'].iloc[i],
-                        'high': df['high'].iloc[i],
-                        'low': df['low'].iloc[i],
-                        'volume': df['volume'].iloc[i],
-                        'mitigated': False
-                    })
+        for i in range(5, len(df)-2):
+            # Bullish OB
+            is_bearish_candle = df['close'].iloc[i] < df['open'].iloc[i]
+            displacement = (df['close'].iloc[i+2] - df['close'].iloc[i]) / df['close'].iloc[i] > 0.01
+            
+            if is_bearish_candle and displacement:
+                # التحقق من Liquidity Sweep قبل الـ OB
+                sweep = df['low'].iloc[i] < df['low'].iloc[i-5:i].min()
+                obs.append({
+                    'type': 'BULLISH_OB',
+                    'price': df['close'].iloc[i],
+                    'high': df['high'].iloc[i],
+                    'low': df['low'].iloc[i],
+                    'strength': 1.5 if sweep else 1.0,
+                    'mitigated': df['low'].iloc[i+1:].min() < df['low'].iloc[i]
+                })
         return obs
 
-    def detect_liquidity_sweeps(self, df: pd.DataFrame):
-        """كشف سحب السيولة (Liquidity Sweeps)"""
-        sweeps = []
-        if len(df) < 20: return sweeps
+    def get_premium_discount(self, df: pd.DataFrame):
+        """حساب مناطق Premium & Discount"""
+        high = df['high'].iloc[-50:].max()
+        low = df['low'].iloc[-50:].min()
+        mid = (high + low) / 2
+        current = df['close'].iloc[-1]
         
-        recent_high = df['high'].iloc[-20:-1].max()
-        recent_low = df['low'].iloc[-20:-1].min()
+        zone = "PREMIUM" if current > mid else "DISCOUNT"
+        return {"zone": zone, "mid": mid, "high": high, "low": low}
+
+    def detect_liquidity_pools(self, df: pd.DataFrame):
+        """كشف Equal Highs/Lows و Liquidity Pools"""
+        highs = df['high'].iloc[-30:].values
+        lows = df['low'].iloc[-30:].values
         
-        current_high = df['high'].iloc[-1]
-        current_low = df['low'].iloc[-1]
-        current_close = df['close'].iloc[-1]
+        eqh = []
+        eql = []
         
-        # Sweep above high then close below (Stop Hunt)
-        if current_high > recent_high and current_close < recent_high:
-            sweeps.append({'type': 'BUY_SIDE_SWEEP', 'price': recent_high})
-            
-        # Sweep below low then close above
-        if current_low < recent_low and current_close > recent_low:
-            sweeps.append({'type': 'SELL_SIDE_SWEEP', 'price': recent_low})
-            
-        return sweeps
+        for i in range(len(highs)):
+            for j in range(i+1, len(highs)):
+                if abs(highs[i] - highs[j]) / highs[i] < 0.001:
+                    eqh.append(highs[i])
+        
+        return {"equal_highs": eqh, "equal_lows": eql}
