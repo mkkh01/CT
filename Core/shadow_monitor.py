@@ -1,9 +1,10 @@
 import asyncio
 import json
 import os
+from Core.redis_manager import redis_client
 from datetime import datetime
 from sqlalchemy import select
-from database import AsyncSessionLocal, ShadowTrade
+from database import AsyncSessionLocal, ShadowTrade, TrackedCoin
 
 class ShadowMonitor:
     def __init__(self, bot=None):
@@ -23,10 +24,16 @@ class ShadowMonitor:
                         continue
 
                     # جلب الأسعار اللحظية من الكاش
+                    # جلب الأسعار اللحظية من الكاش لكل رمز على حدة
                     prices = {}
-                    if os.path.exists("/tmp/live_prices.json"):
-                        with open("/tmp/live_prices.json", 'r') as f:
-                            prices = json.load(f)
+                    async with AsyncSessionLocal() as s_session:
+                        coins_res = await s_session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
+                        tracked_symbols = [c.symbol.strip() for c in coins_res.scalars().all() if c.symbol and c.symbol.strip()]
+
+                    for symbol in tracked_symbols:
+                        price_data = redis_client.get_data(f"live_prices_{symbol}")
+                        if price_data:
+                            prices[symbol] = price_data
 
                     for trade in open_trades:
                         current_price = prices.get(trade.symbol, {}).get('price')

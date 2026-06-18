@@ -20,8 +20,10 @@ class TradeMonitor:
 
     async def _save_data(self):
         async with state_manager.cache_lock:
-            redis_client.set_data("live_prices", self.live_prices)
-            redis_client.set_data("live_klines", self.live_klines)
+            for symbol, data in self.live_prices.items():
+                await redis_client.set_data(f"live_prices_{symbol}", data)
+            for symbol, data in self.live_klines.items():
+                await redis_client.set_data(f"live_klines_{symbol}", data)
 
     async def check_prices(self):
         from Core.ai_engine import AIEngine
@@ -99,31 +101,41 @@ class TradeMonitor:
                             async with state_manager.cache_lock:
                                 if 'miniTicker' in payload['stream']:
                                     price = float(data['c'])
-                                    self.live_prices[symbol] = {'price': price, 'time': datetime.now().strftime('%H:%M:%S')}
+                                    await redis_client.set_data(f"live_prices_{symbol}", {'price': price, 'time': datetime.now().strftime('%H:%M:%S')})
                                     await self._check_live_trades(symbol, price)
                                 elif 'kline' in payload['stream']:
                                     k = data['k']
-                                    self.live_klines[symbol] = {'o': float(k['o']), 'h': float(k['h']), 'l': float(k['l']), 'c': float(k['c']), 'v': float(k['v']), 'x': k['x']}
+                                    await redis_client.set_data(f"live_klines_{symbol}", {'o': float(k['o']), 'h': float(k['h']), 'l': float(k['l']), 'c': float(k['c']), 'v': float(k['v']), 'x': k['x']})
                             
                             await self._save_data()
 
                             # لا يسمح بالتحليل إلا إذا كان النظام READY (بعد انتهاء الـ Warm-up)
                             if state_manager.is_ready() and (datetime.now() - last_analysis_time).total_seconds() >= 120:
                                 print(f"📡 [MONITOR] بدأت دورة التحليل المؤسسي لـ {len(symbols)} عملة...")
+                                # تحديد حد أقصى لعدد الرموز التي تتم معالجتها في كل دورة (مثلاً 4 رموز فقط)
+                                processed_symbols_count = 0
                                 for s in symbols:
-                                    async with state_manager.cache_lock:
-                                        live_k = self.live_klines.get(s)
+                                    if processed_symbols_count >= 4:
+                                        print("⚠️ [SCANNER] تم الوصول للحد الأقصى من الرموز المعالجة في هذه الدورة (4 رموز).")
+                                        break
+
+                                    live_k = redis_client.get_data(f"live_klines_{s}")
                                     
                                     if live_k:
                                         print(f"🔍 [SCANNER] جاري تحليل {s} بناءً على بيانات الـ WebSocket المحدثة...")
                                         await ai.analyze_and_trade(s, live_data=live_k)
                                         await asyncio.sleep(0.5)
+                                        processed_symbols_count += 1
                                     else:
                                         print(f"⚠️ [SCANNER] تخطي {s} لعدم توفر بيانات كافية في الكاش.")
                                 
                                 print("✅ [SYSTEM] اكتملت دورة التحليل بنجاح.")
                                 last_analysis_time = datetime.now()
                                 reconnect_delay = 5
+            except Exception as e:
+                import traceback
+                print(f"❌ [CRITICAL ERROR] Unhandled exception in TradeMonitor loop: {e}\n{traceback.format_exc()}")
+                await asyncio.sleep(reconnect_delay) # Wait before restarting the loop
 
             except Exception as e:
                 import traceback

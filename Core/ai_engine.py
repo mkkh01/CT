@@ -1,5 +1,5 @@
 import pandas as pd
-import ccxt.async_support as ccxt
+
 from database import AsyncSessionLocal, LiveTrade, ShadowTrade, UserConfig, TrackedCoin
 from sqlalchemy import select
 from strategies_v2 import InstitutionalStrategiesV2 as InstitutionalStrategies
@@ -21,7 +21,7 @@ class AIEngine:
         self.strategies = InstitutionalStrategies()
         self.bot = bot
         self.chat_id = chat_id
-        self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
+
         self.whale_tracker = WhaleTrackerV2(bot=bot, chat_id=chat_id)
         self.news_analyzer = NewsAnalyzer(bot=bot, chat_id=chat_id)
         self.risk_manager = RiskManager()
@@ -44,22 +44,8 @@ class AIEngine:
         return min(95, base_prob)
 
     async def get_higher_timeframe_data(self, symbol, current_tf):
-        tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
-        higher_tf = tf_map.get(current_tf, "1d")
-        redis_key = f"htf_cache_{symbol}_{higher_tf}"
-        try:
-            cached_data = redis_client.get_data(redis_key)
-            if cached_data:
-                return pd.DataFrame(cached_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            
-            await api_guard.check_wait(1)
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
-            api_guard.update_weight(self.exchange.last_response_headers.get('X-MBX-USED-WEIGHT-1M', 0))
-            redis_client.set_data(redis_key, ohlcv, ex=1800)
-            return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        except Exception as e:
-            if hasattr(e, 'status_code'): api_guard.report_error(e.status_code)
-            return None
+        # البيانات يجب أن تأتي من الكاش فقط
+        return None # لا يوجد دعم لـ higher timeframe من الكاش حالياً، يمكن تطويره لاحقاً
 
     async def analyze_and_trade(self, symbol: str, live_data=None, **kwargs):
         print(f"🔍 [SCANNER] جاري فحص {symbol} (Request Weight: {api_guard.current_weight}/{api_guard.max_weight})...")
@@ -77,14 +63,13 @@ class AIEngine:
                 ohlcv = redis_client.get_data(hist_key)
                 
                 if not ohlcv:
-                    await api_guard.check_wait(1)
-                    try:
-                        ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=100)
-                        api_guard.update_weight(self.exchange.last_response_headers.get('X-MBX-USED-WEIGHT-1M', 0))
-                        redis_client.set_data(hist_key, ohlcv, ex=3600)
-                    except Exception as e:
-                        if hasattr(e, 'status_code'): api_guard.report_error(e.status_code)
-                        return
+                    print(f"⚠️ [SCANNER] تخطي {symbol} لعدم توفر بيانات تاريخية كافية في الكاش.")
+                    return
+                
+                # فلتر صارم: التحقق من وجود الكاش وعدم كونه فارغ وأن طوله أكبر من الحد الأدنى
+                if not live_data or len(ohlcv) < state_manager.data_threshold:
+                    print(f"⚠️ [SCANNER] تخطي {symbol} لعدم توفر بيانات كافية في الكاش (الحد الأدنى: {state_manager.data_threshold}).")
+                    return
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 

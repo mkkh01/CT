@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import time
 import logging
 from keep_alive import keep_alive
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler, ContextTypes
@@ -12,6 +13,7 @@ from bot.handlers import (
     ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF
 )
 from Core.trade_monitor import TradeMonitor
+from Core.redis_manager import redis_client
 from Core.shadow_monitor import ShadowMonitor
 
 # إعداد نظام السجلات (Logging)
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 from Core.state_manager import state_manager, SystemState
 
 async def start_background_tasks(app):
+    from Core.trade_monitor import TradeMonitor # Import here to avoid circular dependency
+    from Core.shadow_monitor import ShadowMonitor # Import here to avoid circular dependency
     """التحكم في دورة التشغيل: Connect -> Warm-up -> Ready"""
     try:
         state_manager.set_state(SystemState.WARMING_UP)
@@ -41,8 +45,10 @@ async def start_background_tasks(app):
         shadow = ShadowMonitor(bot=app.bot)
         asyncio.create_task(shadow.check_shadow_trades())
         
-        # انتظار اكتمال الـ Warm-up
-        await asyncio.sleep(state_manager.min_warmup_sec)
+        # انتظار اكتمال الـ Warm-up: يجب أن ينتظر حتى يصبح لكل رمز بيانات كافية
+        logger.info("⏳ [WARMUP] انتظار اكتمال الكاش لكل الرموز...")
+        while not await state_manager.is_cache_warmed_up():
+            await asyncio.sleep(5) # التحقق كل 5 ثواني
         
         state_manager.set_state(SystemState.READY)
         logger.info("✅ [SYSTEM] النظام جاهز بالكامل والبيانات مكتملة في الكاش.")
@@ -91,11 +97,15 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # تشغيل البوت: استخدام Polling مع آلية تنظيف صارمة لتجنب الـ Conflict
-    # ملاحظة: تم الرجوع للـ Polling مع تحسين الـ Startup Sequence و الـ Session Cleaning
-    # لأن run_webhook يتطلب إعدادات سيرفر معينة قد تتعارض مع Flask
-    logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling المحسن.")
-    app.run_polling(drop_pending_updates=True, close_loop=False)
+    # تشغيل البوت: استخدام Webhook بدلاً من Polling لتجنب التعارضات
+    # يجب أن يكون Flask يعمل بالفعل ويستمع على المنفذ الصحيح
+    webhook_url = os.environ.get("WEBHOOK_URL") # يجب توفير هذا المتغير البيئي
+    if not webhook_url:
+        logger.error("❌ [CRITICAL] متغير البيئة WEBHOOK_URL غير موجود. لا يمكن تشغيل الـ Webhook.")
+        sys.exit(1)
+    
+    logger.info(f"✅ [RUN] بدء تشغيل البوت بنظام الـ Webhook على {webhook_url}.")
+    app.run_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", "8080")), url_path="/webhook", webhook_url=webhook_url + "/webhook")
 
 
 if __name__ == "__main__":
