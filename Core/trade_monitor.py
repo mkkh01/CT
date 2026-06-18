@@ -8,20 +8,20 @@ from database import AsyncSessionLocal, LiveTrade, TrackedCoin, UserConfig
 from config import ADMIN_ID
 
 from Core.redis_manager import redis_client
+from Core.state_manager import state_manager, SystemState
 
 class TradeMonitor:
     def __init__(self, bot=None):
         self.bot = bot
         self.chat_id = ADMIN_ID
         self.is_running = False
-        # استعادة البيانات من Redis عند البدء لضمان الاستمرارية
-        self.live_prices = redis_client.get_data("live_prices") or {}
-        self.live_klines = redis_client.get_data("live_klines") or {}
+        self.live_prices = {}
+        self.live_klines = {}
 
-    def _save_data(self):
-        # حفظ البيانات في Redis بدلاً من الملفات المحلية
-        redis_client.set_data("live_prices", self.live_prices)
-        redis_client.set_data("live_klines", self.live_klines)
+    async def _save_data(self):
+        async with state_manager.cache_lock:
+            redis_client.set_data("live_prices", self.live_prices)
+            redis_client.set_data("live_klines", self.live_klines)
 
     async def check_prices(self):
         from Core.ai_engine import AIEngine
@@ -96,30 +96,34 @@ class TradeMonitor:
                                 print(f"⚠️ [MONITOR] Error processing message: {e}")
                                 continue
                             
-                            if 'miniTicker' in payload['stream']:
-                                price = float(data['c'])
-                                self.live_prices[symbol] = {'price': price, 'time': datetime.now().strftime('%H:%M:%S')}
-                                await self._check_live_trades(symbol, price)
-                            elif 'kline' in payload['stream']:
-                                k = data['k']
-                                self.live_klines[symbol] = {'o': float(k['o']), 'h': float(k['h']), 'l': float(k['l']), 'c': float(k['c']), 'v': float(k['v']), 'x': k['x']}
+                            async with state_manager.cache_lock:
+                                if 'miniTicker' in payload['stream']:
+                                    price = float(data['c'])
+                                    self.live_prices[symbol] = {'price': price, 'time': datetime.now().strftime('%H:%M:%S')}
+                                    await self._check_live_trades(symbol, price)
+                                elif 'kline' in payload['stream']:
+                                    k = data['k']
+                                    self.live_klines[symbol] = {'o': float(k['o']), 'h': float(k['h']), 'l': float(k['l']), 'c': float(k['c']), 'v': float(k['v']), 'x': k['x']}
                             
-                            self._save_data()
+                            await self._save_data()
 
-                            if (datetime.now() - last_analysis_time).total_seconds() >= 120: # تقليل الفاصل الزمني إلى دقيقتين ليكون أكثر استجابة
+                            # لا يسمح بالتحليل إلا إذا كان النظام READY (بعد انتهاء الـ Warm-up)
+                            if state_manager.is_ready() and (datetime.now() - last_analysis_time).total_seconds() >= 120:
                                 print(f"📡 [MONITOR] بدأت دورة التحليل المؤسسي لـ {len(symbols)} عملة...")
                                 for s in symbols:
-                                    # استخدام البيانات المخزنة مؤقتاً (Cache) لتقليل طلبات REST
-                                    if s in self.live_klines:
+                                    async with state_manager.cache_lock:
+                                        live_k = self.live_klines.get(s)
+                                    
+                                    if live_k:
                                         print(f"🔍 [SCANNER] جاري تحليل {s} بناءً على بيانات الـ WebSocket المحدثة...")
-                                        await ai.analyze_and_trade(s, live_data=self.live_klines[s])
-                                        await asyncio.sleep(0.5) # تقليل التأخير لاعتمادنا على الكاش
+                                        await ai.analyze_and_trade(s, live_data=live_k)
+                                        await asyncio.sleep(0.5)
                                     else:
                                         print(f"⚠️ [SCANNER] تخطي {s} لعدم توفر بيانات كافية في الكاش.")
                                 
-                                print("✅ [SYSTEM] اكتملت دورة التحليل بنجاح. بانتظار الدورة القادمة.")
+                                print("✅ [SYSTEM] اكتملت دورة التحليل بنجاح.")
                                 last_analysis_time = datetime.now()
-                                reconnect_delay = 5 # Reset delay on success
+                                reconnect_delay = 5
 
             except Exception as e:
                 import traceback
