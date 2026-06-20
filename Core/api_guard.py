@@ -50,7 +50,7 @@ class APIGuard:
         """تحديث الوزن بناءً على استجابة Binance (X-MBX-USED-WEIGHT)"""
         try:
             self.current_weight = int(weight_header)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not parse weight header: {e}")
 
 api_guard = APIGuard()

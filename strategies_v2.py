@@ -1,9 +1,12 @@
 import pandas as pd
 import numpy as np
+import logging
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
 
 from Core.gann_analysis import GannAnalyzer
+
+logger = logging.getLogger(__name__)
 
 class InstitutionalStrategiesV2:
     def __init__(self):
@@ -38,7 +41,7 @@ class InstitutionalStrategiesV2:
             if following_bulls and following_candles.body_size.sum() > df.loc[last_bear_idx].body_size * 2:
                 return {"type": "BULLISH_OB", "price": df.loc[last_bear_idx].close}
         except Exception as e:
-            print(f"⚠️ [STRATEGY ERROR] Error in detect_order_blocks: {e}")
+            logger.error(f"⚠️ [STRATEGY ERROR] Error in detect_order_blocks: {e}")
             
         return None
 
@@ -57,7 +60,7 @@ class InstitutionalStrategiesV2:
                 if current_close > prev_high:
                     return "BOS_UP" # Break of Structure to the upside
         except Exception as e:
-            print(f"⚠️ [STRATEGY ERROR] Error in check_market_structure: {e}")
+            logger.error(f"⚠️ [STRATEGY ERROR] Error in check_market_structure: {e}")
             
         return "NEUTRAL"
 

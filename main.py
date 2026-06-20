@@ -1,107 +1,111 @@
 import os
 import sys
 import asyncio
-import time
 import logging
-from keep_alive import keep_alive
+import signal
+from contextlib import asynccontextmanager
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler, ContextTypes
-from config import TELEGRAM_TOKEN, ADMIN_ID
-from database import init_db, AsyncSessionLocal, UserConfig
+from config import TELEGRAM_TOKEN, ADMIN_ID, setup_logging
+from database import init_db, engine
 from bot.handlers import (
     start, handle_message, process_add_symbol, process_add_capital, 
     process_add_risk, process_add_tf,
     ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF
 )
 from Core.trade_monitor import TradeMonitor
-from Core.redis_manager import redis_client
 from Core.shadow_monitor import ShadowMonitor
+from Core.state_manager import state_manager, SystemState
+from keep_alive import keep_alive
 
 # إعداد نظام السجلات (Logging)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+setup_logging()
 logger = logging.getLogger(__name__)
 
-from Core.state_manager import state_manager, SystemState
+class TradingApplication:
+    def __init__(self):
+        self.app = None
+        self.trade_monitor = None
+        self.shadow_monitor = None
+        self.tasks = []
+        self._stop_event = asyncio.Event()
 
-async def start_background_tasks(app):
-    from Core.trade_monitor import TradeMonitor # Import here to avoid circular dependency
-    from Core.shadow_monitor import ShadowMonitor # Import here to avoid circular dependency
-    """التحكم في دورة التشغيل: Connect -> Warm-up -> Ready"""
-    try:
-        state_manager.set_state(SystemState.WARMING_UP)
-        logger.info("🕒 [STARTUP] بدء مرحلة الـ Warm-up لتجهيز الكاش...")
-        
-        # تشغيل مراقب التداول الحقيقي (سيبدأ بجمع البيانات فوراً)
-        monitor = TradeMonitor(bot=app.bot)
-        app.bot_data['trade_monitor_task'] = asyncio.create_task(monitor.check_prices())
-        
-        # تشغيل مراقب التعلم الخفي (Shadow Monitor)
-        shadow = ShadowMonitor(bot=app.bot)
-        app.bot_data['shadow_monitor_task'] = asyncio.create_task(shadow.check_shadow_trades())
-        
-        # انتظار اكتمال الـ Warm-up: يجب أن ينتظر حتى يصبح لكل رمز بيانات كافية
-        logger.info("⏳ [WARMUP] انتظار اكتمال الكاش لكل الرموز...")
-        while not await state_manager.is_cache_warmed_up():
-            await asyncio.sleep(5) # التحقق كل 5 ثواني
-        
-        state_manager.set_state(SystemState.READY)
-        logger.info("✅ [SYSTEM] النظام جاهز بالكامل والبيانات مكتملة في الكاش.")
-    except Exception as e:
-        state_manager.set_state(SystemState.ERROR)
-        logger.error(f"❌ [CRITICAL] فشل إطلاق المهام الخلفية: {e}")
+    async def start_background_tasks(self):
+        """التحكم في دورة التشغيل: Connect -> Warm-up -> Ready"""
+        try:
+            state_manager.set_state(SystemState.WARMING_UP)
+            logger.info("🕒 [STARTUP] بدء مرحلة الـ Warm-up لتجهيز الكاش...")
+            
+            self.trade_monitor = TradeMonitor(bot=self.app.bot)
+            self.shadow_monitor = ShadowMonitor(bot=self.app.bot)
+            
+            # إنشاء المهام وتخزينها للإلغاء لاحقاً
+            monitor_task = asyncio.create_task(self.trade_monitor.check_prices())
+            shadow_task = asyncio.create_task(self.shadow_monitor.check_shadow_trades())
+            self.tasks.extend([monitor_task, shadow_task])
+            
+            logger.info("⏳ [WARMUP] انتظار اكتمال الكاش لكل الرموز...")
+            while not await state_manager.is_cache_warmed_up() and not self._stop_event.is_set():
+                await asyncio.sleep(5)
+            
+            if not self._stop_event.is_set():
+                state_manager.set_state(SystemState.READY)
+                logger.info("✅ [SYSTEM] النظام جاهز بالكامل والبيانات مكتملة في الكاش.")
+        except Exception as e:
+            state_manager.set_state(SystemState.ERROR)
+            logger.error(f"❌ [CRITICAL] فشل إطلاق المهام الخلفية: {e}", exc_info=True)
 
-async def post_init(app: Application):
-    # تنظيف صارم لأي Webhook قديم لضمان عمل الـ Polling بدون تعارض (Conflict)
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    await asyncio.sleep(2) # تأخير قصير لضمان قطع اتصال أي نسخة قديمة تماماً
-    
-    asyncio.create_task(start_background_tasks(app))
-    logger.info("🗑️ [SYSTEM] تم تنظيف الجلسات القديمة وتجهيز الـ Startup Sequence.")
+    async def post_init(self, app: Application):
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("🗑️ [SYSTEM] تم تنظيف الجلسات القديمة.")
+        asyncio.create_task(self.start_background_tasks())
+
+    async def shutdown(self):
+        """إغلاق الموارد بشكل Graceful"""
+        logger.info("🛑 [SHUTDOWN] بدء عملية الإغلاق الآمن...")
+        self._stop_event.set()
+        
+        # 1. إيقاف البوت
+        if self.app:
+            await self.app.stop()
+            await self.app.shutdown()
+        
+        # 2. إلغاء المهام الخلفية
+        if self.trade_monitor:
+            self.trade_monitor.is_running = False
+        if self.shadow_monitor:
+            self.shadow_monitor.is_running = False
+            
+        for task in self.tasks:
+            if not task.done():
+                task.cancel()
+        
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+            logger.info("✅ [SHUTDOWN] تم إيقاف جميع المهام الخلفية.")
+            
+        # إيقاف معالجي الأحداث
+        from Core.event_queue import event_queue
+        if event_queue.is_running:
+            await event_queue.stop_workers()
+            
+        # 3. إغلاق قاعدة البيانات
+        logger.info("🛑 [SHUTDOWN] إغلاق اتصال قاعدة البيانات...")
+        await engine.dispose()
+        logger.info("✅ [SHUTDOWN] تم إغلاق اتصال قاعدة البيانات.")
+        
+        logger.info("👋 [SHUTDOWN] اكتمل الإغلاق بنجاح.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """تسجيل الأخطاء التي تحدث أثناء تشغيل البوت"""
-    logger.error(f"⚠️ [BOT ERROR] {context.error}")
-
-async def shutdown_tasks(app):
-    logger.info("🛑 [SHUTDOWN] إيقاف المهام الخلفية...")
-    if app.bot_data.get('trade_monitor_task'):
-        app.bot_data['trade_monitor_task'].cancel()
-    if app.bot_data.get('shadow_monitor_task'):
-        app.bot_data['shadow_monitor_task'].cancel()
-    
-    # Wait for tasks to finish cancellation
-    tasks = [t for t in [app.bot_data.get('trade_monitor_task'), app.bot_data.get('shadow_monitor_task')] if t]
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("✅ [SHUTDOWN] تم إيقاف المهام الخلفية.")
-
-async def dispose_db_engine():
-    from database import engine
-    logger.info("🛑 [SHUTDOWN] إغلاق اتصال قاعدة البيانات...")
-    await engine.dispose()
-    logger.info("✅ [SHUTDOWN] تم إغلاق اتصال قاعدة البيانات.")
+    logger.error(f"⚠️ [BOT ERROR] {context.error}", exc_info=context.error)
 
 def main():
     logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.0 (The Fox)... ")
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(init_db())
     
-    # بناء التطبيق أولاً
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    trading_app = TradingApplication()
     
-    # ثم تهيئة bot_data
-    app.bot_data['trade_monitor_task'] = None
-    app.bot_data['shadow_monitor_task'] = None
-    
-    # تشغيل Flask Webhook Server للحفاظ على الخدمة حية
-    keep_alive(app)
+    # بناء التطبيق
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(trading_app.post_init).build()
+    trading_app.app = app
     
     # إضافة معالجات الأوامر
     app.add_error_handler(error_handler)
@@ -120,14 +124,28 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # تشغيل البوت باستخدام Polling لتجنب تضارب المنافذ
+    # تشغيل Flask Webhook Server
+    keep_alive(app)
+    
+    # تشغيل البوت
     logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling.")
-    try:
-        app.run_polling()
-    finally:
-        loop.run_until_complete(shutdown_tasks(app))
-        loop.run_until_complete(dispose_db_engine())
+    
+    loop = asyncio.get_event_loop()
+    
+    # التعامل مع إشارات الإنهاء
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(trading_app.shutdown()))
 
+    try:
+        # تهيئة قاعدة البيانات أولاً
+        loop.run_until_complete(init_db())
+        # تشغيل البوت (هذا يحجب التنفيذ حتى يتم الإغلاق)
+        app.run_polling(stop_signals=None) # نتحكم في الإشارات بأنفسنا
+    except Exception as e:
+        logger.error(f"💥 [CRITICAL] خطأ غير متوقع في الحلقة الرئيسية: {e}", exc_info=True)
+    finally:
+        if not trading_app._stop_event.is_set():
+            loop.run_until_complete(trading_app.shutdown())
 
 if __name__ == "__main__":
     main()

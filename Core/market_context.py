@@ -1,7 +1,10 @@
 import pandas as pd
 import numpy as np
 import aiohttp
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 class MarketContext:
     def __init__(self):

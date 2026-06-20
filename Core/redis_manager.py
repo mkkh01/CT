@@ -3,6 +3,9 @@ import json
 import os
 import time
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 class RedisManager:
     """
@@ -22,25 +25,27 @@ class RedisManager:
 
     async def set_data(self, key, value, ex=None):
         """حفظ البيانات محلياً في buffer ثم نقلها للـ active cache"""
+        await self.set_batch_data({key: value}, ex)
+
+    async def set_batch_data(self, data_dict, ex=None):
+        """حفظ مجموعة من البيانات دفعة واحدة لتقليل عمليات الكتابة"""
         async with self.buffer_lock:
             try:
-                buffer_path = self._get_path(key, is_buffer=True)
-                active_path = self._get_path(key)
-                
-                data = {
-                    "value": value,
-                    "expiry": time.time() + ex if ex else None
-                }
-                
-                # 1. الكتابة إلى الـ buffer
-                with open(buffer_path, 'w') as f:
-                    json.dump(data, f)
-                
-                # 2. نقل الـ buffer إلى الـ active cache (atomic swap)
-                os.replace(buffer_path, active_path)
-                
+                for key, value in data_dict.items():
+                    buffer_path = self._get_path(key, is_buffer=True)
+                    active_path = self._get_path(key)
+                    
+                    data = {
+                        "value": value,
+                        "expiry": time.time() + ex if ex else None
+                    }
+                    
+                    with open(buffer_path, 'w') as f:
+                        json.dump(data, f)
+                    
+                    os.replace(buffer_path, active_path)
             except Exception as e:
-                print(f"❌ [CACHE ERROR] Failed to set {key} with double buffer: {e}")
+                logger.error(f"❌ [CACHE ERROR] Failed to set batch data: {e}")
 
     def get_data(self, key):
         """جلب البيانات من الـ active cache والتحقق من صلاحيتها"""
@@ -72,7 +77,7 @@ class RedisManager:
             if os.path.exists(buffer_path):
                 os.remove(buffer_path)
         except Exception as e:
-            print(f"❌ [CACHE ERROR] Failed to delete {key}: {e}")
+            logger.error(f"❌ [CACHE ERROR] Failed to delete {key}: {e}")
 
 # تصدير النسخة الموحدة لضمان التوافق مع بقية الكود دون تعديله
 redis_client = RedisManager()

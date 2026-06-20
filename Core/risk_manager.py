@@ -1,4 +1,7 @@
+import logging
 from config import DEFAULT_CAPITAL, TRADE_FEE
+
+logger = logging.getLogger(__name__)
 
 class RiskManager:
     def __init__(self):
@@ -68,7 +71,7 @@ class RiskManager:
         is_valid = profit_margin > (total_fee * 0.5)
         
         if not is_valid:
-            print(f"⚠️ [RISK MANAGER] هامش الربح المتوقع ({profit_margin:.6f}) قليل جداً مقارنة بالرسوم ({total_fee:.6f})")
+            logger.warning(f"⚠️ [RISK MANAGER] هامش الربح المتوقع ({profit_margin:.6f}) قليل جداً مقارنة بالرسوم ({total_fee:.6f})")
         return is_valid
 
     def get_dynamic_precision(self, price: float) -> int:
@@ -107,6 +110,6 @@ class RiskManager:
         
         # إذا كان هناك أكثر من صفقتين مرتبطتين، نمنع الثالثة لحماية رأس المال
         if related_count >= 2:
-            print(f"⚠️ [CORRELATION GUARD] High correlation detected for {new_symbol}. Blocking trade.")
+            logger.warning(f"⚠️ [CORRELATION GUARD] High correlation detected for {new_symbol}. Blocking trade.")
             return False
         return True

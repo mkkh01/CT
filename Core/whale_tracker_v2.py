@@ -2,8 +2,11 @@ import asyncio
 import json
 import websockets
 import time
+import logging
 from config import BINANCE_WS_URL
 from Core.redis_manager import redis_client
+
+logger = logging.getLogger(__name__)
 
 class WhaleTrackerV2:
     def __init__(self, bot=None, chat_id=None):
@@ -43,7 +46,7 @@ class WhaleTrackerV2:
                                 await self.bot.send_message(self.chat_id, msg_text, parse_mode='Markdown')
                             except: pass
         except Exception as e:
-            print(f"❌ [WHALE TRACKER ERROR] {e}")
+            logger.error(f"❌ [WHALE TRACKER ERROR] {symbol}: {e}")
             await asyncio.sleep(5)
 
     def get_whale_bias(self, symbol: str) -> str:

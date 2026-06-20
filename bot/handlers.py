@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
 from sqlalchemy import select, delete, func
@@ -8,6 +9,8 @@ from database import AsyncSessionLocal, UserConfig, TrackedCoin, LiveTrade, Shad
 from bot.keyboards import get_main_menu, get_capital_management_menu, get_timeframe_menu, get_risk_management_menu
 from datetime import datetime
 from config import ADMIN_ID
+
+logger = logging.getLogger(__name__)
 
 # States for ConversationHandler
 ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF = range(4)
@@ -107,7 +110,8 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     coin.capital = cap
                     await session.commit()
             await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
-        except:
+        except Exception as e:
+            logger.error(f"❌ [BOT] Error updating coin capital: {e}")
             await update.message.reply_text("❌ خطأ في القيمة.")
         context.user_data.clear()
 

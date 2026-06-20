@@ -4,6 +4,7 @@ import time
 import httpx
 from enum import Enum
 from sqlalchemy import select
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ class StateManager:
                         [k[0], float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])]
                         for k in klines
                     ]
-                    hist_key = f"hist_cache_{symbol}_{timeframe}"
+                    hist_key = f"hist_cache_{symbol.lower()}_{timeframe}"
                     await redis_client.set_data(hist_key, formatted_data)
                     logger.info(f"✅ [HISTORY] تم جلب {len(formatted_data)} شمعة لـ {symbol} ({timeframe})")
                     return True
@@ -75,7 +76,7 @@ class StateManager:
 
         all_warmed = True
         for coin in coins:
-            symbol = coin.symbol.strip()
+            symbol = coin.symbol.strip().lower()
             timeframe = coin.timeframe
             
             hist_key = f"hist_cache_{symbol}_{timeframe}"

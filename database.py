@@ -1,10 +1,13 @@
 import os
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import Text, func, JSON
 from config import DATABASE_URL
+
+logger = logging.getLogger(__name__)
 
 # إعداد المحرك للعمل مع Supabase/PostgreSQL
 engine = create_async_engine(
@@ -91,4 +94,4 @@ class ShadowTrade(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        print("✅ Institutional Database Schema V5 Initialized.")
+        logger.info("✅ Institutional Database Schema V5 Initialized.")

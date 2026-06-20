@@ -13,8 +13,11 @@ from datetime import datetime, time
 import asyncio
 import json
 import os
+import logging
 from Core.redis_manager import redis_client
 from Core.state_manager import state_manager
+
+logger = logging.getLogger(__name__)
 
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
@@ -50,12 +53,17 @@ class AIEngine:
             cfg = cfg_res.scalars().first()
             if not cfg or not cfg.is_active or cfg.emergency_stop: return
             
-            coin_res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
+            # Ensure symbol is uppercase for database lookup
+            symbol_db = symbol.upper()
+            # Ensure symbol is lowercase for cache lookup
+            symbol_cache = symbol.lower()
+            
+            coin_res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol_db))
             coin = coin_res.scalars().first()
             if not coin or not coin.enabled: return
 
             try:
-                hist_key = f"hist_cache_{symbol}_{coin.timeframe}"
+                hist_key = f"hist_cache_{symbol_cache}_{coin.timeframe}"
                 ohlcv = redis_client.get_data(hist_key)
                 
                 if not ohlcv:
@@ -72,7 +80,7 @@ class AIEngine:
                     new_row = [float(datetime.now().timestamp()*1000), float(live_data['o']), float(live_data['h']), float(live_data['l']), float(live_data['c']), float(live_data['v'])]
                     df.iloc[-1] = new_row
             except Exception as e:
-                print(f"⚠️ [SCANNER ERROR] Error processing OHLCV for {symbol}: {e}")
+                logger.error(f"⚠️ [SCANNER ERROR] Error processing OHLCV for {symbol}: {e}", exc_info=True)
                 return
             
             # 1. تحليل الاستراتيجيات الفنية
@@ -124,10 +132,10 @@ class AIEngine:
 
             total_score = max(0, total_score)
             current_session = self.get_trading_session()
-            prob = await self.calculate_probability(symbol, total_score, current_session)
+            prob = await self.calculate_probability(symbol_db, total_score, current_session)
 
             new_shadow = ShadowTrade(
-                symbol=symbol, score=total_score, entry_price=params["entry"],
+                symbol=symbol_db, score=total_score, entry_price=params["entry"],
                 stop_loss=params["sl"], take_profit=params["tp"],
                 trading_session=current_session, probability_score=prob,
                 reasoning_report=" | ".join(decision_report)
@@ -136,12 +144,13 @@ class AIEngine:
             await session.commit()
 
             if total_score < 70:
+                logger.info(f"ℹ️ [ANALYSIS] {symbol} rejected. Score: {total_score}/100. Reasons: {', '.join(decision_report)}")
                 return
 
             open_trades_res = await session.execute(select(LiveTrade).where(LiveTrade.status == "OPEN"))
             open_trades = open_trades_res.scalars().all()
-            if any(t.symbol == symbol for t in open_trades): return
-            if not self.risk_manager.check_correlation_risk(open_trades, symbol):
+            if any(t.symbol == symbol_db for t in open_trades): return
+            if not self.risk_manager.check_correlation_risk(open_trades, symbol_db):
                 return
 
             risk_amount = coin.capital * (coin.risk_percentage / 100)
@@ -150,7 +159,7 @@ class AIEngine:
             amount = risk_amount / (sl_dist / params["entry"])
             
             new_live = LiveTrade(
-                symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
+                symbol=symbol_db, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
                 take_profit=params["tp"], amount=amount, score=total_score,
                 entry_reason=" | ".join(decision_report)
             )

@@ -1,10 +1,11 @@
 import asyncio
-import json
-import os
+import logging
 from Core.redis_manager import redis_client
 from datetime import datetime
 from sqlalchemy import select
 from database import AsyncSessionLocal, ShadowTrade, TrackedCoin
+
+logger = logging.getLogger(__name__)
 
 class ShadowMonitor:
     def __init__(self, bot=None):
@@ -37,7 +38,13 @@ class ShadowMonitor:
                             prices[symbol] = price_data
 
                     for trade in open_trades:
-                        current_price = prices.get(trade.symbol, {}).get('price')
+                        # Ensure we check symbol case-insensitively against our prices dict
+                        current_price = None
+                        for sym, data in prices.items():
+                            if sym.upper() == trade.symbol.upper():
+                                current_price = data.get('price')
+                                break
+                        
                         if not current_price: continue
                         
                         current_price = float(current_price)
@@ -58,19 +65,19 @@ class ShadowMonitor:
                                 reasoning += f"❌ فشلت الصفقة بضرب الوقف. السبب المحتمل: تذبذب عالي أو انعكاس مفاجئ في جلسة {trade.trading_session}."
                             
                             trade.reasoning_report += f"\n[RESULT] {reasoning}"
-                            print(f"📉 [SHADOW LEARN] تم إغلاق صفقة ظل لـ {trade.symbol} بنتيجة: {trade.status}")
+                            logger.info(f"📉 [SHADOW LEARN] تم إغلاق صفقة ظل لـ {trade.symbol} بنتيجة: {trade.status}")
                     
                     await session.commit()
             except asyncio.CancelledError:
-                print("🛑 [SHADOW MONITOR] Task was cancelled. Shutting down gracefully.")
+                logger.info("🛑 [SHADOW MONITOR] Task was cancelled. Shutting down gracefully.")
                 self.is_running = False
                 break
             except Exception as e:
-                print(f"⚠️ [SHADOW MONITOR] Error: {e}")
+                logger.info(f"⚠️ [SHADOW MONITOR] Error: {e}")
             
             try:
                 await asyncio.sleep(10)
             except asyncio.CancelledError:
-                print("🛑 [SHADOW MONITOR] Task was cancelled during sleep. Shutting down gracefully.")
+                logger.info("🛑 [SHADOW MONITOR] Task was cancelled during sleep. Shutting down gracefully.")
                 self.is_running = False
                 break

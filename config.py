@@ -1,6 +1,9 @@
 # config.py
 
 import os
+import logging
+import sys
+
 # 1. التوكن الخاص بك
 TELEGRAM_TOKEN = "8935169680:AAEPcVnGY58CZUmggvNZuGJrvE-FE9IxrxA"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-...") # سيتم جلبها من إعدادات Render
@@ -23,3 +26,19 @@ REDIS_HOST = "moon-close-reaction-79072.db.redis.io" # تم التأكد من ا
 REDIS_PORT = 10184
 REDIS_PASS = "OsYazrMladbKz5s1W2p4bbzv4NDNwGHy" # تم تحديث كلمة المرور بدقة
 REDIS_SSL = True # تم التثبيت على True لضمان استخدام بروتوكول rediss المشفر لـ Redis Cloud
+
+# 5. إعدادات التسجيل (Logging)
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler('trading_bot.log')
+        ]
+    )
+    # تقليل ضجيج المكتبات الخارجية
+    logging.getLogger('apscheduler').setLevel(logging.WARNING)
+    logging.getLogger('telegram').setLevel(logging.INFO)
+    logging.getLogger('websockets').setLevel(logging.INFO)
+    logging.getLogger('aiohttp').setLevel(logging.WARNING)

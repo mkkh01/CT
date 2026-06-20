@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from datetime import datetime
 import json
 # from textblob import TextBlob # تم تعطيلها لعدم الحاجة لها
 import requests
+
+logger = logging.getLogger(__name__)
 
 class NewsIntelligence:
     def __init__(self, bot=None, chat_id=None):

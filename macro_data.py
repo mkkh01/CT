@@ -2,7 +2,10 @@ import yfinance as yf
 import requests
 import json
 import pandas as pd
+import logging
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 class MacroAnalyzer:
     def __init__(self):
@@ -26,14 +29,14 @@ class MacroAnalyzer:
             dxy_data = yf.Ticker("DX-Y.NYB").history(period="5d")
             if not dxy_data.empty: 
                 dxy_value = float(dxy_data["Close"].iloc[-1])
-                print(f"📈 [MACRO] تم جلب قيمة حية لمؤشر الدولار DXY: {dxy_value:.2f}")
+                logger.info(f"📈 [MACRO] تم جلب قيمة حية لمؤشر الدولار DXY: {dxy_value:.2f}")
             else:
                 dxy_value = 103.0 # قيمة افتراضية مرنة في حال غياب البيانات
             
             self.cache[key] = (datetime.now(), dxy_value)
             return dxy_value
         except Exception as e:
-            print(f"⚠️ [MACRO] خطأ في جلب DXY الفعلي: {e}. استخدام قيمة احتياطية.")
+            logger.info(f"⚠️ [MACRO] خطأ في جلب DXY الفعلي: {e}. استخدام قيمة احتياطية.")
             return 103.0 
 
     def get_market_regime(self) -> str:
@@ -57,7 +60,7 @@ class MacroAnalyzer:
             # حساب المتوسط المتحرك البسيط لـ 20 يوماً كخط أساسي ديناميكي لاتجاه السوق الحالي
             ndx_sma20 = ndx_hist["Close"].rolling(window=20).mean().iloc[-1]
             
-            print(f"📊 [MACRO ANALYSIS] NDX الحالي: {current_ndx:.2f} | المتوسط المتحرك الديناميكي (SMA20): {ndx_sma20:.2f} | الخوف والجشع: {fng}")
+            logger.info(f"📊 [MACRO ANALYSIS] NDX الحالي: {current_ndx:.2f} | المتوسط المتحرك الديناميكي (SMA20): {ndx_sma20:.2f} | الخوف والجشع: {fng}")
 
             # ⚖️ منطق ديناميكي متطور ومتوافق مع تغير السنين والمستويات السعرية:
             # RISK_OFF: ناسداك تحت متوسطه، والخوف مسيطر (أقل من 35)
@@ -72,7 +75,7 @@ class MacroAnalyzer:
                 return "NEUTRAL"
                 
         except Exception as main_macro_err:
-            print(f"🚨 [MACRO ERROR] فشل تحليل وضع السوق بالكامل: {main_macro_err}")
+            logger.info(f"🚨 [MACRO ERROR] فشل تحليل وضع السوق بالكامل: {main_macro_err}")
             return "NEUTRAL"
 
     def get_ndx(self) -> float:
@@ -90,7 +93,7 @@ class MacroAnalyzer:
             else:
                 return 18000.0 # تحديث القيمة الافتراضية لتناسب مستويات العصر الحالي
         except Exception as e:
-            print(f"خطأ في جلب NDX: {e}")
+            logger.info(f"خطأ في جلب NDX: {e}")
             return 18000.0
 
     def get_fear_and_greed(self) -> int:
@@ -107,5 +110,5 @@ class MacroAnalyzer:
             self.cache[key] = (datetime.now(), fng_value)
             return fng_value
         except Exception as e:
-            print(f"خطأ في جلب مؤشر الخوف والجشع: {e}")
+            logger.info(f"خطأ في جلب مؤشر الخوف والجشع: {e}")
             return 50 # محايد عند حدوث خطأ في الـ API
