@@ -1,34 +1,34 @@
 # keep_alive.py
-from flask import Flask, request
+from flask import Flask
 from threading import Thread
 import os
-import asyncio
 import logging
 
+# إعداد السجلات لـ Flask
 logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
-telegram_app = None
 
 @app.route('/')
 def home():
     return "Institutional Trading Engine V5.0 is Running."
-
-# تم إيقاف مسار الـ Webhook لتجنب التعارض مع نظام الـ Polling
-# @app.route('/webhook', methods=['POST'])
-# def webhook():
-#     ...
 
 def run():
     port = int(os.environ.get("PORT", 10000))
     # إخفاء سجلات Flask العادية لتقليل الضجيج
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    
+    # استخدام debug=False و use_reloader=False ضروري جداً لمنع تشغيل نسخة ثانية من main.py
+    try:
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    except Exception as e:
+        logger.error(f"❌ [KEEP_ALIVE] Flask server error: {e}")
 
 def keep_alive(app_instance=None):
-    global telegram_app
-    telegram_app = app_instance
-    t = Thread(target=run, name="KeepAliveThread")
-    t.daemon = True
+    """
+    تشغيل خادم Flask في Thread منفصل لضمان بقاء الخدمة حية على منصات الاستضافة.
+    """
+    t = Thread(target=run, name="KeepAliveThread", daemon=True)
     t.start()
     logger.info("🌐 [KEEP_ALIVE] Flask server started in background thread.")

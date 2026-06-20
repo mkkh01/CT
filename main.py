@@ -3,7 +3,6 @@ import sys
 import asyncio
 import logging
 import signal
-from contextlib import asynccontextmanager
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler, ContextTypes
 from config import TELEGRAM_TOKEN, ADMIN_ID, setup_logging
 from database import init_db, engine
@@ -22,12 +21,19 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 class TradingApplication:
-    def __init__(self):
-        self.app = None
-        self.trade_monitor = None
-        self.shadow_monitor = None
-        self.tasks = []
-        self._stop_event = asyncio.Event()
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(TradingApplication, cls).__new__(cls)
+            cls._instance.app = None
+            cls._instance.trade_monitor = None
+            cls._instance.shadow_monitor = None
+            cls._instance.tasks = []
+            cls._instance._stop_event = asyncio.Event()
+            cls._instance._is_shutting_down = False
+            logger.info("🆕 [SYSTEM] TradingApplication Instance Created (Singleton)")
+        return cls._instance
 
     async def start_background_tasks(self):
         """التحكم في دورة التشغيل: Connect -> Warm-up -> Ready"""
@@ -55,25 +61,19 @@ class TradingApplication:
             logger.error(f"❌ [CRITICAL] فشل إطلاق المهام الخلفية: {e}", exc_info=True)
 
     async def post_init(self, app: Application):
-        # حذف الـ Webhook بشكل صريح عند بدء التشغيل لضمان عمل الـ Polling
-        try:
-            await app.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("🗑️ [SYSTEM] تم حذف الـ Webhook وتنظيف التحديثات المعلقة.")
-        except Exception as e:
-            logger.warning(f"⚠️ [SYSTEM] فشل حذف الـ Webhook (قد لا يكون موجوداً): {e}")
-        
         # تشغيل المهام الخلفية
         asyncio.create_task(self.start_background_tasks())
 
     async def shutdown(self):
-        """إغلاق الموارد بشكل Graceful"""
-        if self._stop_event.is_set():
+        """إغلاق الموارد بشكل Graceful ومرتب"""
+        if self._is_shutting_down:
             return
-            
+        
+        self._is_shutting_down = True
         logger.info("🛑 [SHUTDOWN] بدء عملية الإغلاق الآمن...")
         self._stop_event.set()
         
-        # 1. إلغاء المهام الخلفية أولاً قبل إغلاق التطبيق
+        # 1. إلغاء المهام الخلفية أولاً
         if self.trade_monitor:
             self.trade_monitor.is_running = False
         if self.shadow_monitor:
@@ -95,84 +95,44 @@ class TradingApplication:
         except Exception as e:
             logger.error(f"⚠️ [SHUTDOWN] خطأ أثناء إيقاف event_queue: {e}")
             
-        # 2. إيقاف البوت بترتيب صحيح
+        # 2. إيقاف البوت بترتيب دقيق (Stop Polling -> Stop App -> Shutdown App)
         if self.app:
             try:
                 if self.app.updater and self.app.updater.running:
-                    logger.info("🛑 [SHUTDOWN] إيقاف الـ Polling...")
+                    logger.info("🛑 [SHUTDOWN] Polling Stopped")
                     await self.app.updater.stop()
                 
                 if self.app.running:
-                    logger.info("🛑 [SHUTDOWN] إيقاف التطبيق...")
+                    logger.info("🛑 [SHUTDOWN] Application Stopped")
                     await self.app.stop()
                 
-                # لا نستدعي shutdown() هنا إذا كنا نستخدم 'async with app' 
-                # لأن __aexit__ سيقوم باستدعائها تلقائياً.
-                # ولكن لضمان الترتيب المطلوب من المستخدم:
-                # initialize -> start -> updater.start_polling -> updater.stop -> stop -> shutdown
-                # سنقوم باستدعاء shutdown يدوياً فقط إذا لم نكن داخل سياق 'async with'
+                # استدعاء shutdown يدوياً هنا لأننا لا نستخدم async with app
+                # لتجنب تداخل __aexit__ مع الإغلاق اليدوي
+                logger.info("🛑 [SHUTDOWN] Application Shutdown")
+                await self.app.shutdown()
             except Exception as e:
-                logger.error(f"⚠️ [SHUTDOWN] خطأ أثناء إيقاف البوت: {e}")
+                logger.error(f"⚠️ [SHUTDOWN] خطأ أثناء إيقاف البot: {e}")
 
         # 3. إغلاق قاعدة البيانات
         logger.info("🛑 [SHUTDOWN] إغلاق اتصال قاعدة البيانات...")
         await engine.dispose()
         logger.info("✅ [SHUTDOWN] تم إغلاق اتصال قاعدة البيانات.")
         
-        logger.info("👋 [SHUTDOWN] اكتمل الإغلاق بنجاح.")
+        logger.info("👋 [SHUTDOWN] Exit")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"⚠️ [BOT ERROR] {context.error}", exc_info=context.error)
 
-async def run_app(app: Application, trading_app: TradingApplication):
-    """دالة تشغيل التطبيق مع إدارة دورة الحياة"""
-    try:
-        # تهيئة قاعدة البيانات أولاً
-        await init_db()
-        
-        # استخدام سياق 'async with' يضمن استدعاء initialize و shutdown تلقائياً
-        # ولكن لضمان الترتيب الدقيق المطلوب، سنقوم بالخطوات يدوياً داخل السياق
-        async with app:
-            await app.initialize()
-            await app.start()
-            
-            # حذف الـ Webhook قبل بدء الـ Polling
-            await app.bot.delete_webhook(drop_pending_updates=True)
-            
-            # بدء الـ Polling (تمت إزالة close_loop=False المتسبب في الخطأ)
-            try:
-                await app.updater.start_polling(drop_pending_updates=True)
-                logger.info("✅ [RUN] البوت يعمل الآن بنظام الـ Polling.")
-            except Exception as e:
-                logger.error(f"❌ [POLLING ERROR] فشل بدء الـ Polling: {e}")
-                raise
-            
-            # الانتظار حتى يتم إرسال إشارة الإيقاف
-            while not trading_app._stop_event.is_set():
-                await asyncio.sleep(1)
-            
-            # التوقف بترتيب صحيح (سيتم استدعاء shutdown بواسطة __aexit__)
-            if app.updater and app.updater.running:
-                await app.updater.stop()
-            if app.running:
-                await app.stop()
-                
-    except Exception as e:
-        logger.error(f"💥 [CRITICAL] خطأ غير متوقع في الحلقة الرئيسية: {e}", exc_info=True)
-    finally:
-        # التأكد من تنفيذ الإغلاق الكامل للموارد الأخرى
-        await trading_app.shutdown()
-
-def main():
-    logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.0 (The Fox)... ")
-    
+async def run_app():
+    """دالة تشغيل التطبيق مع إدارة دورة الحياة الصارمة"""
     trading_app = TradingApplication()
     
-    # بناء التطبيق
+    # بناء التطبيق (مرة واحدة فقط)
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(trading_app.post_init).build()
     trading_app.app = app
-    
-    # إضافة معالجات الأوامر
+    logger.info("🚀 [SYSTEM] Application Created")
+
+    # إضافة المعالجات
     app.add_error_handler(error_handler)
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^➕ إضافة عملة$"), handle_message)],
@@ -188,36 +148,75 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # تشغيل Flask Webhook Server
+
+    # تشغيل Flask في Thread منفصل (بدون إعادة تحميل)
     keep_alive(app)
+
+    try:
+        # 1. تهيئة قاعدة البيانات
+        await init_db()
+        
+        # 2. دورة التشغيل الرسمية (بدون استخدام async with لتجنب Conflict في الإغلاق)
+        logger.info("🚀 [SYSTEM] Application Initialized")
+        await app.initialize()
+        
+        logger.info("🚀 [SYSTEM] Application Started")
+        await app.start()
+        
+        # 3. حذف الـ Webhook مرة واحدة قبل الـ Polling
+        logger.info("🗑️ [SYSTEM] Deleting Webhook...")
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        
+        # 4. بدء الـ Polling مع حماية
+        if app.updater and not app.updater.running:
+            logger.info("🚀 [SYSTEM] Polling Started")
+            await app.updater.start_polling(drop_pending_updates=True)
+        else:
+            logger.warning("⚠️ [SYSTEM] Polling is already running or updater is missing!")
+
+        # 5. الانتظار حتى إشارة الإغلاق
+        while not trading_app._stop_event.is_set():
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"💥 [CRITICAL] خطأ في الحلقة الرئيسية: {e}", exc_info=True)
+    finally:
+        # التأكد من تنفيذ الإغلاق المرتب
+        await trading_app.shutdown()
+
+def main():
+    logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.0 (The Fox)... ")
     
-    # تشغيل البوت
-    logger.info("✅ [RUN] بدء تشغيل البوت بنظام الـ Polling.")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    loop = asyncio.get_event_loop()
+    trading_app = TradingApplication()
     
     # التعامل مع إشارات الإنهاء
-    def signal_handler():
-        asyncio.create_task(trading_app.shutdown())
+    def handle_exit():
+        if not trading_app._is_shutting_down:
+            loop.create_task(trading_app.shutdown())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, signal_handler)
+            loop.add_signal_handler(sig, handle_exit)
         except NotImplementedError:
-            # لضمان التوافق مع الأنظمة التي لا تدعم add_signal_handler (مثل ويندوز)
             pass
 
     try:
-        loop.run_until_complete(run_app(app, trading_app))
+        loop.run_until_complete(run_app())
     except KeyboardInterrupt:
         pass
     except Exception as e:
         logger.error(f"💥 [FATAL] {e}")
     finally:
-        # إغلاق الـ loop نهائياً
-        if not loop.is_closed():
+        # إغلاق الـ loop نهائياً بعد التأكد من انتهاء كافة المهام
+        try:
+            pending = asyncio.all_tasks(loop)
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
+        except:
+            pass
 
 if __name__ == "__main__":
     main()
