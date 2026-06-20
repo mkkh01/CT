@@ -64,10 +64,7 @@ class TradingApplication:
         logger.info("🛑 [SHUTDOWN] بدء عملية الإغلاق الآمن...")
         self._stop_event.set()
         
-        # 1. إيقاف البوت
-        if self.app:
-            await self.app.stop()
-            await self.app.shutdown()
+        # 1. إيقاف البوت يتم التعامل معه في run_app
         
         # 2. إلغاء المهام الخلفية
         if self.trade_monitor:
@@ -136,16 +133,43 @@ def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: asyncio.create_task(trading_app.shutdown()))
 
+    async def run_app():
+        try:
+            # تهيئة قاعدة البيانات أولاً
+            await init_db()
+            
+            # تهيئة وتشغيل التطبيق يدوياً لضمان سياق آمن لـ HTTPX
+            async with app:
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(drop_pending_updates=True)
+                
+                logger.info("✅ [RUN] البوت يعمل الآن بنظام الـ Polling.")
+                
+                # الانتظار حتى يتم إرسال إشارة الإيقاف
+                while not trading_app._stop_event.is_set():
+                    await asyncio.sleep(1)
+                
+                # إيقاف الـ polling
+                if app.updater.running:
+                    await app.updater.stop()
+                if app.running:
+                    await app.stop()
+                await app.shutdown()
+        except Exception as e:
+            logger.error(f"💥 [CRITICAL] خطأ غير متوقع في الحلقة الرئيسية: {e}", exc_info=True)
+        finally:
+            if not trading_app._stop_event.is_set():
+                await trading_app.shutdown()
+
     try:
-        # تهيئة قاعدة البيانات أولاً
-        loop.run_until_complete(init_db())
-        # تشغيل البوت (هذا يحجب التنفيذ حتى يتم الإغلاق)
-        app.run_polling(stop_signals=None) # نتحكم في الإشارات بأنفسنا
+        loop.run_until_complete(run_app())
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
-        logger.error(f"💥 [CRITICAL] خطأ غير متوقع في الحلقة الرئيسية: {e}", exc_info=True)
+        logger.error(f"💥 [FATAL] {e}")
     finally:
-        if not trading_app._stop_event.is_set():
-            loop.run_until_complete(trading_app.shutdown())
+        loop.close()
 
 if __name__ == "__main__":
     main()
