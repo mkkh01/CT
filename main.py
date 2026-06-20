@@ -129,6 +129,8 @@ def main():
     # تشغيل البوت باستخدام run_polling() وهي الطريقة الأكثر استقراراً
     # فهي تدير الـ Loop، الـ Signals (SIGTERM/SIGINT)، والـ Shutdown تلقائياً
     logger.info("🚀 [SYSTEM] Starting Polling Mode...")
+    # استخدام app.run_polling() هو الأسلوب الموصى به والمستقر لتشغيل البوت في PTB v20+
+    # وهو يدير دورة الحياة، الإشارات (SIGTERM/SIGINT)، والإغلاق بشكل تلقائي.
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
