@@ -49,8 +49,9 @@ class TradeMonitor:
         if not event_queue.is_running:
             logger.info("👷 [EVENT QUEUE] بدء تشغيل العمال (Workers)...")
             await event_queue.start_workers(num_workers=2)
-            # تسجيل معالج التحليل
-            await event_queue.register_handler(EventType.PRICE_UPDATE, self._handle_analysis_event)
+            # تسجيل معالج التحليل - نتحقق أولاً إذا كان مسجلاً لتجنب التكرار
+            if self._handle_analysis_event not in event_queue.event_handlers.get(EventType.PRICE_UPDATE, []):
+                await event_queue.register_handler(EventType.PRICE_UPDATE, self._handle_analysis_event)
 
         reconnect_delay = 5
         max_reconnect_delay = 300

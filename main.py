@@ -14,6 +14,8 @@ from bot.handlers import (
 from Core.trade_monitor import TradeMonitor
 from Core.shadow_monitor import ShadowMonitor
 from Core.state_manager import state_manager, SystemState
+from Core.process_lock import ProcessLock
+from Core.event_queue import event_queue
 from keep_alive import keep_alive
 
 # إعداد نظام السجلات (Logging)
@@ -36,20 +38,24 @@ class TradingApplication:
 
     async def start_background_tasks(self, app: Application):
         """التحكم في دورة التشغيل: Connect -> Warm-up -> Ready"""
+        # منع التشغيل المزدوج للمهام الخلفية داخل نفس الـ instance
+        if state_manager.state != SystemState.INIT:
+            logger.warning("⚠️ [STARTUP] Background tasks already initializing or running.")
+            return
+
         try:
             state_manager.set_state(SystemState.WARMING_UP)
             logger.info("🕒 [STARTUP] بدء مرحلة الـ Warm-up لتجهيز الكاش...")
             
             self.trade_monitor = TradeMonitor(bot=app.bot)
-            self.shadow_monitor = ShadowMonitor(bot=app.bot)
             
             # إنشاء المهام وتخزينها للإلغاء لاحقاً
-            monitor_task = asyncio.create_task(self.trade_monitor.check_prices())
-            # shadow_task = asyncio.create_task(self.shadow_monitor.check_shadow_trades()) # تعطيل مراقبة صفقات الظل
-            self.tasks.extend([monitor_task])
+            monitor_task = asyncio.create_task(self.trade_monitor.check_prices(), name="MonitorTask")
+            self.tasks.append(monitor_task)
             
             logger.info("⏳ [WARMUP] انتظار اكتمال الكاش لكل الرموز...")
             while not await state_manager.is_cache_warmed_up():
+                if self._is_shutting_down: return
                 await asyncio.sleep(5)
             
             state_manager.set_state(SystemState.READY)
@@ -77,24 +83,27 @@ class TradingApplication:
         if self.trade_monitor:
             logger.info("🛑 [SHUTDOWN] إيقاف TradeMonitor...")
             self.trade_monitor.is_running = False
-        if self.shadow_monitor:
-            self.shadow_monitor.is_running = False
+        
+        # 2. إيقاف عمال طابور الأحداث (Event Queue Workers)
+        if event_queue.is_running:
+            logger.info("🛑 [SHUTDOWN] إيقاف عمال طابور الأحداث...")
+            await event_queue.stop_workers()
             
-        # 2. إلغاء جميع المهام الجارية
+        # 3. إلغاء جميع المهام الجارية
         for task in self.tasks:
             if not task.done():
-                task.name = task.get_name() if hasattr(task, 'get_name') else "UnknownTask"
-                logger.info(f"⏳ [SHUTDOWN] إلغاء المهمة: {task.name}")
+                task_name = task.get_name() if hasattr(task, 'get_name') else "UnknownTask"
+                logger.info(f"⏳ [SHUTDOWN] إلغاء المهمة: {task_name}")
                 task.cancel()
         
-        # 3. انتظار إغلاق المهام بمهلة زمنية
+        # 4. انتظار إغلاق المهام بمهلة زمنية
         if self.tasks:
             try:
                 await asyncio.wait_for(asyncio.gather(*self.tasks, return_exceptions=True), timeout=10)
             except asyncio.TimeoutError:
                 logger.warning("⚠️ [SHUTDOWN] انتهت مهلة انتظار إغلاق المهام، المتابعة بالإغلاق القسري.")
             
-        # 4. إغلاق محرك قاعدة البيانات
+        # 5. إغلاق محرك قاعدة البيانات
         try:
             await engine.dispose()
             logger.info("✅ [SHUTDOWN] تم إغلاق اتصال قاعدة البيانات.")
@@ -112,6 +121,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def main():
     logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.2 (The Fox)... ")
     
+    # 1. منع تشغيل أكثر من نسخة (Single Instance Lock)
+    lock = ProcessLock()
+    if not lock.acquire():
+        logger.error("🚨 [SYSTEM] فشل الإقلاع: توجد نسخة أخرى تعمل بالفعل. إغلاق العملية الحالية...")
+        sys.exit(1)
+        
     trading_app = TradingApplication()
     
     # بناء التطبيق باستخدام النمط الرسمي لـ PTB v20+
@@ -144,11 +159,12 @@ def main():
     keep_alive(app)
 
     # تشغيل البوت باستخدام run_polling() وهي الطريقة الأكثر استقراراً
-    # فهي تدير الـ Loop، الـ Signals (SIGTERM/SIGINT)، والـ Shutdown تلقائياً
-    logger.info("🚀 [SYSTEM] Starting Polling Mode...")
-    # استخدام app.run_polling() هو الأسلوب الموصى به والمستقر لتشغيل البوت في PTB v20+
-    # وهو يدير دورة الحياة، الإشارات (SIGTERM/SIGINT)، والإغلاق بشكل تلقائي.
-    app.run_polling(drop_pending_updates=True)
+    try:
+        logger.info("🚀 [SYSTEM] Starting Polling Mode...")
+        app.run_polling(drop_pending_updates=True, close_loop=False)
+    finally:
+        # ضمان تحرير القفل عند الخروج
+        lock.release()
 
 if __name__ == "__main__":
     main()
