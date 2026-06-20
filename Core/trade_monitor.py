@@ -110,7 +110,7 @@ class TradeMonitor:
                                     self.live_klines[symbol] = {
                                         'o': float(k['o']), 'h': float(k['h']), 
                                         'l': float(k['l']), 'c': float(k['c']), 
-                                        'v': float(k['v']), 'x': k['x']
+                                        'v': float(k['v']), 'V': float(k['V']), 'x': k['x']
                                     }
                                     if k['x']: # إذا اكتملت الشمعة
                                         logger.info(f"🕯️ [KLINE] شمعة مكتملة لـ {symbol}: O:{k['o']} C:{k['c']}")

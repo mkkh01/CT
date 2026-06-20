@@ -47,7 +47,7 @@ class StateManager:
                 if response.status_code == 200:
                     klines = response.json()
                     formatted_data = [
-                        [k[0], float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])]
+                        [k[0], float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]), float(k[9])]
                         for k in klines
                     ]
                     hist_key = f"hist_cache_{symbol.lower()}_{timeframe}"

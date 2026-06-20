@@ -120,7 +120,15 @@ class SMCEngine:
                     eqh.append(highs[i])
                     
         current_high = df['high'].iloc[-1]
+        current_low = df['low'].iloc[-1]
         recent_max = df['high'].iloc[-20:-1].max()
-        sweep = current_high > recent_max and df['close'].iloc[-1] < recent_max
+        recent_min = df['low'].iloc[-20:-1].min()
+
+        sweep_high = current_high > recent_max and df['close'].iloc[-1] < recent_max   # bearish grab
+        sweep_low  = current_low < recent_min and df['close'].iloc[-1] > recent_min    # bullish grab
         
-        return {"equal_highs": eqh, "liquidity_sweep": sweep}
+        return {
+            "equal_highs": eqh,
+            "sweep_high": sweep_high,   # bearish signal
+            "sweep_low": sweep_low,     # bullish signal
+        }

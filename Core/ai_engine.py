@@ -83,22 +83,49 @@ class AIEngine:
                 
                 logger.info(f"📊 [DATA] تم جلب {len(ohlcv)} شمعة لـ {symbol_db} فريم {coin.timeframe}. السعر الحالي: {live_data['c']}")
                 
-                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df = df.astype({'timestamp': 'float64', 'open': 'float64', 'high': 'float64', 'low': 'float64', 'close': 'float64', 'volume': 'float64'})
+                # Fix 2: Include taker_buy_volume in DataFrame columns
+                cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'taker_buy_volume']
                 
-                new_row = [float(datetime.now().timestamp()*1000), float(live_data['o']), float(live_data['h']), float(live_data['l']), float(live_data['c']), float(live_data['v'])]
-                df.iloc[-1] = new_row
+                # Check if historical data has the new column (length 7 instead of 6)
+                if len(ohlcv[0]) < 7:
+                    df = pd.DataFrame([row + [None] for row in ohlcv], columns=cols)
+                else:
+                    df = pd.DataFrame(ohlcv, columns=cols)
+                    
+                df = df.astype({
+                    'timestamp': 'float64', 'open': 'float64', 'high': 'float64', 
+                    'low': 'float64', 'close': 'float64', 'volume': 'float64',
+                    'taker_buy_volume': 'float64'
+                })
+                
+                # Fix 3: Do NOT overwrite the last closed row. Append live candle as a new row.
+                df['is_closed'] = True
+                
+                live_row = pd.DataFrame([{
+                    'timestamp': float(datetime.now().timestamp() * 1000),
+                    'open': float(live_data['o']), 'high': float(live_data['h']),
+                    'low': float(live_data['l']), 'close': float(live_data['c']),
+                    'volume': float(live_data['v']), 
+                    'taker_buy_volume': float(live_data.get('V', 0)), # Fix 2: live taker buy volume
+                    'is_closed': False
+                }])
+                df_with_live = pd.concat([df, live_row], ignore_index=True)
                 
             except Exception as e:
                 logger.error(f"⚠️ [SCANNER ERROR] خطأ في معالجة البيانات لـ {symbol}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return
             
             # 1. تحليل الاستراتيجيات الفنية
             logger.info(f"🛠️ [STRATEGY] جاري استخراج مستويات الدخول والأهداف لـ {symbol_db}...")
+            # Use df (closed only) for strategy parameters to avoid repainting, 
+            # but we'll use live price for the actual entry price below.
             params = self.strategies.get_trade_params(df)
             
             # 2. Decision Engine
             logger.info(f"🧠 [DECISION] بدء تحليل الهيكل المؤسسي (SMC) لـ {symbol_db}...")
+            # Fix 3: Use df (closed candles only) for structure/liquidity/volume detection
             smc_data = self.smc_engine.detect_structure(df)
             pd_zones = self.smc_engine.get_premium_discount(df)
             liq_data = self.smc_engine.detect_liquidity(df)
@@ -110,14 +137,18 @@ class AIEngine:
             
             # تفصيل نقاط القوة والضعف في السجلات
             # السيولة
-            if liq_data['liquidity_sweep']:
+            if liq_data['sweep_low']:
                 total_score += 25
-                decision_report.append("Liquidity Sweep")
-                logger.info(f"✅ [SMC] {symbol_db}: تم اكتشاف سحب سيولة مؤسسي (Liquidity Sweep). [+25]")
+                decision_report.append("Liquidity Sweep (Bullish - Low Swept)")
+                logger.info(f"✅ [SMC] {symbol_db}: تم اكتشاف سحب سيولة شرائي (Bullish Sweep Low). [+25]")
+            elif liq_data['sweep_high']:
+                total_score -= 25
+                decision_report.append("Liquidity Sweep (Bearish - High Swept)")
+                logger.info(f"🚨 [SMC] {symbol_db}: تم اكتشاف سحب سيولة بيعي (Bearish Sweep High). [-25]")
             else:
-                total_score -= 20
+                total_score -= 10
                 decision_report.append("No Sweep")
-                logger.info(f"❌ [SMC] {symbol_db}: لا يوجد سحب سيولة واضح حالياً. [-20]")
+                logger.info(f"❌ [SMC] {symbol_db}: لا يوجد سحب سيولة واضح حالياً. [-10]")
 
             # هيكل السوق
             if smc_data['state'] in ["BOS_UP", "CHoCH_UP"]:
@@ -171,6 +202,9 @@ class AIEngine:
                 logger.info(f"⏭️ [SCANNER] تم رفض {symbol_db} (النتيجة {total_score} أقل من الحد الأدنى 70).")
                 return
 
+            # Fix 3: Use live price for entry
+            current_entry_price = float(live_data['c'])
+
             # التحقق من المخاطر قبل التنفيذ النهائي
             open_trades_res = await session.execute(select(LiveTrade).where(LiveTrade.status == "OPEN"))
             open_trades = open_trades_res.scalars().all()
@@ -185,13 +219,13 @@ class AIEngine:
 
             # حساب الحجم والتنفيذ
             risk_amount = coin.capital * (coin.risk_percentage / 100)
-            sl_dist = abs(params["entry"] - params["sl"])
+            sl_dist = abs(current_entry_price - params["sl"])
             if sl_dist <= 0: return
                 
-            amount = risk_amount / (sl_dist / params["entry"])
+            amount = risk_amount / (sl_dist / current_entry_price)
             
             new_live = LiveTrade(
-                symbol=symbol_db, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
+                symbol=symbol_db, type="BUY", entry_price=current_entry_price, stop_loss=params["sl"],
                 take_profit=params["tp"], amount=amount, score=total_score,
                 entry_reason=" | ".join(decision_report)
             )

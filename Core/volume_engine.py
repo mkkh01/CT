@@ -13,7 +13,14 @@ class VolumeEngine:
         df = df.copy()
         
         # Delta & CVD
-        df['delta'] = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
+        if 'taker_buy_volume' in df.columns:
+            df['taker_buy_vol'] = df['taker_buy_volume']
+            df['taker_sell_vol'] = df['volume'] - df['taker_buy_volume']
+            df['delta'] = df['taker_buy_vol'] - df['taker_sell_vol']
+        else:
+            logger.warning("⚠️ [VOLUME] 'taker_buy_volume' missing, falling back to candle-color delta.")
+            df['delta'] = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
+            
         df['cvd'] = df['delta'].cumsum()
         
         # Relative Volume (RVOL)
