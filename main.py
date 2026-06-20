@@ -106,32 +106,33 @@ class TradingApplication:
                     logger.info("🛑 [SHUTDOWN] Application Stopped")
                     await self.app.stop()
                 
-                # استدعاء shutdown يدوياً هنا لأننا لا نستخدم async with app
-                # لتجنب تداخل __aexit__ مع الإغلاق اليدوي
                 logger.info("🛑 [SHUTDOWN] Application Shutdown")
                 await self.app.shutdown()
             except Exception as e:
-                logger.error(f"⚠️ [SHUTDOWN] خطأ أثناء إيقاف البot: {e}")
+                logger.error(f"⚠️ [SHUTDOWN] خطأ أثناء إيقاف البوت: {e}")
 
         # 3. إغلاق قاعدة البيانات
         logger.info("🛑 [SHUTDOWN] إغلاق اتصال قاعدة البيانات...")
         await engine.dispose()
         logger.info("✅ [SHUTDOWN] تم إغلاق اتصال قاعدة البيانات.")
         
-        logger.info("👋 [SHUTDOWN] Exit")
+        logger.info("👋 [SHUTDOWN] Exit Complete")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # تجاهل أخطاء الـ Conflict أثناء الإغلاق لتقليل الضجيج
+    if "Conflict" in str(context.error):
+        logger.debug(f"ℹ️ [BOT] Conflict error suppressed during operation/shutdown.")
+        return
     logger.error(f"⚠️ [BOT ERROR] {context.error}", exc_info=context.error)
 
 async def run_app():
     """دالة تشغيل التطبيق مع إدارة دورة الحياة الصارمة"""
     trading_app = TradingApplication()
     
-    # بناء التطبيق (مرة واحدة فقط)
+    # بناء التطبيق
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(trading_app.post_init).build()
     trading_app.app = app
-    logger.info("🚀 [SYSTEM] Application Created")
-
+    
     # إضافة المعالجات
     app.add_error_handler(error_handler)
     conv_handler = ConversationHandler(
@@ -156,24 +157,23 @@ async def run_app():
         # 1. تهيئة قاعدة البيانات
         await init_db()
         
-        # 2. دورة التشغيل الرسمية (بدون استخدام async with لتجنب Conflict في الإغلاق)
-        logger.info("🚀 [SYSTEM] Application Initialized")
+        # 2. دورة التشغيل الرسمية
+        logger.info("🚀 [SYSTEM] Initializing Application...")
         await app.initialize()
         
-        logger.info("🚀 [SYSTEM] Application Started")
+        # 3. تنظيف الـ Webhook "قبل" البدء لضمان عدم وجود تضارب
+        logger.info("🗑️ [SYSTEM] Cleaning up Webhooks...")
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        await asyncio.sleep(1) # وقت قصير للتأكد من المعالجة في خوادم تليجرام
+        
+        logger.info("🚀 [SYSTEM] Starting Application...")
         await app.start()
         
-        # 3. حذف الـ Webhook مرة واحدة قبل الـ Polling
-        logger.info("🗑️ [SYSTEM] Deleting Webhook...")
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        
         # 4. بدء الـ Polling مع حماية
-        if app.updater and not app.updater.running:
+        if app.updater:
             logger.info("🚀 [SYSTEM] Polling Started")
-            await app.updater.start_polling(drop_pending_updates=True)
-        else:
-            logger.warning("⚠️ [SYSTEM] Polling is already running or updater is missing!")
-
+            await app.updater.start_polling(drop_pending_updates=True, stop_signals=None)
+        
         # 5. الانتظار حتى إشارة الإغلاق
         while not trading_app._stop_event.is_set():
             await asyncio.sleep(1)
@@ -181,42 +181,38 @@ async def run_app():
     except Exception as e:
         logger.error(f"💥 [CRITICAL] خطأ في الحلقة الرئيسية: {e}", exc_info=True)
     finally:
-        # التأكد من تنفيذ الإغلاق المرتب
         await trading_app.shutdown()
 
 def main():
-    logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.0 (The Fox)... ")
+    logger.info("🚀 جاري إقلاع نظام التداول المؤسسي CT V5.1 (The Fox)... ")
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # استخدام loop واحد فقط ومنع إنشاء loops متعددة
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     
     trading_app = TradingApplication()
     
-    # التعامل مع إشارات الإنهاء
-    def handle_exit():
+    def handle_exit(sig, frame):
         if not trading_app._is_shutting_down:
-            loop.create_task(trading_app.shutdown())
+            logger.info(f"📥 [SIGNAL] Received signal {sig}, triggering shutdown...")
+            # جدولة مهمة الإغلاق في الـ loop الفعال
+            loop.call_soon_threadsafe(trading_app._stop_event.set)
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, handle_exit)
-        except NotImplementedError:
-            pass
+    # تسجيل إشارات الإغلاق لـ Render (SIGTERM)
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
 
     try:
         loop.run_until_complete(run_app())
-    except KeyboardInterrupt:
-        pass
     except Exception as e:
         logger.error(f"💥 [FATAL] {e}")
     finally:
-        # إغلاق الـ loop نهائياً بعد التأكد من انتهاء كافة المهام
-        try:
-            pending = asyncio.all_tasks(loop)
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
-        except:
-            pass
+        logger.info("🛑 [SYSTEM] Final Cleanup...")
+        # لا نغلق الـ loop هنا للسماح لـ shutdown بالعمل
+        # سيتم الخروج من البرنامج تلقائياً بعد انتهاء run_until_complete
 
 if __name__ == "__main__":
     main()
