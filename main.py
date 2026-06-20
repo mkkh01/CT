@@ -67,24 +67,41 @@ class TradingApplication:
 
     async def post_shutdown(self, app: Application):
         """إغلاق الموارد بعد توقف البوت"""
+        if self._is_shutting_down:
+            return
+        self._is_shutting_down = True
+        
         logger.info("🛑 [SHUTDOWN] بدء عملية الإغلاق النهائي...")
         
-        # إلغاء المهام الخلفية
+        # 1. إيقاف تشغيل المهام (تغيير الـ flags)
         if self.trade_monitor:
+            logger.info("🛑 [SHUTDOWN] إيقاف TradeMonitor...")
             self.trade_monitor.is_running = False
         if self.shadow_monitor:
             self.shadow_monitor.is_running = False
             
+        # 2. إلغاء جميع المهام الجارية
         for task in self.tasks:
             if not task.done():
+                task.name = task.get_name() if hasattr(task, 'get_name') else "UnknownTask"
+                logger.info(f"⏳ [SHUTDOWN] إلغاء المهمة: {task.name}")
                 task.cancel()
         
+        # 3. انتظار إغلاق المهام بمهلة زمنية
         if self.tasks:
-            await asyncio.gather(*self.tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(asyncio.gather(*self.tasks, return_exceptions=True), timeout=10)
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ [SHUTDOWN] انتهت مهلة انتظار إغلاق المهام، المتابعة بالإغلاق القسري.")
             
-        # إغلاق قاعدة البيانات
-        await engine.dispose()
-        logger.info("👋 [SHUTDOWN] Resources Cleared.")
+        # 4. إغلاق محرك قاعدة البيانات
+        try:
+            await engine.dispose()
+            logger.info("✅ [SHUTDOWN] تم إغلاق اتصال قاعدة البيانات.")
+        except Exception as e:
+            logger.error(f"❌ [SHUTDOWN] خطأ أثناء إغلاق قاعدة البيانات: {e}")
+            
+        logger.info("👋 [SHUTDOWN] اكتملت عملية الإغلاق بنجاح.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if "Conflict" in str(context.error):

@@ -183,9 +183,11 @@ class TradeMonitor:
                     duration = (datetime.now() - start_time).total_seconds()
                     logger.info(f"✅ [ANALYSIS] اكتمل تحليل {symbol} في {duration:.2f} ثانية.")
                 else:
-                    logger.warning(f"⚠️ [ANALYSIS] لم يتم العثور على بيانات حية لـ {symbol} في الكاش.")
+                    logger.warning(f"⚠️ [ANALYSIS] لم يتم العثور على بيانات حية لـ {symbol} في الكاش. (قد تكون مشكلة في الـ WebSocket أو الـ Redis)")
             except Exception as e:
-                logger.error(f"❌ [ANALYSIS ERROR] {symbol}: {e}", exc_info=True)
+                logger.error(f"❌ [CRITICAL ANALYSIS ERROR] {symbol}: {str(e)}")
+                logger.error(f"📋 [DEBUG INFO] Event Data: {event.data}")
+                logger.error(f"🔍 [STACK TRACE]", exc_info=True)
 
     async def _check_live_trades(self, symbol, price):
         """التحقق من أهداف الربح ووقف الخسارة"""
