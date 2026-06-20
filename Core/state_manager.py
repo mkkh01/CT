@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import httpx
+import time
 from enum import Enum
 from sqlalchemy import select
 
@@ -20,14 +21,15 @@ class StateManager:
             cls._instance = super(StateManager, cls).__new__(cls)
             cls._instance.state = SystemState.INIT
             cls._instance.cache_lock = asyncio.Lock()
-            cls._instance.startup_time = None
+            cls._instance.startup_time = time.time()
             cls._instance.min_warmup_sec = 30
             cls._instance.data_threshold = 50 
         return cls._instance
 
     def set_state(self, new_state: SystemState):
-        logger.info(f"🔄 [STATE] {self.state.value} -> {new_state.value}")
-        self.state = new_state
+        if self.state != new_state:
+            logger.info(f"🔄 [STATE] {self.state.value} -> {new_state.value}")
+            self.state = new_state
 
     def is_ready(self):
         return self.state == SystemState.READY
@@ -36,7 +38,8 @@ class StateManager:
         from Core.api_guard import api_guard
         from Core.redis_manager import redis_client
         
-        await api_guard.check_wait(1)
+        # Reduced wait time for warmup to speed up process
+        await api_guard.check_wait(0.5)
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol.upper()}&interval={timeframe}&limit=100"
         
         try:
@@ -50,12 +53,14 @@ class StateManager:
                     ]
                     hist_key = f"hist_cache_{symbol.lower()}_{timeframe}"
                     await redis_client.set_data(hist_key, formatted_data)
+                    logger.debug(f"✅ [WARMUP] Fetched {len(formatted_data)} klines for {symbol}")
                     return True
                 else:
                     api_guard.report_error(response.status_code)
+                    logger.error(f"❌ [WARMUP] Binance API Error {response.status_code} for {symbol}")
                     return False
         except Exception as e:
-            logger.error(f"❌ [HISTORY ERROR] {symbol}: {e}")
+            logger.error(f"❌ [WARMUP] Request error for {symbol}: {e}")
             return False
 
     async def is_cache_warmed_up(self):
@@ -68,41 +73,60 @@ class StateManager:
                 coins = coins_res.scalars().all()
                 symbols = [c.symbol.strip() for c in coins if c.symbol and c.symbol.strip()]
             
-            if not symbols: return True
+            if not symbols: 
+                logger.info("ℹ️ [WARMUP] No symbols to warm up.")
+                return True
 
             all_warmed = True
+            tasks = []
+            
             for coin in coins:
                 symbol = coin.symbol.strip().lower()
                 timeframe = coin.timeframe
                 hist_key = f"hist_cache_{symbol}_{timeframe}"
                 
-                # Use non-blocking read
                 hist_data = redis_client.get_data(hist_key)
                 if not hist_data or len(hist_data) < self.data_threshold:
+                    # Execute fetching in sequence to respect API limits but track status
                     success = await self.fetch_historical_data(symbol, timeframe)
                     if not success: all_warmed = False
                 
+                # Check live data or fill from history
                 kline_data = redis_client.get_data(f"live_klines_{symbol}")
                 if not isinstance(kline_data, dict) or not all(k in kline_data for k in ["o", "h", "l", "c", "v", "x"]):
                     hist_data = redis_client.get_data(hist_key)
-                    if hist_data:
+                    if hist_data and len(hist_data) > 0:
                         last_k = hist_data[-1]
-                        initial_live = {'o': last_k[1], 'h': last_k[2], 'l': last_k[3], 'c': last_k[4], 'v': last_k[5], 'x': True}
+                        initial_live = {
+                            'o': last_k[1], 'h': last_k[2], 'l': last_k[3], 
+                            'c': last_k[4], 'v': last_k[5], 'x': True
+                        }
                         await redis_client.set_data(f"live_klines_{symbol}", initial_live)
                     else:
                         all_warmed = False
+                        
             return all_warmed
         except Exception as e:
-            logger.error(f"❌ [WARMUP ERROR] {e}")
+            logger.error(f"❌ [WARMUP ERROR] Critical error in warmup check: {e}")
             return False
 
     async def wait_for_ready(self, timeout=120):
-        start_time = asyncio.get_event_loop().time()
+        """Wait for cache to warm up with a hard timeout"""
+        start_time = time.time()
+        logger.info(f"🕒 [STATE] Starting warmup (timeout: {timeout}s)...")
+        
         while not self.is_ready():
-            if asyncio.get_event_loop().time() - start_time > timeout:
-                logger.warning("⚠️ [STATE] Warmup timeout! Entering READY fallback mode.")
+            if await self.is_cache_warmed_up():
+                self.set_state(SystemState.READY)
+                logger.info("✅ [STATE] Warmup complete. System READY.")
+                break
+                
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                logger.warning(f"⚠️ [STATE] Warmup timeout after {int(elapsed)}s! Entering READY fallback mode.")
                 self.set_state(SystemState.READY)
                 break
-            await asyncio.sleep(2)
+                
+            await asyncio.sleep(5)
 
 state_manager = StateManager()

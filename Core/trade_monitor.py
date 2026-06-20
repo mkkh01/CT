@@ -23,8 +23,10 @@ class TradeMonitor:
         self._last_analysis_time = {}
 
     async def _save_data_batch(self):
+        """Periodically save memory data to local cache"""
         try:
             data_to_save = {}
+            # Use list() to avoid dictionary size change during iteration
             for symbol, data in list(self.live_prices.items()):
                 data_to_save[f"live_prices_{symbol}"] = data
             for symbol, data in list(self.live_klines.items()):
@@ -36,22 +38,31 @@ class TradeMonitor:
             logger.error(f"❌ [MONITOR REDIS] Batch save error: {e}")
 
     async def check_prices(self):
+        """Main entry point for price monitoring"""
         self.is_running = True
-        logger.info("🚀 [MONITOR] Starting Price Monitor...")
+        logger.info("🚀 [MONITOR] Starting Price Monitor Loop...")
         
+        # Ensure Event Queue workers are running
         if not event_queue.is_running:
             await event_queue.start_workers(num_workers=2)
-            if self._handle_analysis_event not in event_queue.event_handlers.get(EventType.PRICE_UPDATE, []):
-                await event_queue.register_handler(EventType.PRICE_UPDATE, self._handle_analysis_event)
+            
+        # Register handler if not already registered
+        current_handlers = event_queue.event_handlers.get(EventType.PRICE_UPDATE, [])
+        if self._handle_analysis_event not in current_handlers:
+            await event_queue.register_handler(EventType.PRICE_UPDATE, self._handle_analysis_event)
 
         while self.is_running:
             try:
                 await self._ws_loop()
+            except asyncio.CancelledError:
+                logger.info("🛑 [MONITOR] Monitor task cancelled.")
+                break
             except Exception as e:
-                logger.error(f"❌ [MONITOR] WS Loop Crash: {e}. Restarting in 5s...")
-                await asyncio.sleep(5)
+                logger.error(f"❌ [MONITOR] Critical WS Loop Crash: {e}. Restarting in 10s...")
+                await asyncio.sleep(10)
 
     async def _ws_loop(self):
+        """Internal WebSocket connection loop"""
         reconnect_delay = 5
         while self.is_running:
             try:
@@ -61,6 +72,7 @@ class TradeMonitor:
                     symbols = [c.symbol.strip().lower() for c in coins if c.symbol]
                     
                     if not symbols:
+                        logger.debug("ℹ️ [MONITOR] No enabled symbols found. Waiting 30s...")
                         await asyncio.sleep(30)
                         continue
 
@@ -72,37 +84,42 @@ class TradeMonitor:
 
                     uri = f"{BINANCE_WS_URL}/stream?streams={'/'.join(streams)}"
                     
+                    logger.info(f"🔌 [MONITOR] Connecting to Binance WS for {len(symbols)} symbols...")
                     async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
-                        reconnect_delay = 5
-                        logger.info(f"✅ [MONITOR] Connected to Binance WS for {len(symbols)} symbols.")
+                        reconnect_delay = 5 # Reset on success
+                        logger.info("✅ [MONITOR] WebSocket Connected.")
                         
                         while self.is_running:
                             try:
                                 msg = await asyncio.wait_for(ws.recv(), timeout=30)
                                 await self._handle_message(msg)
                                 
-                                # Heartbeat & Periodic Save
+                                # Periodic Save to Redis (every 10 seconds approx)
                                 if datetime.now().second % 10 == 0:
                                     asyncio.create_task(self._save_data_batch())
                             except asyncio.TimeoutError:
+                                # Connection might be dead, try to ping
                                 try:
                                     pong = await ws.ping()
                                     await asyncio.wait_for(pong, timeout=5)
                                 except:
-                                    logger.warning("⚠️ [MONITOR] WS Heartbeat failed.")
+                                    logger.warning("⚠️ [MONITOR] WS Heartbeat failed. Reconnecting...")
                                     break
                             except Exception as e:
-                                logger.error(f"⚠️ [MONITOR] Msg Error: {e}")
-                                # لا نكسر الـ loop إلا في حال خطأ فادح في الاتصال
-                                if "closed" in str(e).lower(): break
+                                if "closed" in str(e).lower():
+                                    logger.warning(f"⚠️ [MONITOR] WS Connection closed: {e}")
+                                    break
+                                logger.error(f"⚠️ [MONITOR] Message handling error: {e}")
                                 await asyncio.sleep(1)
 
             except Exception as e:
-                logger.error(f"🔄 [MONITOR] Reconnect Error: {e}")
+                logger.error(f"🔄 [MONITOR] Reconnect attempt failed: {e}")
+                if not self.is_running: break
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, 60)
 
     async def _handle_message(self, msg):
+        """Process incoming WebSocket messages"""
         try:
             payload = json.loads(msg)
             if 'data' not in payload: return
@@ -112,7 +129,11 @@ class TradeMonitor:
 
             if 'miniTicker' in payload['stream']:
                 price = float(data['c'])
-                self.live_prices[symbol] = {'price': price, 'time': datetime.now().strftime('%H:%M:%S')}
+                self.live_prices[symbol] = {
+                    'price': price, 
+                    'time': datetime.now().strftime('%H:%M:%S')
+                }
+                # Non-blocking tasks for trade checking and analysis triggering
                 asyncio.create_task(self._check_live_trades(symbol, price))
                 asyncio.create_task(self._trigger_analysis(symbol, data))
                 
@@ -126,9 +147,12 @@ class TradeMonitor:
             logger.error(f"❌ [MONITOR] Handle Msg Error: {e}")
 
     async def _trigger_analysis(self, symbol, data):
+        """Emit analysis event if enough time has passed"""
         symbol_key = symbol.lower()
         now = datetime.now()
-        if (now - self._last_analysis_time.get(symbol_key, datetime.min)).total_seconds() < 60:
+        last_time = self._last_analysis_time.get(symbol_key, datetime.min)
+        
+        if (now - last_time).total_seconds() < 60:
             return
 
         if state_manager.is_ready():
@@ -143,12 +167,12 @@ class TradeMonitor:
             )
 
     async def _handle_analysis_event(self, event):
+        """Handler for PRICE_UPDATE events from the queue"""
         from Core.ai_engine import AIEngine
         symbol = event.symbol
         async with self._analysis_lock:
             try:
                 ai = AIEngine(bot=self.bot, chat_id=self.chat_id)
-                # استخدام get_data المباشر (Synchronous) ولكن داخل Task منفصل أصلاً من الـ Queue
                 live_k = redis_client.get_data(f"live_klines_{symbol}")
                 if live_k:
                     await ai.analyze_and_trade(symbol, live_data=live_k)
@@ -156,6 +180,7 @@ class TradeMonitor:
                 logger.error(f"❌ [ANALYSIS ERROR] {symbol}: {e}")
 
     async def _check_live_trades(self, symbol, price):
+        """Check open trades against current price for TP/SL"""
         try:
             symbol_db = symbol.upper()
             async with AsyncSessionLocal() as session:
@@ -163,6 +188,8 @@ class TradeMonitor:
                     select(LiveTrade).where((LiveTrade.symbol == symbol_db) & (LiveTrade.status == "OPEN"))
                 )
                 trades = res.scalars().all()
+                if not trades: return
+
                 for trade in trades:
                     closed = False
                     if trade.type == "BUY":
@@ -187,12 +214,15 @@ class TradeMonitor:
                                 cfg.consecutive_losses += 1
                                 if cfg.consecutive_losses >= 5:
                                     cfg.emergency_stop = True
-                                    if self.bot: await self.bot.send_message(self.chat_id, "🚨 *EMERGENCY STOP*: 5 losses!")
+                                    if self.bot: 
+                                        await self.bot.send_message(self.chat_id, "🚨 *EMERGENCY STOP*: 5 consecutive losses detected!")
                             else:
                                 cfg.consecutive_losses = 0
+                        
                         await session.commit()
                         if self.bot:
                             icon = "✅" if trade.status == "WON" else "❌"
-                            await self.bot.send_message(self.chat_id, f"{icon} *Trade Closed*\n{symbol}: {trade.pnl:.2f} USDT")
+                            msg = f"{icon} *صفقة مغلقة*\nالرمز: {symbol}\nالربح/الخسارة: {trade.pnl:.2f} USDT"
+                            await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
         except Exception as e:
-            logger.error(f"❌ [CHECK TRADES] {symbol}: {e}")
+            logger.error(f"❌ [CHECK TRADES] Error for {symbol}: {e}")
