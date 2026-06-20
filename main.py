@@ -55,8 +55,14 @@ class TradingApplication:
             logger.error(f"❌ [CRITICAL] فشل إطلاق المهام الخلفية: {e}", exc_info=True)
 
     async def post_init(self, app: Application):
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("🗑️ [SYSTEM] تم تنظيف الجلسات القديمة.")
+        # حذف الـ Webhook بشكل صريح عند بدء التشغيل لضمان عمل الـ Polling
+        try:
+            await app.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("🗑️ [SYSTEM] تم حذف الـ Webhook وتنظيف التحديثات المعلقة.")
+        except Exception as e:
+            logger.warning(f"⚠️ [SYSTEM] فشل حذف الـ Webhook (قد لا يكون موجوداً): {e}")
+        
+        # تشغيل المهام الخلفية
         asyncio.create_task(self.start_background_tasks())
 
     async def shutdown(self):
@@ -142,16 +148,24 @@ def main():
             async with app:
                 await app.initialize()
                 await app.start()
-                await app.updater.start_polling(drop_pending_updates=True)
                 
-                logger.info("✅ [RUN] البوت يعمل الآن بنظام الـ Polling.")
+                # محاولة إضافية للتأكد من حذف الـ Webhook قبل بدء الـ Polling
+                await app.bot.delete_webhook(drop_pending_updates=True)
+                
+                # بدء الـ Polling مع معالجة أخطاء الـ Conflict
+                try:
+                    await app.updater.start_polling(drop_pending_updates=True, close_loop=False)
+                    logger.info("✅ [RUN] البوت يعمل الآن بنظام الـ Polling.")
+                except Exception as e:
+                    logger.error(f"❌ [POLLING ERROR] فشل بدء الـ Polling: {e}")
+                    raise
                 
                 # الانتظار حتى يتم إرسال إشارة الإيقاف
                 while not trading_app._stop_event.is_set():
                     await asyncio.sleep(1)
                 
-                # إيقاف الـ polling
-                if app.updater.running:
+                # إيقاف الـ polling بشكل آمن
+                if app.updater and app.updater.running:
                     await app.updater.stop()
                 if app.running:
                     await app.stop()

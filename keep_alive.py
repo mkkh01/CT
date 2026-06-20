@@ -13,28 +13,10 @@ telegram_app = None
 def home():
     return "Institutional Trading Engine V5.0 is Running."
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """استقبال التحديثات من تلجرام وتمريرها للبوت"""
-    global telegram_app
-    if telegram_app:
-        try:
-            data = request.get_json()
-            if data:
-                # استخدام update_queue.put_nowait إذا كان متاحاً، أو تمرير التحديث بطريقة أخرى
-                # ملاحظة: في النسخ الحديثة من python-telegram-bot، يفضل استخدام الطريقة الموصى بها للـ Webhooks
-                if hasattr(telegram_app, 'update_queue') and telegram_app.update_queue is not None:
-                    telegram_app.loop.call_soon_threadsafe(
-                        telegram_app.update_queue.put_nowait, data
-                    )
-                    return 'OK', 200
-                else:
-                    # في حالة عدم استخدام Webhooks الرسمية، نكتفي بتسجيل الوصول
-                    return 'OK (No Queue)', 200
-        except Exception as e:
-            logger.error(f"❌ [WEBHOOK ERROR] {e}")
-            return 'Error', 500
-    return 'Bot not ready', 503
+# تم إيقاف مسار الـ Webhook لتجنب التعارض مع نظام الـ Polling
+# @app.route('/webhook', methods=['POST'])
+# def webhook():
+#     ...
 
 def run():
     port = int(os.environ.get("PORT", 10000))

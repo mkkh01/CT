@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 class ShadowMonitor:
     def __init__(self, bot=None):
         self.bot = bot
+        self.is_running = False
 
     async def check_shadow_trades(self):
         """مراقبة صفقات الظل المفتوحة وتحديث نتائجها"""
