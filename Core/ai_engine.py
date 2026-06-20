@@ -156,15 +156,15 @@ class AIEngine:
             
             logger.info(f"📊 [SUMMARY] {symbol_db} | Score: {total_score}/100 | Prob: {prob}% | Session: {current_session}")
 
-            # تسجيل صفقة الظل للتعلم
-            new_shadow = ShadowTrade(
-                symbol=symbol_db, score=total_score, entry_price=params["entry"],
-                stop_loss=params["sl"], take_profit=params["tp"],
-                trading_session=current_session, probability_score=prob,
-                reasoning_report=" | ".join(decision_report)
-            )
-            session.add(new_shadow)
-            await session.commit()
+            # تسجيل صفقة الظل للتعلم (تم التعطيل بناءً على طلب المستخدم)
+            # new_shadow = ShadowTrade(
+            #     symbol=symbol_db, score=total_score, entry_price=params["entry"],
+            #     stop_loss=params["sl"], take_profit=params["tp"],
+            #     trading_session=current_session, probability_score=prob,
+            #     reasoning_report=" | ".join(decision_report)
+            # )
+            # session.add(new_shadow)
+            # await session.commit()
 
             # قرار التنفيذ
             if total_score < 70:

@@ -45,8 +45,8 @@ class TradingApplication:
             
             # إنشاء المهام وتخزينها للإلغاء لاحقاً
             monitor_task = asyncio.create_task(self.trade_monitor.check_prices())
-            shadow_task = asyncio.create_task(self.shadow_monitor.check_shadow_trades())
-            self.tasks.extend([monitor_task, shadow_task])
+            # shadow_task = asyncio.create_task(self.shadow_monitor.check_shadow_trades()) # تعطيل مراقبة صفقات الظل
+            self.tasks.extend([monitor_task])
             
             logger.info("⏳ [WARMUP] انتظار اكتمال الكاش لكل الرموز...")
             while not await state_manager.is_cache_warmed_up():
