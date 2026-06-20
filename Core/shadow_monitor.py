@@ -15,6 +15,7 @@ class ShadowMonitor:
     async def check_shadow_trades(self):
         """مراقبة صفقات الظل المفتوحة وتحديث نتائجها"""
         self.is_running = True
+        logger.info("📉 [SHADOW] بدء مراقبة صفقات الظل (Shadow Trades)...")
         while self.is_running:
             try:
                 async with AsyncSessionLocal() as session:
@@ -23,10 +24,12 @@ class ShadowMonitor:
                     open_trades = res.scalars().all()
                     
                     if not open_trades:
+                        logger.debug("ℹ️ [SHADOW] لا توجد صفقات ظل مفتوحة حالياً.")
                         await asyncio.sleep(30)
                         continue
 
-                    # جلب الأسعار اللحظية من الكاش
+                    logger.info(f"🔍 [SHADOW] فحص {len(open_trades)} صفقة ظل مفتوحة...")
+                    
                     # جلب الأسعار اللحظية من الكاش لكل رمز على حدة
                     prices = {}
                     async with AsyncSessionLocal() as s_session:
@@ -46,7 +49,9 @@ class ShadowMonitor:
                                 current_price = data.get('price')
                                 break
                         
-                        if not current_price: continue
+                        if not current_price: 
+                            logger.debug(f"⚠️ [SHADOW] لم يتم العثور على سعر لحظي لـ {trade.symbol} في الكاش.")
+                            continue
                         
                         current_price = float(current_price)
                         hit_tp = current_price >= trade.take_profit
@@ -56,29 +61,31 @@ class ShadowMonitor:
                             trade.status = "WON" if hit_tp else "LOST"
                             trade.exit_price = current_price
                             trade.closed_at = datetime.now()
-                            trade.pnl = ((current_price - trade.entry_price) / trade.entry_price) * 100
+                            pnl_pct = ((current_price - trade.entry_price) / trade.entry_price) * 100
+                            trade.pnl = pnl_pct
                             
                             # كتابة التقرير التحليلي المشروح
                             reasoning = f"تحليل النتيجة لـ {trade.symbol}:\n"
                             if hit_tp:
                                 reasoning += f"✅ نجحت الصفقة بضرب الهدف. السبب: توافق الاتجاه مع الجلسة ({trade.trading_session}) وقوة الزخم."
+                                logger.info(f"🎯 [SHADOW] {trade.symbol}: ضرب الهدف التجريبي! PnL: {pnl_pct:.2f}%")
                             else:
                                 reasoning += f"❌ فشلت الصفقة بضرب الوقف. السبب المحتمل: تذبذب عالي أو انعكاس مفاجئ في جلسة {trade.trading_session}."
+                                logger.info(f"📉 [SHADOW] {trade.symbol}: ضرب الوقف التجريبي! PnL: {pnl_pct:.2f}%")
                             
                             trade.reasoning_report += f"\n[RESULT] {reasoning}"
                             logger.info(f"📉 [SHADOW LEARN] تم إغلاق صفقة ظل لـ {trade.symbol} بنتيجة: {trade.status}")
                     
                     await session.commit()
             except asyncio.CancelledError:
-                logger.info("🛑 [SHADOW MONITOR] Task was cancelled. Shutting down gracefully.")
+                logger.info("🛑 [SHADOW MONITOR] تم إلغاء المهمة. إغلاق آمن...")
                 self.is_running = False
                 break
             except Exception as e:
-                logger.info(f"⚠️ [SHADOW MONITOR] Error: {e}")
+                logger.error(f"⚠️ [SHADOW MONITOR] Error: {e}", exc_info=True)
             
             try:
                 await asyncio.sleep(10)
             except asyncio.CancelledError:
-                logger.info("🛑 [SHADOW MONITOR] Task was cancelled during sleep. Shutting down gracefully.")
                 self.is_running = False
                 break

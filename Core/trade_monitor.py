@@ -33,6 +33,7 @@ class TradeMonitor:
             
             if data_to_save:
                 await redis_client.set_batch_data(data_to_save)
+                logger.debug(f"💾 [REDIS] تم تحديث بيانات {len(data_to_save)} مفتاح في الكاش.")
         except Exception as e:
             logger.error(f"❌ [REDIS] Error saving batch data: {e}")
 
@@ -46,6 +47,7 @@ class TradeMonitor:
         
         # بدء معالجي الأحداث (Workers)
         if not event_queue.is_running:
+            logger.info("👷 [EVENT QUEUE] بدء تشغيل العمال (Workers)...")
             await event_queue.start_workers(num_workers=2)
             # تسجيل معالج التحليل
             await event_queue.register_handler(EventType.PRICE_UPDATE, self._handle_analysis_event)
@@ -61,7 +63,7 @@ class TradeMonitor:
                     symbols = [c.symbol.strip().lower() for c in coins if c.symbol]
                     
                     if not symbols:
-                        logger.info("ℹ️ [MONITOR] لا توجد عملات مفعلة للمراقبة. الانتظار...")
+                        logger.info("ℹ️ [MONITOR] لا توجد عملات مفعلة للمراقبة. الانتظار 30 ثانية...")
                         await asyncio.sleep(30)
                         continue
 
@@ -73,11 +75,11 @@ class TradeMonitor:
 
                     uri = f"{BINANCE_WS_URL}/stream?streams={'/'.join(streams)}"
                     
-                    logger.info(f"🔌 [MONITOR] محاولة الاتصال بـ WebSocket لـ {len(symbols)} عملة...")
+                    logger.info(f"🔌 [MONITOR] محاولة الاتصال بـ WebSocket لـ {len(symbols)} عملة: {', '.join(symbols)}")
                     
                     async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
                         reconnect_delay = 5 # Reset delay on successful connection
-                        logger.info("✅ [MONITOR] تم الاتصال بنجاح.")
+                        logger.info("✅ [MONITOR] تم الاتصال بنجاح بـ Binance WebSocket.")
                         
                         while self.is_running:
                             try:
@@ -109,6 +111,8 @@ class TradeMonitor:
                                         'l': float(k['l']), 'c': float(k['c']), 
                                         'v': float(k['v']), 'x': k['x']
                                     }
+                                    if k['x']: # إذا اكتملت الشمعة
+                                        logger.info(f"🕯️ [KLINE] شمعة مكتملة لـ {symbol}: O:{k['o']} C:{k['c']}")
 
                                 # حفظ دوري للبيانات
                                 if datetime.now().second % 10 == 0:
@@ -132,6 +136,7 @@ class TradeMonitor:
                     reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
 
             except asyncio.CancelledError:
+                logger.info("🛑 [MONITOR] تم إلغاء مهمة المراقبة.")
                 self.is_running = False
                 break
             except Exception as e:
@@ -141,7 +146,6 @@ class TradeMonitor:
 
     async def _trigger_analysis(self, symbol, data):
         """إرسال طلب تحليل إلى الطابور مع منع التكرار القريب"""
-        # Binance sends symbols in uppercase, we use lowercase in our mapping
         symbol_key = symbol.lower()
         now = datetime.now()
         last_time = self._last_analysis_time.get(symbol_key, datetime.min)
@@ -152,6 +156,7 @@ class TradeMonitor:
 
         if state_manager.is_ready():
             self._last_analysis_time[symbol_key] = now
+            logger.info(f"📤 [EVENT] إرسال حدث تحليل لـ {symbol_key} إلى الطابور.")
             await event_queue.emit_event(
                 event_type=EventType.PRICE_UPDATE,
                 symbol=symbol_key,
@@ -172,7 +177,7 @@ class TradeMonitor:
                 ai = AIEngine(bot=self.bot, chat_id=self.chat_id)
                 live_k = redis_client.get_data(f"live_klines_{symbol}")
                 if live_k:
-                    logger.info(f"🧠 [ANALYSIS] بدء تحليل {symbol}...")
+                    logger.info(f"🧠 [ANALYSIS] بدء تحليل {symbol} بناءً على حدث من الطابور...")
                     start_time = datetime.now()
                     await ai.analyze_and_trade(symbol, live_data=live_k)
                     duration = (datetime.now() - start_time).total_seconds()
@@ -200,9 +205,11 @@ class TradeMonitor:
                         if price >= trade.take_profit:
                             trade.status, closed = "WON", True
                             trade.exit_reason = "Take Profit Hit"
+                            logger.info(f"🎯 [TRADE] {symbol_db}: ضرب الهدف عند {price}! (Entry: {trade.entry_price}, TP: {trade.take_profit})")
                         elif price <= trade.stop_loss:
                             trade.status, closed = "LOST", True
                             trade.exit_reason = "Stop Loss Hit"
+                            logger.info(f"📉 [TRADE] {symbol_db}: ضرب الوقف عند {price}! (Entry: {trade.entry_price}, SL: {trade.stop_loss})")
                     
                     if closed:
                         trade.exit_price = price
@@ -217,15 +224,18 @@ class TradeMonitor:
                         if cfg:
                             if trade.status == "LOST":
                                 cfg.consecutive_losses += 1
+                                logger.warning(f"⚠️ [RISK] خسارة متتالية رقم {cfg.consecutive_losses} لـ {self.chat_id}")
                                 if cfg.consecutive_losses >= 5:
                                     cfg.emergency_stop = True
+                                    logger.critical(f"🚨 [EMERGENCY] تم تفعيل الإيقاف الطارئ لـ {self.chat_id} بسبب 5 خسائر متتالية!")
                                     if self.bot: 
                                         await self.bot.send_message(self.chat_id, "🚨 *EMERGENCY STOP*: 5 consecutive losses detected!")
                             else:
                                 cfg.consecutive_losses = 0
+                                logger.info(f"✅ [RISK] تصفير عداد الخسائر المتتالية لـ {self.chat_id}")
 
                         await session.commit()
-                        logger.info(f"💰 [TRADE CLOSED] {symbol} | Status: {trade.status} | PnL: {trade.pnl:.2f}")
+                        logger.info(f"💰 [TRADE CLOSED] {symbol} | Status: {trade.status} | PnL: {trade.pnl:.2f} USDT ({pnl_pct:.2f}%)")
                         
                         if self.bot:
                             icon = "✅" if trade.status == "WON" else "❌"
