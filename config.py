@@ -1,7 +1,7 @@
 # config.py
 
 # 1. التوكن الخاص بك
-TELEGRAM_TOKEN = "8935169680:AAHH2VJ_tn9xGwwu-ottEBWrh0GilngCpfc"
+TELEGRAM_TOKEN = "8129443153:AAEPrpxbplE_Tf7fkR4eCueljc0DVLQcYxQ"
 
 # 2. الرابط الجديد من خانة Transaction pooler (الذي يدعم IPv4)
 # ملاحظة: تم استخدام المنفذ 6543 واسم المستخدم المدمج كما يظهر في صورتك
