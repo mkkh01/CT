@@ -1,13 +1,10 @@
 import os
-import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import Text, func, JSON
 from config import DATABASE_URL
-
-logger = logging.getLogger(__name__)
 
 # إعداد المحرك للعمل مع Supabase/PostgreSQL
 engine = create_async_engine(
@@ -72,26 +69,17 @@ class LiveTrade(Base):
     closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
 class ShadowTrade(Base):
-    __tablename__ = "shadow_trades_v5" # ترقية الإصدار لدعم التغييرات الجديدة
+    __tablename__ = "shadow_trades_v4"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(nullable=False)
     indicators_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     market_state: Mapped[Optional[str]] = mapped_column(Text)
     score: Mapped[float] = mapped_column(default=0.0)
-    entry_price: Mapped[float] = mapped_column(nullable=False)
-    stop_loss: Mapped[float] = mapped_column(nullable=False)
-    take_profit: Mapped[float] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(default="OPEN") # OPEN, WON, LOST
-    exit_price: Mapped[Optional[float]] = mapped_column(nullable=True)
-    pnl: Mapped[float] = mapped_column(default=0.0)
-    trading_session: Mapped[Optional[str]] = mapped_column(Text) # London, NY, Tokyo
-    probability_score: Mapped[float] = mapped_column(default=0.0)
-    reasoning_report: Mapped[Optional[str]] = mapped_column(Text)
+    result: Mapped[Optional[str]] = mapped_column(Text) # WIN / LOSS
     timestamp: Mapped[datetime] = mapped_column(server_default=func.now())
-    closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        logger.info("✅ Institutional Database Schema V5 Initialized.")
+        print("✅ Institutional Database Schema V4 Initialized.")

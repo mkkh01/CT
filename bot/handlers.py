@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
 from sqlalchemy import select, delete, func
@@ -9,8 +8,6 @@ from database import AsyncSessionLocal, UserConfig, TrackedCoin, LiveTrade, Shad
 from bot.keyboards import get_main_menu, get_capital_management_menu, get_timeframe_menu, get_risk_management_menu
 from datetime import datetime
 from config import ADMIN_ID
-
-logger = logging.getLogger(__name__)
 
 # States for ConversationHandler
 ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF = range(4)
@@ -30,11 +27,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await session.commit()
     
     await update.message.reply_text(
-        "👋 أهلاً بك في نظام التداول المؤسسي CT V5.0 (The Fox)\n\nتم تحديث النظام ليشمل:\n"
-        "✅ محرك حماية الارتباط (Correlation Guard)\n"
-        "✅ تحليل الفريمات المتعددة (MTF Bias)\n"
-        "✅ ذكاء الأخبار اللحظي (News Intelligence)\n"
-        "✅ طبقة Redis للتخزين الدائم",
+        "👋 أهلاً بك في نظام التداول المؤسسي CT V4.0\nتم تصميم هذا النظام لحماية رأس مالك وتحقيق نمو مستقر.",
         reply_markup=get_main_menu()
     )
 
@@ -58,20 +51,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_edit_coin_list(update, context)
     elif text == "💰 إدارة رأس المال":
         await show_capital_mgmt(update, context)
-    elif text == "📊 الإحصائيات":
+    elif text in ["📊 الإحصائيات", "🎯 تقرير الأداء"]:
         await show_statistics(update, context)
-    elif text == "🎯 تقرير الأداء":
-        await show_performance_report(update, context)
-    elif text == "🧠 تقرير الذكاء الاصطناعي":
-        await show_shadow_learning_report(update, context)
     elif text == "📋 سجل الصفقات":
         await show_trade_history(update, context)
-    elif text in ["⏸ إيقاف التداول", "▶️ تشغيل التداول"]:
-        action = "إيقاف" if "⏸" in text else "تشغيل"
-        status = True if "▶️" in text else False
-        await toggle_trading(update, context, status)
     elif text == "🛑 إيقاف الطوارئ":
         await emergency_stop(update, context)
+    elif text == "▶️ تشغيل التداول":
+        await toggle_trading(update, context, True)
+    elif text == "⏸ إيقاف التداول":
+        await toggle_trading(update, context, False)
+    elif text == "🧠 تقرير الذكاء الاصطناعي":
+        await show_ai_report(update, context)
 
 async def show_edit_coin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
@@ -100,46 +91,37 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"💰 أدخل رأس المال الجديد لـ {text}:")
         context.user_data['action'] = 'edit_coin_capital'
     elif action == 'edit_coin_capital':
-        try:
-            cap = float(text)
-            symbol = context.user_data['edit_target']
-            async with AsyncSessionLocal() as session:
-                res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
-                coin = res.scalars().first()
-                if coin:
-                    coin.capital = cap
-                    await session.commit()
-            await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
-        except Exception as e:
-            logger.error(f"❌ [BOT] Error updating coin capital: {e}")
-            await update.message.reply_text("❌ خطأ في القيمة.")
+        cap = float(text)
+        symbol = context.user_data['edit_target']
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
+            coin = res.scalars().first()
+            if coin:
+                coin.capital = cap
+                await session.commit()
+        await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
         context.user_data.clear()
 
-from Core.redis_manager import redis_client
-
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    async with AsyncSessionLocal() as session:
-        coins_res = await session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
-        tracked_symbols = [c.symbol.strip() for c in coins_res.scalars().all() if c.symbol and c.symbol.strip()]
-
-    prices = {}
-    for symbol in tracked_symbols:
-        price_data = redis_client.get_data(f"live_prices_{symbol}")
-        if price_data:
-            prices[symbol] = price_data
-    if not prices:
-        await update.message.reply_text("⏳ جاري الاتصال بالرادار أو لا توجد عملات مضافة.")
+    PRICES_CACHE = "/tmp/live_prices.json"
+    if not os.path.exists(PRICES_CACHE):
+        await update.message.reply_text("⏳ جاري الاتصال بالرادار... حاول مرة أخرى.")
         return
-    msg = "📈 *الأسعار المباشرة (Institutional Radar)*\n━━━━━━━━━━━━━━\n"
-    for symbol, data in prices.items():
-        msg += f"🪙 {symbol}: `{data['price']}` | 🕒 {data['time']}\n"
+    with open(PRICES_CACHE, 'r') as f:
+        prices = json.load(f)
+    if not prices:
+        await update.message.reply_text("❌ لا توجد عملات مضافة.")
+        return
+    msg = "📈 *الأسعار المباشرة*\n━━━━━━━━━━━━━━\n"
+    for s, d in prices.items():
+        msg += f"🪙 {s}: `{d['price']}`\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
         trades = (await session.execute(select(LiveTrade).where(LiveTrade.status != "OPEN"))).scalars().all()
         if not trades:
-            await update.message.reply_text("❌ لا توجد صفقات مغلقة لحساب الإحصائيات.")
+            await update.message.reply_text("❌ لا توجد صفقات مغلقة.")
             return
         total = len(trades)
         wins = len([t for t in trades if t.status == "WON"])
@@ -149,45 +131,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
                f"📈 إجمالي الصفقات: {total}\n"
                f"✅ نسبة النجاح: {(wins/total)*100:.2f}%\n"
                f"💰 صافي الربح: `{total_pnl:.2f} USDT`\n"
-               f"🏆 أفضل عملة: {max(trades, key=lambda t: t.pnl).symbol if trades else 'N/A'}")
-        await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def show_performance_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    async with AsyncSessionLocal() as session:
-        recent_trades = (await session.execute(select(LiveTrade).order_by(LiveTrade.timestamp.desc()).limit(10))).scalars().all()
-        if not recent_trades:
-            await update.message.reply_text("❌ لا توجد بيانات صفقات حقيقية مسجلة حالياً.")
-            return
-        report_msg = "🎯 *تقرير الأداء المؤسسي - آخر 10 صفقات*\n"
-        for t in recent_trades:
-            status_icon = "🔵" if t.status == "OPEN" else ("🟢" if t.status == "WON" else "🔴")
-            status_text = "مفتوحة الآن" if t.status == "OPEN" else ("ربح" if t.status == "WON" else "خسارة")
-            pnl_val = f"`{t.pnl:.2f} USDT`" if t.status != "OPEN" else "*قيد التنفيذ*"
-            report_msg += (f"━━━━━━━━━━━━━━\n"
-                           f"{status_icon} *العملة: #{t.symbol}* ({status_text})\n"
-                           f"📅 الوقت: `{t.timestamp.strftime('%Y-%m-%d %H:%M')}`\n"
-                           f"💰 الدخول: `{t.entry_price}`\n"
-                           f"🛡️ الوقف (SL): `{t.stop_loss}`\n"
-                           f"🏁 الهدف (TP): `{t.take_profit}`\n"
-                           f"📊 النتيجة: {pnl_val}\n")
-        await update.message.reply_text(report_msg, parse_mode='Markdown')
-
-async def show_shadow_learning_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يعرض تقرير التعلم الخفي (Shadow Learning) مع الشرح والتحليل"""
-    async with AsyncSessionLocal() as session:
-        res = await session.execute(select(ShadowTrade).where(ShadowTrade.status != "OPEN").order_by(ShadowTrade.closed_at.desc()).limit(5))
-        trades = res.scalars().all()
-        if not trades:
-            await update.message.reply_text("🧠 *نظام التعلم الخفي*\n\nالنظام يقوم حالياً بجمع البيانات وتتبع صفقات الظل. لا توجد صفقات مغلقة للتحليل حتى الآن.", parse_mode='Markdown')
-            return
-        msg = "🧠 *تقرير مختبر التعلم الخفي (Shadow Learning)*\n_تحليل معمق للصفقات الوهمية لتطوير الاستراتيجية_\n"
-        for t in trades:
-            icon = "✅" if t.status == "WON" else "❌"
-            msg += (f"━━━━━━━━━━━━━━\n"
-                    f"{icon} *العملة: #{t.symbol}*\n"
-                    f"📈 السكور: `{t.score}/100` | الاحتمال: `{t.probability_score:.1f}%`\n"
-                    f"🕒 الجلسة: `{t.trading_session}`\n"
-                    f"📝 *التحليل المشروح:*\n_{t.reasoning_report}_\n")
+               f"🏆 أفضل عملة: {max(trades, key=lambda t: t.pnl).symbol}")
         await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -205,6 +149,17 @@ async def toggle_trading(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
         cfg.emergency_stop = False
         await session.commit()
     await update.message.reply_text("▶️ نظام التداول يعمل" if status else "⏸ نظام التداول متوقف")
+
+async def show_ai_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async with AsyncSessionLocal() as session:
+        shadows = (await session.execute(select(ShadowTrade).order_by(ShadowTrade.timestamp.desc()).limit(5))).scalars().all()
+        if not shadows:
+            await update.message.reply_text("🧠 لا توجد بيانات تعلم كافية.")
+            return
+        msg = "🧠 *تقرير الذكاء الاصطناعي والتعلم*\n━━━━━━━━━━━━━━\n"
+        for s in shadows:
+            msg += f"🪙 {s.symbol} | Score: {s.score}/100 | State: {s.market_state}\n"
+        await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_trade_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
@@ -235,16 +190,8 @@ async def show_remove_coin_list(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(msg, parse_mode='Markdown')
         context.user_data['action'] = 'delete_coin'
 
-import re
-
 async def process_add_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbol = update.message.text.strip().upper()
-    # فلتر صارم: الرمز يجب أن يتكون من حروف إنجليزية وأرقام فقط (بدون مسافات، بدون لغة عربية)
-    if not re.match(r'^[A-Z0-9]{2,20}$', symbol):
-        await update.message.reply_text("❌ رمز غير صالح! يجب أن يتكون الرمز من حروف إنجليزية وأرقام فقط (مثال: BTCUSDT). يرجى إرسال الرمز مرة أخرى:")
-        return ADD_SYMBOL
-        
-    context.user_data['new_coin_symbol'] = symbol
+    context.user_data['new_coin_symbol'] = update.message.text.strip().upper()
     await update.message.reply_text("💰 أدخل رأس المال المخصص لهذه العملة:")
     return ADD_CAPITAL
 
