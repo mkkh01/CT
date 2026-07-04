@@ -73,10 +73,10 @@ class TradeMonitor:
                             
                             self._save_data()
 
-                            if (datetime.now() - last_analysis_time).seconds >= 120: # زيادة الفاصل الزمني إلى دقيقتين
+                            if (datetime.now() - last_analysis_time).seconds >= 300: # زيادة الفاصل الزمني إلى 5 دقائق
                                 for s in symbols:
                                     await ai.analyze_and_trade(s)
-                                    await asyncio.sleep(2) # زيادة التأخير بين العملات إلى ثانيتين
+                                    await asyncio.sleep(10) # زيادة التأخير بين العملات إلى 10 ثوانٍ
                                 last_analysis_time = datetime.now()
 
             except Exception as e:

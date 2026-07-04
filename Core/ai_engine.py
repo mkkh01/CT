@@ -13,7 +13,11 @@ class AIEngine:
         self.strategies = InstitutionalStrategies()
         self.bot = bot
         self.chat_id = chat_id
-        self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
+        self.exchange = ccxt.binance({
+            'enableRateLimit': True, 
+            'options': {'defaultType': 'spot'},
+            'timeout': 30000,
+        })
 
     async def get_higher_timeframe_data(self, symbol, current_tf):
         """جلب بيانات الإطار الزمني الأعلى للفلترة (Phase 2)"""
@@ -30,8 +34,14 @@ class AIEngine:
                         ohlcv = json.load(f)
                         return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            await asyncio.sleep(1) # تأخير أمان إضافي
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
+            for attempt in range(3):
+                try:
+                    await asyncio.sleep(5 * (attempt + 1)) # تأخير أمان متزايد
+                    ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
+                    break
+                except Exception as e:
+                    if attempt == 2: raise e
+                    await asyncio.sleep(10)
             with open(HTF_CACHE, 'w') as f:
                 json.dump(ohlcv, f)
             return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -61,8 +71,14 @@ class AIEngine:
                 # إذا لم توجد بيانات تاريخية مخزنة، نجلبها مرة واحدة فقط (مع تأخير لمنع الحظر)
                 if not os.path.exists(HISTORICAL_CACHE):
                     print(f"📥 [SYSTEM] جلب بيانات تاريخية أولية لـ {symbol}...")
-                    await asyncio.sleep(2) # تأخير أمان
-                    ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
+                    for attempt in range(3):
+                        try:
+                            await asyncio.sleep(5 * (attempt + 1)) # تأخير أمان متزايد
+                            ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
+                            break
+                        except Exception as e:
+                            if attempt == 2: raise e
+                            await asyncio.sleep(10)
                     with open(HISTORICAL_CACHE, 'w') as f:
                         json.dump(ohlcv, f)
                 else:
