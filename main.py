@@ -3,6 +3,7 @@ import sys
 import asyncio
 from keep_alive import keep_alive
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, UserConfig
 from bot.handlers import (
@@ -30,7 +31,9 @@ def main():
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
     
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    # إعداد الطلب مع زيادة مهلة الاتصال لتجنب أخطاء الشبكة على Render
+    request_config = HTTPXRequest(connect_timeout=20, read_timeout=20)
+    app = Application.builder().token(TELEGRAM_TOKEN).request(request_config).post_init(post_init).build()
     
     # إعداد المحادثة المؤسسية لإضافة عملة
     conv_handler = ConversationHandler(
