@@ -24,7 +24,7 @@ class TradeMonitor:
         from Core.ai_engine import AIEngine
         ai = AIEngine(bot=self.bot, chat_id=self.chat_id)
         self.is_running = True
-        print("📡 [MONITOR] انطلاق الرادار المؤسسي V4.0")
+        print("📡 [MONITOR] انطلاق الرادار المؤسسي V4.0 - WebSocket Mode")
         
         while self.is_running:
             try:
@@ -33,21 +33,24 @@ class TradeMonitor:
                     symbols = [c.symbol for c in coins_res.scalars().all()]
                     
                     if not symbols:
-                        await asyncio.sleep(10)
+                        print("ℹ️ [MONITOR] لا توجد عملات مفعلة للمراقبة حالياً.")
+                        await asyncio.sleep(15)
                         continue
-
+                    
+                    print(f"🔗 [MONITOR] جاري الاتصال بـ Binance WebSocket لـ {len(symbols)} عملة...")
                     streams = [f"{s.lower()}@miniTicker" for s in symbols] + [f"{s.lower()}@kline_15m" for s in symbols]
                     uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
                     
                     async with websockets.connect(uri) as ws:
+                        print("✅ [MONITOR] تم الاتصال بنجاح بـ Binance WebSocket.")
                         last_analysis_time = datetime.now()
                         while self.is_running:
                             # التحقق من وجود عملات جديدة تمت إضافتها لإعادة الاتصال
                             async with AsyncSessionLocal() as check_session:
                                 current_symbols = [c.symbol for c in (await check_session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))).scalars().all()]
                                 if set(current_symbols) != set(symbols):
-                                    print("🔄 [MONITOR] تم اكتشاف تغيير في العملات، إعادة تشغيل البث...")
-                                    break # سيخرج من الحلقة الداخلية ويعيد الاتصال بالقائمة الجديدة
+                                    print(f"🔄 [MONITOR] تم اكتشاف تغيير في العملات ({len(symbols)} -> {len(current_symbols)})، إعادة تشغيل البث...")
+                                    break
 
                             try:
                                 msg = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -63,15 +66,24 @@ class TradeMonitor:
                                 await self._check_live_trades(symbol, price)
                             elif 'kline' in payload['stream']:
                                 k = data['k']
-                                self.live_klines[symbol] = {'o': float(k['o']), 'h': float(k['h']), 'l': float(k['l']), 'c': float(k['c']), 'v': float(k['v']), 'x': k['x']}
+                                # تخزين بيانات الشمعة الحية والمغلقة مع التوقيت لضمان الدقة
+                                self.live_klines[symbol] = {
+                                    't': k['t'], 'o': float(k['o']), 'h': float(k['h']), 
+                                    'l': float(k['l']), 'c': float(k['c']), 'v': float(k['v']), 
+                                    'x': k['x']
+                                }
+                                if k['x']:
+                                    print(f"📊 [MONITOR] شمعة مغلقة جديدة لـ {symbol}")
                             
                             self._save_data()
 
-                            if (datetime.now() - last_analysis_time).seconds >= 300: # زيادة الفاصل الزمني إلى 5 دقائق
+                            if (datetime.now() - last_analysis_time).seconds >= 300:
+                                print(f"🧠 [MONITOR] بدء جولة التحليل الدورية ({datetime.now().strftime('%H:%M:%S')})")
                                 for s in symbols:
                                     await ai.analyze_and_trade(s)
-                                    await asyncio.sleep(10) # زيادة التأخير بين العملات إلى 10 ثوانٍ
+                                    await asyncio.sleep(5) # تأخير بسيط بين العملات
                                 last_analysis_time = datetime.now()
+                                print("✨ [MONITOR] انتهت جولة التحليل.")
 
             except Exception as e:
                 print(f"⚠️ [MONITOR] Connection Error: {e}")

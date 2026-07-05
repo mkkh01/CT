@@ -20,7 +20,7 @@ class AIEngine:
         })
 
     async def get_higher_timeframe_data(self, symbol, current_tf):
-        """جلب بيانات الإطار الزمني الأعلى للفلترة (Phase 2)"""
+        """جلب بيانات الإطار الزمني الأعلى مع نظام التخزين المؤقت وإعادة المحاولة"""
         from Core.redis_client import redis_client
         tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
         higher_tf = tf_map.get(current_tf, "1d")
@@ -29,26 +29,30 @@ class AIEngine:
         try:
             cached_ohlcv = redis_client.get_data(cache_key)
             if cached_ohlcv:
+                # print(f"📦 [CACHE] استخدام بيانات HTF المخزنة لـ {symbol} ({higher_tf})")
                 return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
+            # نظام إعادة المحاولة مع Exponential Backoff
+            ohlcv = None
             for attempt in range(3):
                 try:
-                    await asyncio.sleep(5 * (attempt + 1))
+                    print(f"📡 [BINANCE API] طلب HTF ({higher_tf}) لـ {symbol} (محاولة {attempt+1})")
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
                     break
                 except Exception as e:
-                    if attempt == 2: raise e
-                    await asyncio.sleep(10)
+                    wait_time = (2 ** attempt) * 5
+                    print(f"⚠️ [BINANCE API] خطأ في جلب HTF لـ {symbol}: {e}. إعادة المحاولة بعد {wait_time} ثانية...")
+                    await asyncio.sleep(wait_time)
             
-            redis_client.set_data(cache_key, ohlcv, ttl=1800)
-            return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            if ohlcv:
+                redis_client.set_data(cache_key, ohlcv, ttl=3600) # تخزين لمدة ساعة
+                return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            return None
         except Exception as e:
-            print(f"⚠️ [SYSTEM] HTF Fetch Error for {symbol}: {e}")
+            print(f"❌ [SYSTEM] فشل نهائي في جلب HTF لـ {symbol}: {e}")
             return None
 
     async def analyze_and_trade(self, symbol: str, **kwargs):
-        print(f"🧠 [SYSTEM] جاري التحليل المؤسسي لـ {symbol}...")
-        
         async with AsyncSessionLocal() as session:
             # 1. جلب إعدادات المستخدم والعملة
             cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
@@ -59,6 +63,8 @@ class AIEngine:
             coin = coin_res.scalars().first()
             if not coin or not coin.enabled: return
 
+            print(f"🧠 [ANALYSIS] جاري التحليل المؤسسي لـ {symbol} ({coin.timeframe})...")
+
             # 2. جلب البيانات من الذاكرة اللحظية (Redis & WebSocket)
             from Core.redis_client import redis_client
             try:
@@ -66,42 +72,51 @@ class AIEngine:
                 ohlcv = redis_client.get_data(hist_key)
                 
                 if not ohlcv:
-                    print(f"📥 [SYSTEM] جلب بيانات تاريخية أولية لـ {symbol}...")
+                    print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol}...")
                     for attempt in range(3):
                         try:
-                            await asyncio.sleep(5 * (attempt + 1))
                             ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
                             break
                         except Exception as e:
-                            if attempt == 2: raise e
-                            await asyncio.sleep(10)
-                    redis_client.set_data(hist_key, ohlcv, ttl=86400)
+                            wait_time = (2 ** attempt) * 5
+                            print(f"⚠️ [BINANCE API] فشل جلب البيانات التاريخية لـ {symbol}: {e}. محاولة {attempt+1}")
+                            await asyncio.sleep(wait_time)
+                    
+                    if ohlcv:
+                        redis_client.set_data(hist_key, ohlcv, ttl=86400)
+                    else:
+                        print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol}. تخطي التحليل.")
+                        return
                 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
-                # فصل الشمعة الحية عن المغلقة
+                if df.empty or len(df) < 100:
+                    print(f"❌ [ANALYSIS] DataFrame فارغ أو غير مكتمل لـ {symbol}. (الطول: {len(df)})")
+                    return
+
+                # دمج الشمعة الحية من WebSocket إذا لزم الأمر
                 klines_data = redis_client.get_data("live_klines") or {}
                 if symbol in klines_data:
                     k = klines_data[symbol]
                     if k.get('x', False): # شمعة مغلقة
                         last_ts = ohlcv[-1][0]
-                        # التأكد من عدم تكرار إضافة نفس الشمعة (استخدام timestamp)
-                        # ملاحظة: Binance WebSocket kline timestamp هو وقت بدء الشمعة
                         if k.get('t', 0) > last_ts:
+                            print(f"📥 [DATA] إضافة شمعة مغلقة جديدة من WebSocket لـ {symbol}")
                             new_row = [k['t'], k['o'], k['h'], k['l'], k['c'], k['v']]
                             ohlcv.append(new_row)
                             if len(ohlcv) > 300: ohlcv.pop(0)
                             redis_client.set_data(hist_key, ohlcv, ttl=86400)
                             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     
-                    # لا نحدث الشمعة الأخيرة في df إلا إذا أردنا التحليل اللحظي (وهو مرفوض حسب التعليمات)
-                    # التعليمات تقول: "القرار النهائي يجب أن يعتمد أساسًا على شموع مغلقة"
-                    # لذا سنقوم بحذف الشمعة الأخيرة من df إذا كانت غير مكتملة
-                    if not k.get('x', False):
-                        # نستخدم البيانات التاريخية (المغلقة) فقط للتحليل
-                        df = df[df['timestamp'] < k.get('t', 0)]
+                    # منع تحليل الشمعة الحية (غير المكتملة)
+                    df = df[df['timestamp'] < k.get('t', 10**15) if not k.get('x', False) else 10**15]
+                
+                if len(df) < 100:
+                    print(f"❌ [ANALYSIS] البيانات المغلقة لـ {symbol} غير كافية بعد فلترة الشمعة الحية.")
+                    return
+
             except Exception as e:
-                print(f"⚠️ [SYSTEM] خطأ في معالجة بيانات {symbol}: {e}")
+                print(f"⚠️ [SYSTEM] خطأ غير متوقع في معالجة بيانات {symbol}: {e}")
                 return
             
             # 3. تحليل الإطار الزمني الأعلى (Filter)
