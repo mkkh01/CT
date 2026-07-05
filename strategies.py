@@ -73,8 +73,10 @@ class InstitutionalStrategies:
         if market["state"] == "Strong Uptrend":
             score += 30
             report.append(f"Trend: Strong Uptrend (+30)")
+        elif market["state"] == "Low Volatility Range":
+            score += 10 # السماح ببعض النقاط للسوق العرضي الهادئ كبداية ترند
+            report.append("Trend: Low Vol Range (+10)")
         elif market["state"] == "Strong Downtrend":
-            # حالياً النظام يدعم الشراء فقط، لذا الترند الهابط يعطي 0 أو نقاط سالبة
             score -= 20
             report.append("Trend: Strong Downtrend (-20)")
         else:
@@ -117,6 +119,9 @@ class InstitutionalStrategies:
             elif "Downtrend" in higher_market["state"]:
                 score -= 25
                 report.append("MTF: Bearish Context (-25)")
+        else:
+            # إذا لم يتوفر إطار أعلى، لا نخصم نقاطاً بل نعتمد على الإطار الحالي
+            pass
 
         return {
             "total_score": max(0, score),
