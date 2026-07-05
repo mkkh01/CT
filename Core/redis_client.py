@@ -1,17 +1,16 @@
 import json
 import redis
-from config import UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
+from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
 
 class RedisClient:
     def __init__(self):
-        # استخدام بروتوكول Redis (TCP) المباشر بدلاً من REST لضمان التوافق
-        # الرابط: secure-ringtail-87484.upstash.io
-        # البورت الافتراضي لـ Upstash هو 6379
+        # التحديث لاستخدام Redis Cloud الجديد
+        # ملاحظة: تم تعطيل SSL لأن بعض خطط Redis Cloud المجانية لا تدعمه أو قد يسبب تعارضاً في النسخ
         self.redis = redis.Redis(
-            host="secure-ringtail-87484.upstash.io",
-            port=6379,
-            password=UPSTASH_REDIS_REST_TOKEN,
-            ssl=True,
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            password=REDIS_PASSWORD,
+            ssl=False,
             decode_responses=True,
             socket_timeout=5
         )
