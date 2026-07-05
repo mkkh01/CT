@@ -15,3 +15,8 @@ ADMIN_ID = 1503808643
 DEFAULT_CAPITAL = 10.0
 TRADE_FEE = 0.001
 BINANCE_WS_URL = "wss://stream.binance.com:9443"
+
+# Redis Configuration (Upstash)
+UPSTASH_REDIS_REST_URL = "https://secure-ringtail-87484.upstash.io"
+UPSTASH_REDIS_REST_TOKEN = "gQAAAAAAAVw8AAIgcDFiYTA4NjcyYjYyYzg0MWIwOWUwU3NTA2Y2YmE1N2M2OA=="
+

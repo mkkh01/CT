@@ -65,6 +65,7 @@ class LiveTrade(Base):
     entry_reason: Mapped[Optional[str]] = mapped_column(Text)
     exit_reason: Mapped[Optional[str]] = mapped_column(Text)
     market_state: Mapped[Optional[str]] = mapped_column(Text)
+    indicators_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     timestamp: Mapped[datetime] = mapped_column(server_default=func.now())
     closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 

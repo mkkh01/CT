@@ -103,18 +103,14 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.clear()
 
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    PRICES_CACHE = "/tmp/live_prices.json"
-    if not os.path.exists(PRICES_CACHE):
-        await update.message.reply_text("⏳ جاري الاتصال بالرادار... حاول مرة أخرى.")
-        return
-    with open(PRICES_CACHE, 'r') as f:
-        prices = json.load(f)
+    from Core.redis_client import redis_client
+    prices = redis_client.get_data("live_prices")
     if not prices:
-        await update.message.reply_text("❌ لا توجد عملات مضافة.")
+        await update.message.reply_text("⏳ جاري الاتصال بالرادار أو لا توجد بيانات حالياً...")
         return
     msg = "📈 *الأسعار المباشرة*\n━━━━━━━━━━━━━━\n"
     for s, d in prices.items():
-        msg += f"🪙 {s}: `{d['price']}`\n"
+        msg += f"🪙 {s}: `{d['price']}` (🕒 {d.get('time', 'N/A')})\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
