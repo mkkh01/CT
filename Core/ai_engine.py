@@ -128,7 +128,8 @@ class AIEngine:
                             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     
                     # منع تحليل الشمعة الحية (غير المكتملة)
-                    df = df[df['timestamp'] < k.get('t', 10**15) if not k.get('x', False) else 10**15]
+                    if not k.get('x', False):
+                        df = df[df['timestamp'] < k.get('t', 10**15)]
                 
                 if len(df) < 100:
                     print(f"❌ [ANALYSIS] البيانات المغلقة لـ {symbol} غير كافية بعد فلترة الشمعة الحية.")
