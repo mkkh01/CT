@@ -1,12 +1,20 @@
 import json
-from upstash_redis import Redis
+import redis
 from config import UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
 
 class RedisClient:
     def __init__(self):
-        # التأكد من استخدام الرابط الصحيح (REST API)
-        url = UPSTASH_REDIS_REST_URL if UPSTASH_REDIS_REST_URL.startswith("http") else f"https://{UPSTASH_REDIS_REST_URL}"
-        self.redis = Redis(url=url, token=UPSTASH_REDIS_REST_TOKEN)
+        # استخدام بروتوكول Redis (TCP) المباشر بدلاً من REST لضمان التوافق
+        # الرابط: secure-ringtail-87484.upstash.io
+        # البورت الافتراضي لـ Upstash هو 6379
+        self.redis = redis.Redis(
+            host="secure-ringtail-87484.upstash.io",
+            port=6379,
+            password=UPSTASH_REDIS_REST_TOKEN,
+            ssl=True,
+            decode_responses=True,
+            socket_timeout=5
+        )
 
     def set_data(self, key, data, ttl=None):
         try:
