@@ -18,12 +18,11 @@ keep_alive()
 
 async def start_background_tasks(app):
     """تشغيل الرادار المؤسسي والمراقبة"""
-    # FORCE STOP ENABLED: Disabling trading monitor as requested by user
-    print("🛑 [SYSTEM] FORCE STOP ENABLED. Trading system is currently INACTIVE.")
-    # await asyncio.sleep(5)
-    # monitor = TradeMonitor(bot=app.bot)
-    # asyncio.create_task(monitor.check_prices())
-    # print("📡 [SYSTEM] تم إطلاق الرادار المؤسسي والمراقبة اللحظية.")
+    print("📡 [SYSTEM] جاري إطلاق الرادار المؤسسي والمراقبة اللحظية...")
+    await asyncio.sleep(2)
+    monitor = TradeMonitor(bot=app.bot)
+    asyncio.create_task(monitor.check_prices())
+    print("✅ [SYSTEM] تم إطلاق الرادار المؤسسي بنجاح.")
 
 async def post_init(app: Application):
     asyncio.create_task(start_background_tasks(app))

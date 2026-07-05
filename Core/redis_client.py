@@ -46,4 +46,8 @@ class RedisClient:
         except Exception as e:
             print(f"❌ [REDIS] Delete Error for {key}: {e}")
 
+    def get_api_usage(self):
+        """إرجاع عدد طلبات API الحالية"""
+        return self.get_data("binance_api_calls") or 0
+
 redis_client = RedisClient()

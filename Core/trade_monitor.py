@@ -30,19 +30,25 @@ class TradeMonitor:
             try:
                 async with AsyncSessionLocal() as session:
                     coins_res = await session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
-                    symbols = [c.symbol for c in coins_res.scalars().all()]
+                    coins = coins_res.scalars().all()
+                    symbols = [c.symbol for c in coins]
                     
                     if not symbols:
-                        print("ℹ️ [MONITOR] لا توجد عملات مفعلة للمراقبة حالياً.")
+                        print("ℹ️ [MONITOR] لا توجد عملات مفعلة للمراقبة حالياً. جاري البحث...")
                         await asyncio.sleep(15)
                         continue
                     
+                    # إنشاء قائمة الستريمات بناءً على الفريمات المحددة لكل عملة لتقليل طلبات fetch_ohlcv
+                    streams = [f"{s.lower()}@miniTicker" for s in symbols]
+                    for c in coins:
+                        tf = c.timeframe.replace('m', 'm').replace('h', 'h').replace('d', 'd')
+                        streams.append(f"{c.symbol.lower()}@kline_{tf}")
+                    
                     print(f"🔗 [MONITOR] جاري الاتصال بـ Binance WebSocket لـ {len(symbols)} عملة...")
-                    streams = [f"{s.lower()}@miniTicker" for s in symbols] + [f"{s.lower()}@kline_15m" for s in symbols]
                     uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
                     
                     async with websockets.connect(uri) as ws:
-                        print("✅ [MONITOR] تم الاتصال بنجاح بـ Binance WebSocket.")
+                        print(f"✅ [MONITOR] تم الاتصال بنجاح. مراقبة: {', '.join(symbols)}")
                         last_analysis_time = datetime.now()
                         while self.is_running:
                             # التحقق من وجود عملات جديدة تمت إضافتها لإعادة الاتصال
@@ -73,17 +79,21 @@ class TradeMonitor:
                                     'x': k['x']
                                 }
                                 if k['x']:
-                                    print(f"📊 [MONITOR] شمعة مغلقة جديدة لـ {symbol}")
+                                    print(f"📊 [MONITOR] شمعة {k['i']} مغلقة لـ {symbol} | السعر: {k['c']}")
+                                    # تحليل فوري عند إغلاق الشمعة لتقليل التأخير
+                                    asyncio.create_task(ai.analyze_and_trade(symbol))
                             
                             self._save_data()
 
-                            if (datetime.now() - last_analysis_time).seconds >= 300:
-                                print(f"🧠 [MONITOR] بدء جولة التحليل الدورية ({datetime.now().strftime('%H:%M:%S')})")
+                            # جولة تحليل شاملة كل 10 دقائق للتأكد من عدم فوات شيء
+                            if (datetime.now() - last_analysis_time).seconds >= 600:
+                                api_calls = redis_client.get_data("binance_api_calls") or 0
+                                print(f"🔍 [SCANNER] فحص شامل للعملات ({len(symbols)}) | API Calls: {api_calls}")
                                 for s in symbols:
                                     await ai.analyze_and_trade(s)
-                                    await asyncio.sleep(5) # تأخير بسيط بين العملات
+                                    await asyncio.sleep(1) # تقليل التأخير بين التحليلات
                                 last_analysis_time = datetime.now()
-                                print("✨ [MONITOR] انتهت جولة التحليل.")
+                                print("✨ [SCANNER] اكتمل الفحص الشامل.")
 
             except Exception as e:
                 print(f"⚠️ [MONITOR] Connection Error: {e}")

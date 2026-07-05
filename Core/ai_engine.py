@@ -18,6 +18,17 @@ class AIEngine:
             'options': {'defaultType': 'spot'},
             'timeout': 30000,
         })
+        from Core.redis_client import redis_client
+        self.redis = redis_client
+
+    async def _track_api_call(self):
+        """تسجيل عدد طلبات API لـ Binance"""
+        try:
+            current_count = self.redis.get_data("binance_api_calls") or 0
+            self.redis.set_data("binance_api_calls", current_count + 1, ttl=86400)
+            if (current_count + 1) % 50 == 0:
+                print(f"📊 [USAGE] إجمالي طلبات Binance API اليوم: {current_count + 1}")
+        except: pass
 
     async def get_higher_timeframe_data(self, symbol, current_tf):
         """جلب بيانات الإطار الزمني الأعلى مع نظام التخزين المؤقت وإعادة المحاولة"""
@@ -32,16 +43,18 @@ class AIEngine:
                 # print(f"📦 [CACHE] استخدام بيانات HTF المخزنة لـ {symbol} ({higher_tf})")
                 return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            # نظام إعادة المحاولة مع Exponential Backoff
+            # نظام إعادة المحاولة مع Exponential Backoff محسن
             ohlcv = None
-            for attempt in range(3):
+            for attempt in range(5): # زيادة عدد المحاولات
                 try:
+                    await self._track_api_call()
                     print(f"📡 [BINANCE API] طلب HTF ({higher_tf}) لـ {symbol} (محاولة {attempt+1})")
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
-                    break
+                    if ohlcv and len(ohlcv) > 0:
+                        break
                 except Exception as e:
-                    wait_time = (2 ** attempt) * 5
-                    print(f"⚠️ [BINANCE API] خطأ في جلب HTF لـ {symbol}: {e}. إعادة المحاولة بعد {wait_time} ثانية...")
+                    wait_time = min((2 ** attempt) + (0.1 * attempt), 60) # Exponential Backoff
+                    print(f"⚠️ [BINANCE API] خطأ في جلب HTF لـ {symbol}: {e}. إعادة المحاولة بعد {wait_time:.1f} ثانية...")
                     await asyncio.sleep(wait_time)
             
             if ohlcv:
@@ -73,25 +86,31 @@ class AIEngine:
                 
                 if not ohlcv:
                     print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol}...")
-                    for attempt in range(3):
+                    for attempt in range(5):
                         try:
+                            await self._track_api_call()
                             ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
-                            break
+                            if ohlcv and len(ohlcv) > 0:
+                                break
                         except Exception as e:
-                            wait_time = (2 ** attempt) * 5
-                            print(f"⚠️ [BINANCE API] فشل جلب البيانات التاريخية لـ {symbol}: {e}. محاولة {attempt+1}")
+                            wait_time = min((2 ** attempt) + (0.1 * attempt), 60)
+                            print(f"⚠️ [BINANCE API] فشل جلب البيانات التاريخية لـ {symbol}: {e}. محاولة {attempt+1}، انتظار {wait_time:.1f}s")
                             await asyncio.sleep(wait_time)
                     
-                    if ohlcv:
+                    if ohlcv and len(ohlcv) > 0:
                         redis_client.set_data(hist_key, ohlcv, ttl=86400)
                     else:
-                        print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol}. تخطي التحليل.")
+                        print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol} بعد عدة محاولات. تخطي التحليل.")
                         return
                 
+                if not ohlcv or len(ohlcv) == 0:
+                    print(f"❌ [ANALYSIS] بيانات OHLCV فارغة تماماً لـ {symbol}.")
+                    return
+
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
                 if df.empty or len(df) < 100:
-                    print(f"❌ [ANALYSIS] DataFrame فارغ أو غير مكتمل لـ {symbol}. (الطول: {len(df)})")
+                    print(f"❌ [ANALYSIS] DataFrame فارغ أو غير مكتمل لـ {symbol}. (الطول: {len(df) if not df.empty else 0})")
                     return
 
                 # دمج الشمعة الحية من WebSocket إذا لزم الأمر
