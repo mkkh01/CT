@@ -82,18 +82,22 @@ class TradeMonitor:
                                     print(f"📊 [MONITOR] شمعة {k['i']} مغلقة لـ {symbol} | السعر: {k['c']}")
                                     # تحليل فوري عند إغلاق الشمعة لتقليل التأخير
                                     asyncio.create_task(ai.analyze_and_trade(symbol))
+                                    # تحديث وقت التحليل الأخير لتأجيل الفحص الشامل
+                                    last_analysis_time = datetime.now()
                             
-                            self._save_data()
+                            # تقليل معدل الحفظ في Redis لتوفير الأداء
+                            if 'miniTicker' in payload['stream'] or k['x']:
+                                self._save_data()
 
-                            # جولة تحليل شاملة كل 10 دقائق للتأكد من عدم فوات شيء
-                            if (datetime.now() - last_analysis_time).seconds >= 600:
+                            # جولة تحليل شاملة كل 30 دقيقة بدلاً من 10 دقائق لتقليل ضغط API
+                            if (datetime.now() - last_analysis_time).seconds >= 1800:
                                 api_calls = redis_client.get_data("binance_api_calls") or 0
-                                print(f"🔍 [SCANNER] فحص شامل للعملات ({len(symbols)}) | API Calls: {api_calls}")
+                                print(f"🔍 [SCANNER] فحص شامل دوري ({len(symbols)}) | API Calls: {api_calls}")
                                 for s in symbols:
-                                    await ai.analyze_and_trade(s)
-                                    await asyncio.sleep(1) # تقليل التأخير بين التحليلات
+                                    asyncio.create_task(ai.analyze_and_trade(s))
+                                    await asyncio.sleep(0.5)
                                 last_analysis_time = datetime.now()
-                                print("✨ [SCANNER] اكتمل الفحص الشامل.")
+                                print("✨ [SCANNER] اكتمل الفحص الدوري.")
 
             except Exception as e:
                 print(f"⚠️ [MONITOR] Connection Error: {e}")

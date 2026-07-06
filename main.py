@@ -1,11 +1,20 @@
 import os
 import sys
 import asyncio
+import logging
+import traceback
 from keep_alive import keep_alive
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from telegram.request import HTTPXRequest
 from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, UserConfig
+
+# إعداد الـ Logging العام
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 from bot.handlers import (
     start, handle_message, process_add_symbol, process_add_capital, 
     process_add_risk, process_add_tf,
@@ -27,7 +36,23 @@ async def start_background_tasks(app):
 async def post_init(app: Application):
     asyncio.create_task(start_background_tasks(app))
 
+async def error_handler(update, context):
+    """سجل الأخطاء مع Traceback كامل"""
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    print(f"❌ [TELEGRAM ERROR] {tb_string}")
+
 def main():
+    # منع تشغيل أكثر من نسخة للبوت
+    import socket
+    try:
+        lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lock_socket.bind(('127.0.0.1', 47111))
+    except socket.error:
+        print("⚠️ [SYSTEM] هناك نسخة أخرى من البوت تعمل بالفعل. إغلاق النسخة الحالية.")
+        sys.exit(1)
+
     print("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
@@ -35,6 +60,9 @@ def main():
     # إعداد الطلب مع زيادة مهلة الاتصال لتجنب أخطاء الشبكة على Render
     request_config = HTTPXRequest(connect_timeout=20, read_timeout=20)
     app = Application.builder().token(TELEGRAM_TOKEN).request(request_config).post_init(post_init).build()
+    
+    # إضافة Error Handler
+    app.add_error_handler(error_handler)
     
     # إعداد المحادثة المؤسسية لإضافة عملة
     conv_handler = ConversationHandler(

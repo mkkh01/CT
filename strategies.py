@@ -9,17 +9,20 @@ class InstitutionalStrategies:
         pass
 
     def classify_market(self, df: pd.DataFrame) -> dict:
-        """تصنيف السوق - إصلاح جذري للتمييز بين الترند والتوزيع والسوق العرضي"""
+        """تصنيف السوق - تم تحسين الأداء بتقليل العمليات الحسابية المكررة"""
         if len(df) < 200: return {"state": "Low Data", "confidence": 0}
         
         close = df['close'].iloc[-1]
-        ema50 = EMAIndicator(df['close'], window=50).ema_indicator().iloc[-1]
+        
+        # حساب المتوسطات مرة واحدة
+        ema50_series = EMAIndicator(df['close'], window=50).ema_indicator()
+        ema50 = ema50_series.iloc[-1]
         ema200 = EMAIndicator(df['close'], window=200).ema_indicator().iloc[-1]
-        atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
         
         # حساب الانحراف المعياري لتمييز السوق العرضي
-        std_dev = df['close'].rolling(20).std().iloc[-1]
-        avg_price = df['close'].rolling(20).mean().iloc[-1]
+        rolling_20 = df['close'].rolling(20)
+        std_dev = rolling_20.std().iloc[-1]
+        avg_price = rolling_20.mean().iloc[-1]
         volatility_ratio = (std_dev / avg_price) * 100
         
         # تمييز السوق العرضي (Ranging)
@@ -28,15 +31,14 @@ class InstitutionalStrategies:
 
         # تمييز الترند الحقيقي (Alignment)
         if close > ema50 > ema200:
-            # التحقق من ميل المتوسطات (Slope)
-            ema50_prev = EMAIndicator(df['close'], window=50).ema_indicator().iloc[-5]
+            ema50_prev = ema50_series.iloc[-5]
             if ema50 > ema50_prev:
                 return {"state": "Strong Uptrend", "confidence": 90}
             else:
                 return {"state": "Exhausted Uptrend", "confidence": 80}
         
         elif close < ema50 < ema200:
-            ema50_prev = EMAIndicator(df['close'], window=50).ema_indicator().iloc[-5]
+            ema50_prev = ema50_series.iloc[-5]
             if ema50 < ema50_prev:
                 return {"state": "Strong Downtrend", "confidence": 90}
             else:

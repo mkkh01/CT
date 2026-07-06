@@ -1,5 +1,6 @@
 import json
 import redis
+import asyncio
 from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
 
 class RedisClient:
@@ -14,6 +15,14 @@ class RedisClient:
             decode_responses=True,
             socket_timeout=5
         )
+        self._locks = {}
+        self._global_lock = asyncio.Lock()
+
+    async def get_lock(self, key):
+        async with self._global_lock:
+            if key not in self._locks:
+                self._locks[key] = asyncio.Lock()
+            return self._locks[key]
 
     def set_data(self, key, data, ttl=None):
         try:

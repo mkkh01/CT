@@ -8,62 +8,97 @@ import asyncio
 import json
 import os
 
+from Core.utils import rate_limiter, log_api_request, logger
+import time
+
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
         self.strategies = InstitutionalStrategies()
         self.bot = bot
         self.chat_id = chat_id
         self.exchange = ccxt.binance({
-            'enableRateLimit': True, 
+            'enableRateLimit': False, # سنستخدم الـ RateLimiter الخاص بنا للتحكم الأدق
             'options': {'defaultType': 'spot'},
             'timeout': 30000,
         })
         from Core.redis_client import redis_client
         self.redis = redis_client
 
-    async def _track_api_call(self):
-        """تسجيل عدد طلبات API لـ Binance"""
-        try:
-            current_count = self.redis.get_data("binance_api_calls") or 0
-            self.redis.set_data("binance_api_calls", current_count + 1, ttl=86400)
-            if (current_count + 1) % 50 == 0:
-                print(f"📊 [USAGE] إجمالي طلبات Binance API اليوم: {current_count + 1}")
-        except: pass
+    async def _handle_binance_error(self, e, attempt):
+        error_str = str(e)
+        if "418" in error_str or "429" in error_str:
+            retry_after = 60 # القيمة الافتراضية
+            try:
+                # محاولة استخراج وقت الانتظار من الرسالة إذا وجد
+                if "retry-after" in error_str.lower():
+                    import re
+                    match = re.search(r'retry-after:?\s*(\d+)', error_str.lower())
+                    if match: retry_after = int(match.group(1))
+            except: pass
+            
+            rate_limiter.set_ban(retry_after)
+            print(f"🛑 [BINANCE API] تم تلقي 418/429. حظر جميع الطلبات لـ {retry_after} ثانية.")
+            return retry_after
+        
+        wait_time = min((2 ** attempt) + (0.1 * attempt), 60)
+        print(f"⚠️ [BINANCE API] خطأ: {e}. إعادة المحاولة بعد {wait_time:.1f} ثانية...")
+        await asyncio.sleep(wait_time)
+        return wait_time
+
+    async def _safe_api_call(self, func, *args, **kwargs):
+        symbol = kwargs.get('symbol', args[0] if args else "Unknown")
+        timeframe = kwargs.get('timeframe', args[1] if len(args) > 1 else "Unknown")
+        source = kwargs.get('source', 'Unknown')
+        
+        start_time = time.time()
+        for attempt in range(5):
+            try:
+                await rate_limiter.wait_if_needed()
+                result = await func(*args, **kwargs)
+                
+                execution_time = time.time() - start_time
+                log_api_request(symbol, timeframe, source, from_cache=False, execution_time=execution_time)
+                
+                # تحديث عداد الطلبات في Redis
+                current_count = self.redis.get_data("binance_api_calls") or 0
+                self.redis.set_data("binance_api_calls", current_count + 1, ttl=86400)
+                
+                return result
+            except Exception as e:
+                if attempt == 4:
+                    print(f"❌ [BINANCE API] فشل نهائي بعد 5 محاولات: {e}")
+                    raise e
+                await self._handle_binance_error(e, attempt)
 
     async def get_higher_timeframe_data(self, symbol, current_tf):
-        """جلب بيانات الإطار الزمني الأعلى مع نظام التخزين المؤقت وإعادة المحاولة"""
-        from Core.redis_client import redis_client
+        """جلب بيانات الإطار الزمني الأعلى مع نظام التخزين المؤقت ومنع الطلبات المتوازية"""
         tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
         higher_tf = tf_map.get(current_tf, "1d")
-        
         cache_key = f"htf_{symbol}_{higher_tf}"
-        try:
-            cached_ohlcv = redis_client.get_data(cache_key)
+        
+        # 1. التحقق من الكاش أولاً
+        cached_ohlcv = self.redis.get_data(cache_key)
+        if cached_ohlcv:
+            log_api_request(symbol, higher_tf, "HTF_FETCH", from_cache=True)
+            return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+        # 2. استخدام Lock لمنع الطلبات المتوازية لنفس البيانات
+        lock = await self.redis.get_lock(cache_key)
+        async with lock:
+            # التحقق مرة أخرى بعد الحصول على الـ Lock (Double-Checked Locking)
+            cached_ohlcv = self.redis.get_data(cache_key)
             if cached_ohlcv:
-                # print(f"📦 [CACHE] استخدام بيانات HTF المخزنة لـ {symbol} ({higher_tf})")
+                log_api_request(symbol, higher_tf, "HTF_FETCH_LOCKED", from_cache=True)
                 return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            # نظام إعادة المحاولة مع Exponential Backoff محسن
-            ohlcv = None
-            for attempt in range(5): # زيادة عدد المحاولات
-                try:
-                    await self._track_api_call()
-                    print(f"📡 [BINANCE API] طلب HTF ({higher_tf}) لـ {symbol} (محاولة {attempt+1})")
-                    ohlcv = await self.exchange.fetch_ohlcv(symbol, higher_tf, limit=100)
-                    if ohlcv and len(ohlcv) > 0:
-                        break
-                except Exception as e:
-                    wait_time = min((2 ** attempt) + (0.1 * attempt), 60) # Exponential Backoff
-                    print(f"⚠️ [BINANCE API] خطأ في جلب HTF لـ {symbol}: {e}. إعادة المحاولة بعد {wait_time:.1f} ثانية...")
-                    await asyncio.sleep(wait_time)
-            
-            if ohlcv:
-                redis_client.set_data(cache_key, ohlcv, ttl=3600) # تخزين لمدة ساعة
-                return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            return None
-        except Exception as e:
-            print(f"❌ [SYSTEM] فشل نهائي في جلب HTF لـ {symbol}: {e}")
-            return None
+            try:
+                ohlcv = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, higher_tf, limit=100, source="HTF_REST")
+                if ohlcv:
+                    self.redis.set_data(cache_key, ohlcv, ttl=3600) # تخزين لمدة ساعة
+                    return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            except:
+                return None
+        return None
 
     async def analyze_and_trade(self, symbol: str, **kwargs):
         async with AsyncSessionLocal() as session:
@@ -79,29 +114,24 @@ class AIEngine:
             print(f"🧠 [ANALYSIS] جاري التحليل المؤسسي لـ {symbol} ({coin.timeframe})...")
 
             # 2. جلب البيانات من الذاكرة اللحظية (Redis & WebSocket)
-            from Core.redis_client import redis_client
             try:
                 hist_key = f"hist_{symbol}_{coin.timeframe}"
-                ohlcv = redis_client.get_data(hist_key)
+                ohlcv = self.redis.get_data(hist_key)
                 
                 if not ohlcv:
-                    print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol}...")
-                    for attempt in range(5):
-                        try:
-                            await self._track_api_call()
-                            ohlcv = await self.exchange.fetch_ohlcv(symbol, coin.timeframe, limit=250)
-                            if ohlcv and len(ohlcv) > 0:
-                                break
-                        except Exception as e:
-                            wait_time = min((2 ** attempt) + (0.1 * attempt), 60)
-                            print(f"⚠️ [BINANCE API] فشل جلب البيانات التاريخية لـ {symbol}: {e}. محاولة {attempt+1}، انتظار {wait_time:.1f}s")
-                            await asyncio.sleep(wait_time)
-                    
-                    if ohlcv and len(ohlcv) > 0:
-                        redis_client.set_data(hist_key, ohlcv, ttl=86400)
-                    else:
-                        print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol} بعد عدة محاولات. تخطي التحليل.")
-                        return
+                    lock = await self.redis.get_lock(hist_key)
+                    async with lock:
+                        ohlcv = self.redis.get_data(hist_key)
+                        if not ohlcv:
+                            print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol}...")
+                            ohlcv = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, coin.timeframe, limit=250, source="HIST_REST")
+                            if ohlcv:
+                                self.redis.set_data(hist_key, ohlcv, ttl=86400)
+                            else:
+                                print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol}. تخطي التحليل.")
+                                return
+                else:
+                    log_api_request(symbol, coin.timeframe, "HIST_FETCH", from_cache=True)
                 
                 if not ohlcv or len(ohlcv) == 0:
                     print(f"❌ [ANALYSIS] بيانات OHLCV فارغة تماماً لـ {symbol}.")
@@ -109,12 +139,8 @@ class AIEngine:
 
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 
-                if df.empty or len(df) < 100:
-                    print(f"❌ [ANALYSIS] DataFrame فارغ أو غير مكتمل لـ {symbol}. (الطول: {len(df) if not df.empty else 0})")
-                    return
-
                 # دمج الشمعة الحية من WebSocket إذا لزم الأمر
-                klines_data = redis_client.get_data("live_klines") or {}
+                klines_data = self.redis.get_data("live_klines") or {}
                 if symbol in klines_data:
                     k = klines_data[symbol]
                     if k.get('x', False): # شمعة مغلقة
@@ -124,7 +150,7 @@ class AIEngine:
                             new_row = [k['t'], k['o'], k['h'], k['l'], k['c'], k['v']]
                             ohlcv.append(new_row)
                             if len(ohlcv) > 300: ohlcv.pop(0)
-                            redis_client.set_data(hist_key, ohlcv, ttl=86400)
+                            self.redis.set_data(hist_key, ohlcv, ttl=86400)
                             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     
                     # منع تحليل الشمعة الحية (غير المكتملة)
@@ -132,7 +158,7 @@ class AIEngine:
                         df = df[df['timestamp'] < k.get('t', 10**15)]
                 
                 if len(df) < 100:
-                    print(f"❌ [ANALYSIS] البيانات المغلقة لـ {symbol} غير كافية بعد فلترة الشمعة الحية.")
+                    print(f"❌ [ANALYSIS] البيانات المغلقة لـ {symbol} غير كافية (الطول: {len(df)}).")
                     return
 
             except Exception as e:
