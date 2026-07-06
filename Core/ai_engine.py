@@ -46,18 +46,20 @@ class AIEngine:
         return wait_time
 
     async def _safe_api_call(self, func, *args, **kwargs):
-        symbol = kwargs.get('symbol', args[0] if args else "Unknown")
-        timeframe = kwargs.get('timeframe', args[1] if len(args) > 1 else "Unknown")
-        source = kwargs.get('source', 'Unknown')
+        # استخراج الوسائط الخاصة بالنظام (Internal Metadata)
+        symbol = kwargs.pop('symbol', args[0] if args else "Unknown")
+        timeframe = kwargs.pop('timeframe', args[1] if len(args) > 1 else "Unknown")
+        source = kwargs.pop('source', 'Unknown')
         
         start_time = time.time()
         for attempt in range(5):
             try:
                 await rate_limiter.wait_if_needed()
+                # الآن kwargs لا تحتوي على source، لذا لن يتم تمريرها إلى CCXT
                 result = await func(*args, **kwargs)
                 
                 execution_time = time.time() - start_time
-                log_api_request(symbol, timeframe, source, from_cache=False, execution_time=execution_time)
+                log_api_request(symbol, timeframe, source, from_cache=False, execution_time=execution_time, **kwargs)
                 
                 # تحديث عداد الطلبات في Redis
                 current_count = self.redis.get_data("binance_api_calls") or 0
@@ -146,7 +148,7 @@ class AIEngine:
                     if k.get('x', False): # شمعة مغلقة
                         last_ts = ohlcv[-1][0]
                         if k.get('t', 0) > last_ts:
-                            print(f"📥 [DATA] إضافة شمعة مغلقة جديدة من WebSocket لـ {symbol}")
+                            print(f"📥 [DATA] إضافة شمعة مغلقة جديدة من WebSocket لـ {symbol} (TS: {k['t']})")
                             new_row = [k['t'], k['o'], k['h'], k['l'], k['c'], k['v']]
                             ohlcv.append(new_row)
                             if len(ohlcv) > 300: ohlcv.pop(0)
@@ -160,6 +162,10 @@ class AIEngine:
                 if len(df) < 100:
                     print(f"❌ [ANALYSIS] البيانات المغلقة لـ {symbol} غير كافية (الطول: {len(df)}).")
                     return
+                
+                # Debug: التأكد من حداثة البيانات
+                last_candle_time = datetime.fromtimestamp(df['timestamp'].iloc[-1] / 1000)
+                print(f"🔍 [DEBUG] آخر شمعة لـ {symbol}: {last_candle_time} | عدد الشموع: {len(df)}")
 
             except Exception as e:
                 print(f"⚠️ [SYSTEM] خطأ غير متوقع في معالجة بيانات {symbol}: {e}")

@@ -46,7 +46,8 @@ class RateLimiter:
 
 rate_limiter = RateLimiter(max_calls=1000) # نترك هامش أمان (Binance limit is 1200/min)
 
-def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=0):
+def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=0, **kwargs):
     status = "CACHE HIT" if from_cache else "CACHE MISS (REST)"
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"📝 [{now}] {status} | {symbol} | {timeframe} | Source: {source} | Time: {execution_time:.3f}s")
+    extra = f" | Extra: {kwargs}" if kwargs else ""
+    print(f"📝 [{now}] {status} | {symbol} | {timeframe} | Source: {source} | Time: {execution_time:.3f}s{extra}")
