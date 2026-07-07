@@ -21,7 +21,7 @@ class JSONEncoder(json.JSONEncoder):
             return int(obj)
         if isinstance(obj, (np.float64, np.float32, np.float16)):
             return float(obj)
-        if isinstance(obj, np.bool_):
+        if isinstance(obj, (np.bool_, bool)):
             return bool(obj)
         if isinstance(obj, np.ndarray):
             return obj.tolist()
@@ -37,13 +37,20 @@ class JSONEncoder(json.JSONEncoder):
             return str(obj)
 
 def make_json_safe(data: Any) -> Any:
-    """تحويل البيانات إلى صيغة آمنة للـ JSON"""
+    """تحويل البيانات إلى صيغة آمنة للـ JSON بشكل جذري"""
     if data is None:
         return None
     try:
-        return json.loads(json.dumps(data, cls=JSONEncoder))
+        # استخدام المحول المخصص للتحويل إلى string ثم العودة لـ dict/list
+        json_str = json.dumps(data, cls=JSONEncoder)
+        return json.loads(json_str)
     except Exception as e:
         logger.error(f"JSON Safety Conversion Error: {e}")
+        # محاولة أخيرة للتنظيف اليدوي إذا فشل الـ JSON
+        if isinstance(data, dict):
+            return {str(k): make_json_safe(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [make_json_safe(i) for i in data]
         return str(data)
 
 class RateLimiter:
@@ -128,8 +135,8 @@ class DiagnosticLogger:
         DiagnosticLogger.section(3, "HTF Filter")
         conditions = htf_data.get('conditions', [])
         for cond in conditions:
-            icon = "✅" if cond['status'] else "❌"
-            print(f"{icon} {cond['name']}: {cond['value']}")
+            icon = "✅" if cond.get('status') else "❌"
+            print(f"{icon} {cond.get('name')}: {cond.get('value')}")
         
         verdict = "PASS" if htf_data.get('supported') else "REJECT"
         icon = "✅" if verdict == "PASS" else "❌"
@@ -141,17 +148,22 @@ class DiagnosticLogger:
         """المرحلة 4: Indicators"""
         DiagnosticLogger.section(4, "Indicators")
         for name, details in ind_data.items():
-            icon = "✅" if details.get('status') else "❌"
-            print(f"{icon} {name:12} | Current: {details.get('current')} | Required: {details.get('required')} | Status: {icon}")
+            status = details.get('status') or details.get('status_buy') or details.get('status_sell')
+            icon = "✅" if status else "❌"
+            required = details.get('required') or details.get('required_buy') or details.get('required_sell') or "None"
+            print(f"{icon} {name:12} | Current: {details.get('current')} | Required: {required} | Status: {icon}")
 
     @staticmethod
     def smart_money_phase(smc_data):
         """المرحلة 5: Smart Money"""
         DiagnosticLogger.section(5, "Smart Money")
         for item, details in smc_data.items():
-            exists = details.get('exists', False)
+            # دعم كلا التنسيقين (القديم والجديد)
+            exists = details.get('exists', any(details.values()) if isinstance(details, dict) else False)
+            info = details.get('info', 'Available' if exists else 'N/A')
+            conf = details.get('confidence', 100 if exists else 0)
             icon = "💎" if exists else "⚪"
-            print(f"{icon} {item:15} | Exist: {'✅' if exists else '❌'} | Info: {details.get('info', 'N/A')} | Confidence: {details.get('confidence', 0)}%")
+            print(f"{icon} {item:15} | Exist: {'✅' if exists else '❌'} | Info: {info} | Confidence: {conf}%")
 
     @staticmethod
     def strategy_validation_phase(validation_data):
@@ -160,10 +172,12 @@ class DiagnosticLogger:
         conditions = validation_data.get('conditions', [])
         success_count = 0
         fail_count = 0
+        if not conditions:
+            print("⚪ لا توجد شروط محددة للتحقق.")
         for cond in conditions:
             status = cond.get('status', False)
             icon = "✅" if status else "❌"
-            print(f"{icon} {cond['name']}")
+            print(f"{icon} {cond.get('name')}")
             if status: success_count += 1
             else: fail_count += 1
         print(f"📊 النتيجة: {success_count} ناجح | {fail_count} فاشل")
@@ -173,8 +187,13 @@ class DiagnosticLogger:
         """المرحلة 7: Score Engine"""
         DiagnosticLogger.section(7, "Score Engine")
         breakdown = score_data.get('breakdown', {})
+        if not breakdown:
+            print("🔹 لا يوجد تفصيل للنقاط (يتم استخدام المجموع المباشر)")
         for category, details in breakdown.items():
-            print(f"🔹 {category:15}: {details['score']}/{details['max']} | Reason: {details['reason']}")
+            s = details.get('score', 0)
+            m = details.get('max', 0)
+            r = details.get('reason', 'N/A')
+            print(f"🔹 {category:15}: {s}/{m} | Reason: {r}")
         print(f"🎯 Final Score: {score_data.get('total', 0)}/100")
 
     @staticmethod
@@ -194,6 +213,8 @@ class DiagnosticLogger:
         """المرحلة 9: Quality"""
         DiagnosticLogger.section(9, "Quality")
         breakdown = quality_data.get('breakdown', {})
+        if not breakdown:
+            print("🔹 لا يوجد تفصيل للجودة")
         for category, score in breakdown.items():
             print(f"🔹 {category:20}: {score}")
         print(f"💯 Total Quality: {quality_data.get('total', 0)}/100")
@@ -203,7 +224,7 @@ class DiagnosticLogger:
         """المرحلة 10: القرار النهائي"""
         DiagnosticLogger.section(10, "القرار النهائي")
         verdict = decision_data.get('verdict', 'SKIP')
-        icon = "🚀 TRADE" if verdict == "BUY" else "🛑 SKIP"
+        icon = "🚀 TRADE" if verdict in ["BUY", "SELL"] else "🛑 SKIP"
         print(f"📢 {icon}")
         print(f"🎯 Confidence: {decision_data.get('confidence', 0)}%")
         print(f"📈 Probability: {decision_data.get('probability', 0)}%")
@@ -231,7 +252,7 @@ def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=
     print(f"📝 [{now}] {status} | {symbol} | {timeframe} | {source} | {execution_time:.3f}s")
 
 def safe_create_task(coro, name=None):
-    """إنشاء Task مع معالجة Exceptions"""
+    """إنشاء Task مع معالجة Exceptions و Stack Trace كامل"""
     task = asyncio.create_task(coro, name=name)
     def handle_result(t):
         try:
@@ -239,6 +260,8 @@ def safe_create_task(coro, name=None):
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception(f"Exception in task {name or t}:")
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"❌ Exception in task {name or t}:\n{tb}")
     task.add_done_callback(handle_result)
     return task
