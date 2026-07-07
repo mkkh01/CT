@@ -157,13 +157,30 @@ class DiagnosticLogger:
     def smart_money_phase(smc_data):
         """المرحلة 5: Smart Money"""
         DiagnosticLogger.section(5, "Smart Money")
+        
+        # استخراج البيانات العامة التي ليست قواميس (مثل direction, bullish_score, etc)
+        meta_keys = ['direction', 'bullish_score', 'bearish_score', 'confirmations']
+        for key in meta_keys:
+            if key in smc_data:
+                val = smc_data[key]
+                print(f"📊 {key:15} : {val}")
+        
+        print("-" * 30)
+        
         for item, details in smc_data.items():
-            # دعم كلا التنسيقين (القديم والجديد)
-            exists = details.get('exists', any(details.values()) if isinstance(details, dict) else False)
-            info = details.get('info', 'Available' if exists else 'N/A')
-            conf = details.get('confidence', 100 if exists else 0)
-            icon = "💎" if exists else "⚪"
-            print(f"{icon} {item:15} | Exist: {'✅' if exists else '❌'} | Info: {info} | Confidence: {conf}%")
+            if item in meta_keys:
+                continue
+                
+            # التأكد من أن التفاصيل عبارة عن قاموس قبل استخدام .get()
+            if isinstance(details, dict):
+                exists = details.get('exists', any(details.values()))
+                info = details.get('info', 'Available' if exists else 'N/A')
+                conf = details.get('confidence', 100 if exists else 0)
+                icon = "💎" if exists else "⚪"
+                print(f"{icon} {item:15} | Exist: {'✅' if exists else '❌'} | Info: {info} | Confidence: {conf}%")
+            else:
+                # التعامل مع القيم البسيطة إذا وجدت خارج meta_keys
+                print(f"🔹 {item:15} : {details}")
 
     @staticmethod
     def strategy_validation_phase(validation_data):
