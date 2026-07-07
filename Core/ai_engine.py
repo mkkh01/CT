@@ -94,7 +94,8 @@ class AIEngine:
                 if ohlcv:
                     self.redis.set_data(cache_key, ohlcv, ttl=7200) 
                     return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']), exec_time, False
-            except:
+            except Exception as e:
+                logger.error(f"Error fetching HTF data for {symbol}: {e}")
                 if cached_ohlcv: return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']), 0, True
                 return None, 0, False
         return None, 0, False
@@ -156,8 +157,11 @@ class AIEngine:
                         diag_logger.warning("Price is zero!", "Critical data error", "AIEngine.analyze_and_trade")
 
                 except Exception as e:
+                    import traceback
                     data_info["error"] = str(e)
+                    data_info["traceback"] = traceback.format_exc()
                     diag_logger.data_phase(data_info)
+                    logger.error(f"Error in AIEngine for {symbol}: {e}\n{traceback.format_exc()}")
                     return
 
                 # Phase 2-9: Strategy Analysis
@@ -175,7 +179,7 @@ class AIEngine:
                 diag_logger.quality_phase(analysis["quality_data"])
 
                 # Phase 10: Final Decision
-                params = self.strategies.get_trade_params(df)
+                params = self.strategies.get_trade_params(df, side=analysis["verdict"])
                 decision_data = {
                     "verdict": analysis["verdict"],
                     "confidence": analysis["confidence"],
@@ -187,9 +191,10 @@ class AIEngine:
                 diag_logger.final_decision_phase(decision_data)
 
                 # Phase 3: Shadow Trade
+                from Core.utils import make_json_safe
                 new_shadow = ShadowTrade(
                     symbol=symbol,
-                    indicators_snapshot=analysis,
+                    indicators_snapshot=make_json_safe(analysis),
                     market_state=analysis["regime_data"]["state"],
                     score=analysis["total_score"]
                 )
@@ -211,9 +216,10 @@ class AIEngine:
                 if check.scalars().first(): return
 
                 new_live = LiveTrade(
-                    symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
+                    symbol=symbol, type=analysis["verdict"], entry_price=params["entry"], stop_loss=params["sl"],
                     take_profit=params["tp"], amount=amount, score=analysis["total_score"],
-                    entry_reason=decision_data["reason"], market_state=analysis["regime_data"]["state"]
+                    entry_reason=decision_data["reason"], market_state=analysis["regime_data"]["state"],
+                    indicators_snapshot=make_json_safe(analysis)
                 )
                 session.add(new_live)
                 await session.commit()

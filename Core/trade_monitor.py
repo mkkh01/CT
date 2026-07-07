@@ -81,7 +81,8 @@ class TradeMonitor:
                                 if k['x']:
                                     print(f"📊 [MONITOR] شمعة {k['i']} مغلقة لـ {symbol} | السعر: {k['c']}")
                                     # تحليل فوري عند إغلاق الشمعة لتقليل التأخير
-                                    asyncio.create_task(ai.analyze_and_trade(symbol))
+                                    from Core.utils import safe_create_task
+                                    safe_create_task(ai.analyze_and_trade(symbol), name=f"AI_Analyze_{symbol}")
                                     # تحديث وقت التحليل الأخير لتأجيل الفحص الشامل
                                     last_analysis_time = datetime.now()
                             
@@ -93,8 +94,9 @@ class TradeMonitor:
                             if (datetime.now() - last_analysis_time).seconds >= 1800:
                                 api_calls = redis_client.get_data("binance_api_calls") or 0
                                 print(f"🔍 [SCANNER] فحص شامل دوري ({len(symbols)}) | API Calls: {api_calls}")
+                                from Core.utils import safe_create_task
                                 for s in symbols:
-                                    asyncio.create_task(ai.analyze_and_trade(s, source='SCANNER'))
+                                    safe_create_task(ai.analyze_and_trade(s, source='SCANNER'), name=f"AI_Scanner_{s}")
                                     await asyncio.sleep(1.0) # زيادة التأخير قليلاً لتخفيف الضغط المتزامن
                                 last_analysis_time = datetime.now()
                                 print("✨ [SCANNER] اكتمل الفحص الدوري.")
@@ -116,12 +118,22 @@ class TradeMonitor:
                     elif price <= trade.stop_loss:
                         trade.status, closed = "LOST", True
                         trade.exit_reason = "Stop Loss Hit"
+                elif trade.type == "SELL":
+                    if price <= trade.take_profit:
+                        trade.status, closed = "WON", True
+                        trade.exit_reason = "Take Profit Hit"
+                    elif price >= trade.stop_loss:
+                        trade.status, closed = "LOST", True
+                        trade.exit_reason = "Stop Loss Hit"
                 
                 if closed:
                     trade.exit_price = price
                     trade.closed_at = datetime.utcnow()
                     trade.duration = (trade.closed_at - trade.timestamp).seconds
-                    pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
+                    if trade.type == "BUY":
+                        pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
+                    else: # SELL
+                        pnl_pct = ((trade.entry_price - price) / trade.entry_price) * 100
                     trade.pnl = (trade.amount * pnl_pct) / 100
                     
                     # Capital Protection Engine (Phase 4)

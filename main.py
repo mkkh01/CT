@@ -29,12 +29,14 @@ async def start_background_tasks(app):
     """تشغيل الرادار المؤسسي والمراقبة"""
     print("📡 [SYSTEM] جاري إطلاق الرادار المؤسسي والمراقبة اللحظية...")
     await asyncio.sleep(2)
+    from Core.utils import safe_create_task
     monitor = TradeMonitor(bot=app.bot)
-    asyncio.create_task(monitor.check_prices())
+    safe_create_task(monitor.check_prices(), name="TradeMonitor_CheckPrices")
     print("✅ [SYSTEM] تم إطلاق الرادار المؤسسي بنجاح.")
 
 async def post_init(app: Application):
-    asyncio.create_task(start_background_tasks(app))
+    from Core.utils import safe_create_task
+    safe_create_task(start_background_tasks(app), name="StartBackgroundTasks")
 
 async def error_handler(update, context):
     """سجل الأخطاء مع Traceback كامل"""

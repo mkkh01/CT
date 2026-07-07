@@ -1,11 +1,50 @@
 import asyncio
-import time
 import logging
+import time
+import json
 from datetime import datetime
+from decimal import Decimal
+import numpy as np
+import pandas as pd
+from typing import Any
 
 # إعداد الـ Logger المركزي
 logger = logging.getLogger("CT_System")
 logger.setLevel(logging.INFO)
+
+class JSONEncoder(json.JSONEncoder):
+    """محول JSON مخصص للتعامل مع أنواع البيانات المعقدة"""
+    def default(self, obj):
+        if isinstance(obj, (datetime, pd.Timestamp)):
+            return obj.isoformat()
+        if isinstance(obj, (np.int64, np.int32, np.int16, np.int8)):
+            return int(obj)
+        if isinstance(obj, (np.float64, np.float32, np.float16)):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, set):
+            return list(obj)
+        if isinstance(obj, (pd.DataFrame, pd.Series)):
+            return obj.to_dict(orient='records')
+        try:
+            return super().default(obj)
+        except TypeError:
+            return str(obj)
+
+def make_json_safe(data: Any) -> Any:
+    """تحويل البيانات إلى صيغة آمنة للـ JSON"""
+    if data is None:
+        return None
+    try:
+        return json.loads(json.dumps(data, cls=JSONEncoder))
+    except Exception as e:
+        logger.error(f"JSON Safety Conversion Error: {e}")
+        return str(data)
 
 class RateLimiter:
     def __init__(self, max_calls=1200, period=60):
@@ -190,3 +229,16 @@ def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=
     status = "CACHE HIT" if from_cache else "CACHE MISS (REST)"
     now = datetime.now().strftime('%H:%M:%S')
     print(f"📝 [{now}] {status} | {symbol} | {timeframe} | {source} | {execution_time:.3f}s")
+
+def safe_create_task(coro, name=None):
+    """إنشاء Task مع معالجة Exceptions"""
+    task = asyncio.create_task(coro, name=name)
+    def handle_result(t):
+        try:
+            t.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(f"Exception in task {name or t}:")
+    task.add_done_callback(handle_result)
+    return task

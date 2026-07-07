@@ -40,7 +40,7 @@ class TrackedCoin(Base):
     __tablename__ = "tracked_coins_v4"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    symbol: Mapped[str] = mapped_column(unique=True, nullable=False)
+    symbol: Mapped[str] = mapped_column(unique=True, nullable=False, index=True)
     capital: Mapped[float] = mapped_column(default=100.0)
     risk_percentage: Mapped[float] = mapped_column(default=1.0)
     timeframe: Mapped[str] = mapped_column(default="15m")
@@ -51,14 +51,14 @@ class LiveTrade(Base):
     __tablename__ = "live_trades_v4"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    symbol: Mapped[str] = mapped_column(nullable=False)
+    symbol: Mapped[str] = mapped_column(nullable=False, index=True)
     type: Mapped[str] = mapped_column(nullable=False) # BUY / SELL
     entry_price: Mapped[float] = mapped_column(nullable=False)
     exit_price: Mapped[Optional[float]] = mapped_column(nullable=True)
     stop_loss: Mapped[Optional[float]] = mapped_column(nullable=True)
     take_profit: Mapped[Optional[float]] = mapped_column(nullable=True)
     amount: Mapped[float] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(default="OPEN") # OPEN, WON, LOST
+    status: Mapped[str] = mapped_column(default="OPEN", index=True) # OPEN, WON, LOST
     pnl: Mapped[float] = mapped_column(default=0.0)
     duration: Mapped[Optional[int]] = mapped_column(nullable=True) # Seconds
     score: Mapped[float] = mapped_column(default=0.0)
@@ -73,7 +73,7 @@ class ShadowTrade(Base):
     __tablename__ = "shadow_trades_v4"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    symbol: Mapped[str] = mapped_column(nullable=False)
+    symbol: Mapped[str] = mapped_column(nullable=False, index=True)
     indicators_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
     market_state: Mapped[Optional[str]] = mapped_column(Text)
     score: Mapped[float] = mapped_column(default=0.0)
