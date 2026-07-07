@@ -51,60 +51,142 @@ rate_limiter = RateLimiter(max_calls=1000)
 
 class DiagnosticLogger:
     @staticmethod
-    def section(title):
-        print(f"\n{'='*20} {title} {'='*20}")
+    def section(phase_num, title):
+        print(f"\n{'='*10} المرحلة {phase_num} : {title} {'='*10}")
+
+    @staticmethod
+    def data_phase(data_info):
+        """المرحلة 1: DATA"""
+        DiagnosticLogger.section(1, "DATA")
+        print(f"🔹 مصدر البيانات: {data_info.get('source', 'Unknown')}")
+        print(f"🔹 عدد الشموع: {data_info.get('count', 0)}")
+        print(f"🔹 آخر شمعة: {data_info.get('last_candle', 'N/A')}")
+        print(f"🔹 بيانات ناقصة: {'❌' if data_info.get('missing', False) else '✅ لا يوجد'}")
+        print(f"🔹 وجود NaN: {'❌ نعم' if data_info.get('has_nan', False) else '✅ لا يوجد'}")
+        print(f"🔹 وجود Duplicate: {'❌ نعم' if data_info.get('has_duplicate', False) else '✅ لا يوجد'}")
+        print(f"🔹 وقت تحميل البيانات: {data_info.get('load_time', 'N/A')}")
+        print(f"🔹 زمن التنفيذ: {data_info.get('exec_time', 0):.3f}s")
+        if data_info.get('error'):
+            print(f"🛑 توقف: {data_info.get('error')}")
+
+    @staticmethod
+    def market_regime_phase(regime_data):
+        """المرحلة 2: Market Regime"""
+        DiagnosticLogger.section(2, "Market Regime")
+        print(f"📈 النظام المكتشف: {regime_data.get('state', 'N/A')}")
+        print(f"🎯 درجة الثقة: {regime_data.get('confidence', 0)}%")
+        print(f"📊 القيم المستخدمة:")
+        values = regime_data.get('values', {})
+        for k, v in values.items():
+            print(f"   - {k}: {v}")
+        print(f"📝 سبب الاختيار: {regime_data.get('reason', 'N/A')}")
+        if regime_data.get('others_rejected'):
+            print(f"🚫 أسباب رفض الأنظمة الأخرى: {regime_data.get('others_rejected')}")
+
+    @staticmethod
+    def htf_filter_phase(htf_data):
+        """المرحلة 3: HTF Filter"""
+        DiagnosticLogger.section(3, "HTF Filter")
+        conditions = htf_data.get('conditions', [])
+        for cond in conditions:
+            icon = "✅" if cond['status'] else "❌"
+            print(f"{icon} {cond['name']}: {cond['value']}")
+        
+        verdict = "PASS" if htf_data.get('supported') else "REJECT"
+        icon = "✅" if verdict == "PASS" else "❌"
+        print(f"🏁 القرار النهائي: {icon} {verdict}")
+        print(f"💬 السبب: {htf_data.get('reason', 'N/A')}")
+
+    @staticmethod
+    def indicators_phase(ind_data):
+        """المرحلة 4: Indicators"""
+        DiagnosticLogger.section(4, "Indicators")
+        for name, details in ind_data.items():
+            icon = "✅" if details.get('status') else "❌"
+            print(f"{icon} {name:12} | Current: {details.get('current')} | Required: {details.get('required')} | Status: {icon}")
+
+    @staticmethod
+    def smart_money_phase(smc_data):
+        """المرحلة 5: Smart Money"""
+        DiagnosticLogger.section(5, "Smart Money")
+        for item, details in smc_data.items():
+            exists = details.get('exists', False)
+            icon = "💎" if exists else "⚪"
+            print(f"{icon} {item:15} | Exist: {'✅' if exists else '❌'} | Info: {details.get('info', 'N/A')} | Confidence: {details.get('confidence', 0)}%")
+
+    @staticmethod
+    def strategy_validation_phase(validation_data):
+        """المرحلة 6: Strategy Validation"""
+        DiagnosticLogger.section(6, "Strategy Validation")
+        conditions = validation_data.get('conditions', [])
+        success_count = 0
+        fail_count = 0
+        for cond in conditions:
+            status = cond.get('status', False)
+            icon = "✅" if status else "❌"
+            print(f"{icon} {cond['name']}")
+            if status: success_count += 1
+            else: fail_count += 1
+        print(f"📊 النتيجة: {success_count} ناجح | {fail_count} فاشل")
+
+    @staticmethod
+    def score_engine_phase(score_data):
+        """المرحلة 7: Score Engine"""
+        DiagnosticLogger.section(7, "Score Engine")
+        breakdown = score_data.get('breakdown', {})
+        for category, details in breakdown.items():
+            print(f"🔹 {category:15}: {details['score']}/{details['max']} | Reason: {details['reason']}")
+        print(f"🎯 Final Score: {score_data.get('total', 0)}/100")
+
+    @staticmethod
+    def rejection_reasons_phase(rejection_data):
+        """المرحلة 8: أسباب الرفض"""
+        DiagnosticLogger.section(8, "أسباب الرفض")
+        reasons = rejection_data.get('reasons', [])
+        if not reasons:
+            print("✅ لا توجد أسباب رفض (الصفقة مقبولة مبدئياً)")
+        else:
+            for r in reasons:
+                print(f"❌ {r}")
+            print(f"📊 إجمالي أسباب الرفض: {len(reasons)}")
+
+    @staticmethod
+    def quality_phase(quality_data):
+        """المرحلة 9: Quality"""
+        DiagnosticLogger.section(9, "Quality")
+        breakdown = quality_data.get('breakdown', {})
+        for category, score in breakdown.items():
+            print(f"🔹 {category:20}: {score}")
+        print(f"💯 Total Quality: {quality_data.get('total', 0)}/100")
+
+    @staticmethod
+    def final_decision_phase(decision_data):
+        """المرحلة 10: القرار النهائي"""
+        DiagnosticLogger.section(10, "القرار النهائي")
+        verdict = decision_data.get('verdict', 'SKIP')
+        icon = "🚀 TRADE" if verdict == "BUY" else "🛑 SKIP"
+        print(f"📢 {icon}")
+        print(f"🎯 Confidence: {decision_data.get('confidence', 0)}%")
+        print(f"📈 Probability: {decision_data.get('probability', 0)}%")
+        print(f"🛡️ Risk: {decision_data.get('risk_pct', 0)}%")
+        print(f"💰 Expected RR: {decision_data.get('rr', 0)}")
+        print(f"💬 أسباب القرار: {decision_data.get('reason', 'N/A')}")
+
+    @staticmethod
+    def warning(msg, reason, location):
+        print(f"\n⚠️ WARNING")
+        print(f"🔹 Message: {msg}")
+        print(f"🔹 Reason: {reason}")
+        print(f"🔹 Location: {location}")
 
     @staticmethod
     def system(msg, **kwargs):
         extra = f" | {' | '.join([f'{k}: {v}' for k, v in kwargs.items()])}" if kwargs else ""
         print(f"🖥️ [SYSTEM] {msg}{extra}")
 
-    @staticmethod
-    def data(symbol, timeframe, count, source, last_candle, from_cache, exec_time):
-        cache_status = "CACHE ✅" if from_cache else "REST 🌐"
-        print(f"📊 [DATA] {symbol} | {timeframe} | {count} Candles | {cache_status} | Source: {source} | Last: {last_candle} | Time: {exec_time:.3f}s")
-
-    @staticmethod
-    def regime(regime_data):
-        DiagnosticLogger.section("MARKET REGIME")
-        for k, v in regime_data.items():
-            print(f"📈 {k:15}: {v}")
-        print(f"📝 Reason: {regime_data.get('reason', 'N/A')}")
-
-    @staticmethod
-    def htf(htf_data):
-        DiagnosticLogger.section("HTF ANALYSIS (1H)")
-        for k, v in htf_data.items():
-            if k != 'supported':
-                print(f"🔭 {k:15}: {v}")
-        status = "✅ SUPPORTED" if htf_data.get('supported') else "❌ REJECTED"
-        print(f"🏁 HTF Status: {status} | Reason: {htf_data.get('reason', 'N/A')}")
-
-    @staticmethod
-    def indicators(ind_data):
-        DiagnosticLogger.section("INDICATORS")
-        for k, v in ind_data.items():
-            print(f"🧪 {k:15}: {v}")
-
-    @staticmethod
-    def smt(smt_data):
-        DiagnosticLogger.section("SMART MONEY (SMC)")
-        for k, v in smt_data.items():
-            print(f"💎 {k:15}: {v}")
-
-    @staticmethod
-    def scoring(score_data):
-        DiagnosticLogger.section("FINAL SCORING")
-        print(f"🎯 Total Score: {score_data.get('total', 0)}/100")
-        print(f"🛡️ Quality: {score_data.get('quality', 0)}/100")
-        print(f"📋 Verdict: {score_data.get('verdict', 'N/A')}")
-        if score_data.get('reason'):
-            print(f"💬 Reason: {score_data.get('reason')}")
-
 diag_logger = DiagnosticLogger()
 
 def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=0, **kwargs):
-    # الحفاظ على الوظيفة القديمة للتوافق ولكن استخدام DiagLogger داخلياً إذا أردنا
     status = "CACHE HIT" if from_cache else "CACHE MISS (REST)"
     now = datetime.now().strftime('%H:%M:%S')
     print(f"📝 [{now}] {status} | {symbol} | {timeframe} | {source} | {execution_time:.3f}s")

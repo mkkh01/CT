@@ -7,9 +7,9 @@ from datetime import datetime
 import asyncio
 import json
 import os
+import time
 
 from Core.utils import rate_limiter, diag_logger, log_api_request
-import time
 
 class AIEngine:
     def __init__(self, bot=None, chat_id=None):
@@ -80,7 +80,7 @@ class AIEngine:
             tf_ms = {"15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}.get(higher_tf, 3600000)
             if (now_ms - last_ts) < (tf_ms * 1.5):
                 return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']), 0, True
-
+        
         lock = await self.redis.get_lock(f"lock_{cache_key}")
         async with lock:
             cached_ohlcv = self.redis.get_data(cache_key)
@@ -110,9 +110,6 @@ class AIEngine:
             if symbol in self._last_analysis_time and (now_ts - self._last_analysis_time[symbol]) < 60:
                 return
 
-            active_tasks = sum(1 for lock in self._analysis_locks.values() if lock.locked())
-            diag_logger.system(f"Starting Analysis for {symbol}", tasks=active_tasks)
-
             async with AsyncSessionLocal() as session:
                 cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
                 cfg = cfg_res.scalars().first()
@@ -123,6 +120,7 @@ class AIEngine:
                 if not coin or not coin.enabled: return
 
                 # Phase 1: Data Fetching
+                data_info = {"source": "Binance", "count": 0, "load_time": datetime.now().strftime('%H:%M:%S'), "exec_time": 0}
                 try:
                     hist_key = f"hist_{symbol}_{coin.timeframe}"
                     ohlcv = self.redis.get_data(hist_key)
@@ -136,33 +134,57 @@ class AIEngine:
                             if not ohlcv:
                                 ohlcv, exec_time, from_cache = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, coin.timeframe, limit=250, source="HIST_REST")
                                 if ohlcv: self.redis.set_data(hist_key, ohlcv, ttl=259200)
-                                else: return
+                                else: 
+                                    data_info["error"] = "Failed to fetch OHLCV"
+                                    diag_logger.data_phase(data_info)
+                                    return
                     
                     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    last_candle = datetime.fromtimestamp(df['timestamp'].iloc[-1] / 1000).strftime('%H:%M:%S')
-                    diag_logger.data(symbol, coin.timeframe, len(df), "REST" if not from_cache else "CACHE", last_candle, from_cache, exec_time)
+                    data_info.update({
+                        "source": "Cache" if from_cache else "Binance",
+                        "count": len(df),
+                        "last_candle": datetime.fromtimestamp(df['timestamp'].iloc[-1] / 1000).strftime('%Y-%m-%d %H:%M:%S'),
+                        "missing": len(df) < 250,
+                        "has_nan": df.isnull().values.any(),
+                        "has_duplicate": df['timestamp'].duplicated().any(),
+                        "exec_time": exec_time
+                    })
+                    diag_logger.data_phase(data_info)
+                    
+                    # Debug Mode Warning
+                    if df['close'].iloc[-1] == 0:
+                        diag_logger.warning("Price is zero!", "Critical data error", "AIEngine.analyze_and_trade")
 
                 except Exception as e:
-                    diag_logger.system(f"Data Error for {symbol}", error=str(e))
+                    data_info["error"] = str(e)
+                    diag_logger.data_phase(data_info)
                     return
 
-                # Phase 2: Analysis
+                # Phase 2-9: Strategy Analysis
                 df_higher, htf_exec, htf_cache = await self.get_higher_timeframe_data(symbol, coin.timeframe)
                 analysis = self.strategies.calculate_combined_score(df, df_higher)
                 
-                # Logging Detailed Steps
-                diag_logger.regime(analysis["regime_data"])
-                diag_logger.htf(analysis["htf_data"])
-                diag_logger.indicators(analysis["indicators_data"])
-                diag_logger.smt(analysis["smc_data"])
-                
-                score_info = {
-                    "total": analysis["total_score"],
-                    "quality": analysis["quality_score"],
+                # Execution of Logs
+                diag_logger.market_regime_phase(analysis["regime_data"])
+                diag_logger.htf_filter_phase(analysis["htf_data"])
+                diag_logger.indicators_phase(analysis["indicators_data"])
+                diag_logger.smart_money_phase(analysis["smc_data"])
+                diag_logger.strategy_validation_phase(analysis["validation_data"])
+                diag_logger.score_engine_phase(analysis["score_data"])
+                diag_logger.rejection_reasons_phase(analysis["rejection_data"])
+                diag_logger.quality_phase(analysis["quality_data"])
+
+                # Phase 10: Final Decision
+                params = self.strategies.get_trade_params(df)
+                decision_data = {
                     "verdict": analysis["verdict"],
-                    "reason": " | ".join(analysis["reasons"])
+                    "confidence": analysis["confidence"],
+                    "probability": analysis["probability"],
+                    "risk_pct": params["risk_pct"],
+                    "rr": params["rr"],
+                    "reason": " | ".join(analysis["reasons"]) if analysis["reasons"] else "No specific positive reasons"
                 }
-                diag_logger.scoring(score_info)
+                diag_logger.final_decision_phase(decision_data)
 
                 # Phase 3: Shadow Trade
                 new_shadow = ShadowTrade(
@@ -176,10 +198,9 @@ class AIEngine:
 
                 if analysis["verdict"] == "SKIP": return
 
-                # Phase 4: Execution
-                params = self.strategies.get_trade_params(df)
+                # Final Checks before Live Execution
                 if params["rr"] < 1.5:
-                    diag_logger.system(f"Rejected {symbol}", reason=f"Low R:R {params['rr']}")
+                    diag_logger.warning("Low Risk Reward", f"RR is {params['rr']} which is below 1.5", "Execution Phase")
                     return
 
                 risk_amount = coin.capital * (coin.risk_percentage / 100)
@@ -192,7 +213,7 @@ class AIEngine:
                 new_live = LiveTrade(
                     symbol=symbol, type="BUY", entry_price=params["entry"], stop_loss=params["sl"],
                     take_profit=params["tp"], amount=amount, score=analysis["total_score"],
-                    entry_reason=score_info["reason"], market_state=analysis["regime_data"]["state"]
+                    entry_reason=decision_data["reason"], market_state=analysis["regime_data"]["state"]
                 )
                 session.add(new_live)
                 await session.commit()
@@ -209,5 +230,5 @@ class AIEngine:
                            f"🛡️ الوقف: `{params['sl']}`\n"
                            f"🏁 الهدف: `{params['tp']}`\n"
                            f"━━━━━━━━━━━━━━\n"
-                           f"📊 الأسباب: {score_info['reason']}")
+                           f"📊 الأسباب: {decision_data['reason']}")
                     await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
