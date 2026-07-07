@@ -55,12 +55,22 @@ class AIEngine:
         timeframe = kwargs.pop('timeframe', args[1] if len(args) > 1 else "Unknown")
         source = kwargs.pop('source', 'Unknown')
         
+        # 1. Circuit Breaker: تحقق من الحظر العالمي قبل البدء
+        if rate_limiter.is_banned:
+            remaining = rate_limiter.ban_until - time.time()
+            if remaining > 0:
+                raise Exception(f"CIRCUIT BREAKER: REST calls are globally paused for {remaining:.1f}s")
+
         # Diagnostic Log: قبل الاستدعاء
         print(f"📡 [API CALL] {source} -> {func.__name__}({symbol}, {timeframe}, {kwargs})")
         
         start_time = time.time()
         for attempt in range(5):
             try:
+                # تحقق مرة أخرى داخل الحلقة (في حال تم الحظر بواسطة Task أخرى)
+                if rate_limiter.is_banned and (rate_limiter.ban_until - time.time()) > 0:
+                    raise Exception("CIRCUIT BREAKER: REST calls paused by another task")
+
                 await rate_limiter.wait_if_needed()
                 # الآن kwargs لا تحتوي على source، لذا لن يتم تمريرها إلى CCXT
                 result = await func(*args, **kwargs)
@@ -80,56 +90,69 @@ class AIEngine:
                 await self._handle_binance_error(e, attempt)
 
     async def get_higher_timeframe_data(self, symbol, current_tf):
-        """جلب بيانات الإطار الزمني الأعلى مع نظام التخزين المؤقت ومنع الطلبات المتوازية"""
+        """جلب بيانات الإطار الزمني الأعلى مع نظام التخزين المؤقت الذكي"""
         tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
         higher_tf = tf_map.get(current_tf, "1d")
         cache_key = f"htf_{symbol}_{higher_tf}"
         
-        # 1. التحقق من الكاش أولاً
+        # 1. التحقق من الكاش المنظم (Redis)
         cached_ohlcv = self.redis.get_data(cache_key)
         if cached_ohlcv:
-            log_api_request(symbol, higher_tf, "HTF_FETCH", from_cache=True)
-            return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-        # 2. استخدام Lock لمنع الطلبات المتوازية لنفس البيانات
-        lock = await self.redis.get_lock(cache_key)
-        async with lock:
-            # التحقق مرة أخرى بعد الحصول على الـ Lock (Double-Checked Locking)
-            cached_ohlcv = self.redis.get_data(cache_key)
-            if cached_ohlcv:
-                log_api_request(symbol, higher_tf, "HTF_FETCH_LOCKED", from_cache=True)
+            # التحقق من حداثة البيانات (هل آخر شمعة قريبة من الوقت الحالي؟)
+            last_ts = cached_ohlcv[-1][0]
+            now_ms = time.time() * 1000
+            tf_ms = {"15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}.get(higher_tf, 3600000)
+            
+            if (now_ms - last_ts) < (tf_ms * 1.5): # الكاش لا يزال طازجاً
+                log_api_request(symbol, higher_tf, "HTF_CACHE_HIT", from_cache=True)
                 return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
+        # 2. إذا كان الكاش مفقوداً أو قديماً، نجلب من REST ولكن بـ Lock صارم
+        lock = await self.redis.get_lock(f"lock_{cache_key}")
+        async with lock:
+            # Double-check بعد الحصول على القفل
+            cached_ohlcv = self.redis.get_data(cache_key)
+            if cached_ohlcv:
+                last_ts = cached_ohlcv[-1][0]
+                if (time.time() * 1000 - last_ts) < (tf_ms * 1.5):
+                    return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
             try:
+                print(f"📥 [HTF] تحديث بيانات الإطار الأعلى {higher_tf} لـ {symbol} من REST...")
                 ohlcv = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, higher_tf, limit=100, source="HTF_REST")
                 if ohlcv:
-                    self.redis.set_data(cache_key, ohlcv, ttl=3600) # تخزين لمدة ساعة
+                    # تخزين لفترة أطول للإطارات العليا (ساعتان بدلاً من ساعة)
+                    self.redis.set_data(cache_key, ohlcv, ttl=7200) 
                     return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            except:
+            except Exception as e:
+                print(f"⚠️ [HTF] فشل جلب HTF لـ {symbol}: {e}")
+                # في حالة الفشل، نحاول استخدام الكاش القديم إذا وجد بدلاً من الفشل التام
+                if cached_ohlcv:
+                    return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 return None
         return None
 
     async def analyze_and_trade(self, symbol: str, **kwargs):
-        # 0. منع تراكب التحليل لنفس الرمز
+        # 0. نظام Single-flight لكل رمز: منع تداخل مهام التحليل لنفس الرمز
         if symbol not in self._analysis_locks:
             self._analysis_locks[symbol] = asyncio.Lock()
         
         if self._analysis_locks[symbol].locked():
-            print(f"⏳ [SYSTEM] تحليل {symbol} قيد التنفيذ بالفعل. تخطي المهمة الجديدة.")
+            # إذا كان هناك تحليل قيد التنفيذ، نتخطى المهمة الجديدة تماماً
             return
 
-        # تتبع عدد المهام المتزامنة
-        active_tasks = sum(1 for lock in self._analysis_locks.values() if lock.locked())
-        print(f"📊 [SYSTEM] مهام التحليل النشطة: {active_tasks + 1} | الرمز الحالي: {symbol}")
-
         async with self._analysis_locks[symbol]:
-            # التحقق من الوقت منذ آخر تحليل (منع التكرار السريع في الفحص الدوري)
+            # التحقق من الوقت منذ آخر تحليل (منع التكرار السريع)
             now_ts = time.time()
+            # إذا تم التحليل قبل أقل من 60 ثانية، نتخطى أي طلب جديد (سواء من Scanner أو WebSocket)
             if symbol in self._last_analysis_time and (now_ts - self._last_analysis_time[symbol]) < 60:
-                # إذا تم التحليل قبل أقل من دقيقة (مثلاً عبر حدث شمعة)، نتخطى الفحص الدوري
-                if kwargs.get('source') == 'SCANNER':
-                    print(f"⏩ [SCANNER] تم تحليل {symbol} مؤخراً. تخطي.")
-                    return
+                return
+
+            # تتبع عدد المهام المتزامنة عالمياً (للتشخيص فقط)
+            active_tasks = sum(1 for lock in self._analysis_locks.values() if lock.locked())
+            # التحقق من حالة الحظر العالمي في السجلات
+            ban_status = f" | 🚫 BANNED ({rate_limiter.ban_until - time.time():.1f}s)" if rate_limiter.is_banned else ""
+            print(f"📊 [SYSTEM] تحليل نشط لـ {symbol} | إجمالي المهام: {active_tasks}{ban_status}")
 
             async with AsyncSessionLocal() as session:
                 # 1. جلب إعدادات المستخدم والعملة
