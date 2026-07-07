@@ -1,26 +1,23 @@
-# Modified Decision Engine Patch
+# Patch notes
 
-This bundle contains the edited decision engine logic.
+Files changed in this bundle:
+- `strategies.py`
+- `README_FIX.md`
 
-## What changed
+Repository files reviewed for cross-file effects:
+- `Core/ai_engine.py`
+- `Core/trade_monitor.py`
+- `Core/risk_manager.py`
+- `database.py`
+- `main.py`
 
-- Added a unified decision trace with explicit boolean checks:
-  - score >= threshold
-  - quality >= threshold
-  - confidence >= threshold
-  - probability >= threshold
-  - risk <= max_risk
-  - htf_alignment
-  - smc_required
-  - regime_allowed
-  - strategy_valid
-  - rr_ok
+Why only one functional file was changed:
+- The false entry came from the strategy verdict being too permissive.
+- `ai_engine.py` mainly relays the verdict and performs final execution checks.
+- `trade_monitor.py` schedules analysis.
+- `risk_manager.py` sizes risk and defines SL/TP, but it does not decide entry quality.
+- `database.py` already matches the current capital/timeframe/risk schema.
 
-- Printed the trace before the final verdict is returned.
-- Unified the rejection reasons and final verdict around the same checks.
-- Prevented `get_trade_params()` from treating non-BUY sides as SELL by default.
-- Kept `OrderBlock` inside SMC presence detection for diagnostics.
-
-## Notes
-
-This environment could not clone the full GitHub repository directly, so the zip is a patch bundle centered on the edited strategy engine file.
+Operational impact:
+- Trades under the old 65-score gray zone now fall through to `SKIP`.
+- A trade must now clear direction, SMC, validation, and the 85 score floor.
