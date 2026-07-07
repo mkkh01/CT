@@ -1,163 +1,192 @@
 import pandas as pd
 import numpy as np
-from ta.trend import EMAIndicator, MACD
+from ta.trend import EMAIndicator, MACD, ADXIndicator
 from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
+from ta.volume import OnBalanceVolumeIndicator
 
 class InstitutionalStrategies:
     def __init__(self):
         pass
 
     def classify_market(self, df: pd.DataFrame) -> dict:
-        """تصنيف السوق - تم تحسين الأداء بتقليل العمليات الحسابية المكررة"""
-        if len(df) < 200: return {"state": "Low Data", "confidence": 0}
+        """تصنيف السوق مع استخراج القيم الرقمية للتشخيص"""
+        if len(df) < 200: return {"state": "Low Data", "confidence": 0, "values": {}}
         
         close = df['close'].iloc[-1]
         
-        # حساب المتوسطات مرة واحدة
+        # حساب المتوسطات
         ema50_series = EMAIndicator(df['close'], window=50).ema_indicator()
         ema50 = ema50_series.iloc[-1]
         ema200 = EMAIndicator(df['close'], window=200).ema_indicator().iloc[-1]
         
-        # حساب الانحراف المعياري لتمييز السوق العرضي
+        # حساب ADX لقوة الترند
+        adx_ind = ADXIndicator(df['high'], df['low'], df['close'])
+        adx = adx_ind.adx().iloc[-1]
+        
+        # حساب الانحراف المعياري
         rolling_20 = df['close'].rolling(20)
         std_dev = rolling_20.std().iloc[-1]
         avg_price = rolling_20.mean().iloc[-1]
         volatility_ratio = (std_dev / avg_price) * 100
         
-        # تمييز السوق العرضي (Ranging)
-        if volatility_ratio < 0.5:
-            return {"state": "Low Volatility Range", "confidence": 95}
-
-        # تمييز الترند الحقيقي (Alignment)
-        if close > ema50 > ema200:
-            ema50_prev = ema50_series.iloc[-5]
-            if ema50 > ema50_prev:
-                return {"state": "Strong Uptrend", "confidence": 90}
-            else:
-                return {"state": "Exhausted Uptrend", "confidence": 80}
-        
-        elif close < ema50 < ema200:
-            ema50_prev = ema50_series.iloc[-5]
-            if ema50 < ema50_prev:
-                return {"state": "Strong Downtrend", "confidence": 90}
-            else:
-                return {"state": "Exhausted Downtrend", "confidence": 80}
-
-        # تمييز التوزيع (Distribution/Accumulation)
-        # إذا كان السعر يتذبذب حول EMA200
-        ema200_dist = abs(close - ema200) / ema200
-        if ema200_dist < 0.01:
-            return {"state": "Distribution Phase", "confidence": 85}
-
-        return {"state": "Sideways/Unclear", "confidence": 70}
-
-    def get_market_quality_score(self, df: pd.DataFrame) -> float:
-        """فلتر جودة السوق (Market Quality Score)"""
-        # حساب السيولة والحجم والتذبذب
-        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-        curr_vol = df['volume'].iloc[-1]
         atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
         
-        score = 100
-        if curr_vol < avg_vol * 0.5: score -= 30 # سيولة منخفضة
-        if atr / df['close'].iloc[-1] > 0.03: score -= 20 # تذبذب خطر
+        values = {
+            "EMA50": round(ema50, 2),
+            "EMA200": round(ema200, 2),
+            "ADX": round(adx, 2),
+            "Volatility %": round(volatility_ratio, 4),
+            "ATR": round(atr, 6),
+            "Close": round(close, 2)
+        }
+
+        # تمييز السوق
+        if volatility_ratio < 0.5:
+            state = "Low Volatility Range"
+            reason = "Volatility ratio is below 0.5%, indicating a tight range."
+        elif close > ema50 > ema200 and adx > 25:
+            state = "Strong Uptrend"
+            reason = "Price is above EMA50/200 and ADX > 25, showing strong momentum."
+        elif close < ema50 < ema200 and adx > 25:
+            state = "Strong Downtrend"
+            reason = "Price is below EMA50/200 and ADX > 25, showing strong downward pressure."
+        elif abs(close - ema200) / ema200 < 0.01:
+            state = "Distribution/Accumulation"
+            reason = "Price is hovering within 1% of EMA200, suggesting a phase shift."
+        else:
+            state = "Sideways/Neutral"
+            reason = "No clear trend alignment or volatility breakout detected."
+
+        return {"state": state, "confidence": 80, "values": values, "reason": reason}
+
+    def get_indicators_data(self, df: pd.DataFrame) -> dict:
+        """جمع كافة القيم الرقمية للمؤشرات المطلوبة"""
+        close = df['close']
+        high = df['high']
+        low = df['low']
+        volume = df['volume']
+
+        rsi = RSIIndicator(close).rsi().iloc[-1]
+        macd_ind = MACD(close)
+        macd = macd_ind.macd().iloc[-1]
+        bb = BollingerBands(close)
+        atr = AverageTrueRange(high, low, close).average_true_range().iloc[-1]
+        obv = OnBalanceVolumeIndicator(close, volume).on_balance_volume().iloc[-1]
         
-        return max(0, score)
+        avg_vol = volume.rolling(20).mean().iloc[-1]
+        rel_vol = volume.iloc[-1] / avg_vol if avg_vol > 0 else 0
+
+        return {
+            "RSI": round(rsi, 2),
+            "MACD": round(macd, 6),
+            "ATR": round(atr, 6),
+            "ATR %": round((atr/close.iloc[-1])*100, 4),
+            "BB Upper": round(bb.bollinger_hband().iloc[-1], 2),
+            "BB Lower": round(bb.bollinger_lband().iloc[-1], 2),
+            "OBV": round(obv, 0),
+            "Rel Volume": round(rel_vol, 2),
+            "EMA200 Dist %": round(abs(close.iloc[-1] - EMAIndicator(close, window=200).ema_indicator().iloc[-1])/close.iloc[-1]*100, 2)
+        }
+
+    def get_smc_data(self, df: pd.DataFrame) -> dict:
+        """تحليل مفاهيم الأموال الذكية (SMC) واستخراج القيم"""
+        last_50 = df.iloc[-50:]
+        highest_high = last_50['high'].max()
+        lowest_low = last_50['low'].min()
+        curr_close = df['close'].iloc[-1]
+        
+        # البحث عن FVG (Fair Value Gap) بسيط
+        fvg = "None"
+        if len(df) > 3:
+            # Bullish FVG: Low of candle 3 > High of candle 1
+            if df['low'].iloc[-1] > df['high'].iloc[-3]:
+                fvg = f"Bullish Gap ({round(df['high'].iloc[-3], 2)} - {round(df['low'].iloc[-1], 2)})"
+            # Bearish FVG: High of candle 3 < Low of candle 1
+            elif df['high'].iloc[-1] < df['low'].iloc[-3]:
+                fvg = f"Bearish Gap ({round(df['low'].iloc[-3], 2)} - {round(df['high'].iloc[-1], 2)})"
+
+        # تتبع القمم والقيعان (BOS/CHOCH)
+        structure = "Neutral"
+        if curr_close > highest_high * 0.99: structure = "Bullish BOS Potential"
+        elif curr_close < lowest_low * 1.01: structure = "Bearish BOS Potential"
+
+        return {
+            "Structure": structure,
+            "FVG": fvg,
+            "Liquidity Sweep": "Detected" if (df['high'].iloc[-1] > highest_high or df['low'].iloc[-1] < lowest_low) else "None",
+            "Imbalance": "Yes" if fvg != "None" else "No",
+            "Order Block": "Testing" if abs(curr_close - lowest_low)/lowest_low < 0.005 else "Scanning"
+        }
 
     def calculate_combined_score(self, df: pd.DataFrame, df_higher: pd.DataFrame = None) -> dict:
-        """نظام التقييم بالنقاط المطور - إلغاء النقاط الافتراضية والتركيز على التأكيد الفعلي"""
+        """نظام التقييم المطور مع دعم الـ Logging الاحترافي"""
         score = 0
-        report = []
+        reasons = []
         
-        # 1. Trend & Context (30 pts)
-        market = self.classify_market(df)
-        if market["state"] == "Strong Uptrend":
-            score += 30
-            report.append(f"Trend: Strong Uptrend (+30)")
-        elif market["state"] == "Low Volatility Range":
-            score += 10 # السماح ببعض النقاط للسوق العرضي الهادئ كبداية ترند
-            report.append("Trend: Low Vol Range (+10)")
-        elif market["state"] == "Strong Downtrend":
-            score -= 20
-            report.append("Trend: Strong Downtrend (-20)")
-        else:
-            report.append(f"Trend: {market['state']} (0)")
+        # 1. Regime Analysis
+        regime = self.classify_market(df)
+        if regime["state"] == "Strong Uptrend":
+            score += 40
+            reasons.append("Strong Trend Alignment (+40)")
+        elif regime["state"] == "Low Volatility Range":
+            score += 10
+            reasons.append("Consolidation Phase (+10)")
             
-        # 2. Market Structure (20 pts) - قمم وقيعان صاعدة
-        last_lows = df['low'].rolling(20).min()
-        if df['low'].iloc[-1] > last_lows.iloc[-10]:
-            score += 20
-            report.append("Structure: Higher Lows (+20)")
-        else:
-            report.append("Structure: Broken/Neutral (0)")
-            
-        # 3. Volume Confirmation (15 pts) - تأكيد مؤسسي
-        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-        if df['volume'].iloc[-1] > avg_vol * 1.5:
+        # 2. Indicators
+        inds = self.get_indicators_data(df)
+        if 40 < inds["RSI"] < 70:
+            score += 10
+            reasons.append("Healthy RSI (+10)")
+        if inds["Rel Volume"] > 1.2:
             score += 15
-            report.append("Volume: Institutional Surge (+15)")
-        
-        # 4. S/R & Liquidity (20 pts) - حساب حقيقي للدعم والمقاومة
-        recent_high = df['high'].iloc[-50:-1].max()
-        recent_low = df['low'].iloc[-50:-1].min()
-        price = df['close'].iloc[-1]
-        
-        # منع الشراء قرب المقاومة
-        dist_to_high = (recent_high - price) / price
-        if dist_to_high < 0.005: # أقل من 0.5% من القمة
-            score -= 30
-            report.append("Risk: Near Resistance (-30)")
-        elif price > recent_low and (price - recent_low)/price < 0.01:
+            reasons.append("Volume Confirmation (+15)")
+            
+        # 3. SMC
+        smc = self.get_smc_data(df)
+        if smc["FVG"] != "None" and "Bullish" in smc["FVG"]:
             score += 20
-            report.append("S/R: Near Support Confirmation (+20)")
-        
-        # 5. Multi Timeframe (15 pts) - إلزامي للدرجات العالية
+            reasons.append("Bullish FVG Detected (+20)")
+            
+        # 4. MTF
+        htf_info = {"supported": False, "reason": "No HTF Data"}
         if df_higher is not None:
-            higher_market = self.classify_market(df_higher)
-            if higher_market["state"] == "Strong Uptrend":
+            htf_regime = self.classify_market(df_higher)
+            if "Uptrend" in htf_regime["state"]:
                 score += 15
-                report.append("MTF: Bullish Context (+15)")
-            elif "Downtrend" in higher_market["state"]:
-                score -= 25
-                report.append("MTF: Bearish Context (-25)")
-        else:
-            # إذا لم يتوفر إطار أعلى، لا نخصم نقاطاً بل نعتمد على الإطار الحالي
-            pass
+                htf_info = {"supported": True, "reason": "HTF Trend is Bullish", "Trend": htf_regime["state"]}
+            else:
+                score -= 20
+                htf_info = {"supported": False, "reason": f"HTF Trend is {htf_regime['state']}", "Trend": htf_regime["state"]}
+            # إضافة قيم HTF للتشخيص
+            for k, v in htf_regime["values"].items(): htf_info[f"HTF {k}"] = v
+
+        quality = 100
+        if inds["Rel Volume"] < 0.5: quality -= 40
+        if inds["ATR %"] > 5: quality -= 30
 
         return {
             "total_score": max(0, score),
-            "report": " | ".join(report),
-            "market_state": market["state"],
-            "quality_score": self.get_market_quality_score(df)
+            "quality_score": quality,
+            "reasons": reasons,
+            "regime_data": regime,
+            "indicators_data": inds,
+            "smc_data": smc,
+            "htf_data": htf_info,
+            "verdict": "BUY" if score >= 75 and quality >= 60 else "SKIP"
         }
 
     def get_trade_params(self, df: pd.DataFrame):
-        """إدارة المخاطر - حساب الوقف والهدف بناءً على هيكل السوق والسيولة"""
         price = df['close'].iloc[-1]
         atr = AverageTrueRange(df['high'], df['low'], df['close']).average_true_range().iloc[-1]
-        
-        # الوقف تحت آخر قاع محلي أو ATR
         local_low = df['low'].iloc[-20:].min()
         sl = min(local_low, price - (atr * 1.5))
-        
-        # التأكد من أن الوقف ليس بعيداً جداً (أقصى مخاطرة 5%)
-        if (price - sl) / price > 0.05:
-            sl = price * 0.95
-            
-        # الهدف بناءً على R:R لا يقل عن 1.5
+        if (price - sl) / price > 0.05: sl = price * 0.95
         risk = price - sl
-        tp = price + (risk * 2) # نهدف لـ 1:2
-        
-        # التأكد من أن الهدف ليس مستحيلاً (أعلى من المقاومة القريبة بشكل مبالغ فيه)
+        tp = price + (risk * 2)
         recent_high = df['high'].iloc[-100:].max()
-        if tp > recent_high * 1.1: # إذا كان الهدف أبعد بـ 10% من القمة التاريخية
-            tp = recent_high # نكتفي بالقمة السابقة كهدف أول
-            
+        if tp > recent_high * 1.1: tp = recent_high
         return {
-            "entry": price, 
-            "sl": round(sl, 8), 
-            "tp": round(tp, 8), 
-            "atr": atr,
-            "rr": round((tp - price) / (price - sl), 2) if (price - sl) > 0 else 0
+            "entry": price, "sl": round(sl, 8), "tp": round(tp, 8), 
+            "atr": atr, "rr": round((tp - price) / (price - sl), 2) if (price - sl) > 0 else 0
         }

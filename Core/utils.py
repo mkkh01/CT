@@ -22,11 +22,9 @@ class RateLimiter:
             if self.is_banned:
                 remaining_ban = self.ban_until - now
                 if remaining_ban > 0:
-                    # لا نطبع الرسالة في كل مرة لتقليل الضجيج، فقط عند الضرورة
                     await asyncio.sleep(remaining_ban)
                     now = time.time()
                 self.is_banned = False
-                # فترة هدوء إضافية بعد الحظر لضمان استقرار API
                 print(f"✨ [RATE LIMITER] انتهى الحظر. بدء فترة هدوء (5s)...")
                 await asyncio.sleep(5)
                 now = time.time()
@@ -37,7 +35,6 @@ class RateLimiter:
             while len(self.calls) + weight > self.max_calls:
                 wait_time = self.period - (now - self.calls[0])
                 if wait_time > 0:
-                    # print(f"⏳ [RATE LIMITER] تم الوصول للحد الأقصى. الانتظار لـ {wait_time:.1f} ثانية...")
                     await asyncio.sleep(wait_time)
                 now = time.time()
                 self.calls = [c for c in self.calls if now - c < self.period]
@@ -50,10 +47,64 @@ class RateLimiter:
         self.ban_until = time.time() + duration
         print(f"🛑 [RATE LIMITER] تم تفعيل الحظر لـ {duration} ثانية.")
 
-rate_limiter = RateLimiter(max_calls=1000) # نترك هامش أمان (Binance limit is 1200/min)
+rate_limiter = RateLimiter(max_calls=1000)
+
+class DiagnosticLogger:
+    @staticmethod
+    def section(title):
+        print(f"\n{'='*20} {title} {'='*20}")
+
+    @staticmethod
+    def system(msg, **kwargs):
+        extra = f" | {' | '.join([f'{k}: {v}' for k, v in kwargs.items()])}" if kwargs else ""
+        print(f"🖥️ [SYSTEM] {msg}{extra}")
+
+    @staticmethod
+    def data(symbol, timeframe, count, source, last_candle, from_cache, exec_time):
+        cache_status = "CACHE ✅" if from_cache else "REST 🌐"
+        print(f"📊 [DATA] {symbol} | {timeframe} | {count} Candles | {cache_status} | Source: {source} | Last: {last_candle} | Time: {exec_time:.3f}s")
+
+    @staticmethod
+    def regime(regime_data):
+        DiagnosticLogger.section("MARKET REGIME")
+        for k, v in regime_data.items():
+            print(f"📈 {k:15}: {v}")
+        print(f"📝 Reason: {regime_data.get('reason', 'N/A')}")
+
+    @staticmethod
+    def htf(htf_data):
+        DiagnosticLogger.section("HTF ANALYSIS (1H)")
+        for k, v in htf_data.items():
+            if k != 'supported':
+                print(f"🔭 {k:15}: {v}")
+        status = "✅ SUPPORTED" if htf_data.get('supported') else "❌ REJECTED"
+        print(f"🏁 HTF Status: {status} | Reason: {htf_data.get('reason', 'N/A')}")
+
+    @staticmethod
+    def indicators(ind_data):
+        DiagnosticLogger.section("INDICATORS")
+        for k, v in ind_data.items():
+            print(f"🧪 {k:15}: {v}")
+
+    @staticmethod
+    def smt(smt_data):
+        DiagnosticLogger.section("SMART MONEY (SMC)")
+        for k, v in smt_data.items():
+            print(f"💎 {k:15}: {v}")
+
+    @staticmethod
+    def scoring(score_data):
+        DiagnosticLogger.section("FINAL SCORING")
+        print(f"🎯 Total Score: {score_data.get('total', 0)}/100")
+        print(f"🛡️ Quality: {score_data.get('quality', 0)}/100")
+        print(f"📋 Verdict: {score_data.get('verdict', 'N/A')}")
+        if score_data.get('reason'):
+            print(f"💬 Reason: {score_data.get('reason')}")
+
+diag_logger = DiagnosticLogger()
 
 def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=0, **kwargs):
+    # الحفاظ على الوظيفة القديمة للتوافق ولكن استخدام DiagLogger داخلياً إذا أردنا
     status = "CACHE HIT" if from_cache else "CACHE MISS (REST)"
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    extra = f" | Extra: {kwargs}" if kwargs else ""
-    print(f"📝 [{now}] {status} | {symbol} | {timeframe} | Source: {source} | Time: {execution_time:.3f}s{extra}")
+    now = datetime.now().strftime('%H:%M:%S')
+    print(f"📝 [{now}] {status} | {symbol} | {timeframe} | {source} | {execution_time:.3f}s")
