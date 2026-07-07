@@ -173,7 +173,6 @@ class AIEngine:
                 diag_logger.htf_filter_phase(analysis["htf_data"])
                 diag_logger.indicators_phase(analysis["indicators_data"])
                 diag_logger.smart_money_phase(analysis["smc_data"])
-                diag_logger.strategy_validation_phase(analysis["validation_data"])
                 diag_logger.score_engine_phase(analysis["score_data"])
                 diag_logger.rejection_reasons_phase(analysis["rejection_data"])
                 diag_logger.quality_phase(analysis["quality_data"])

@@ -12,6 +12,7 @@ DATABASE_URL = RAW_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://"
 
 # 3. بقية الإعدادات
 ADMIN_ID = 1503808643
+HTF_MODE = "SKIP"  # Options: SKIP, CONTINUE_LOW_CONF, FALLBACK
 DEFAULT_CAPITAL = 10.0
 TRADE_FEE = 0.001
 BINANCE_WS_URL = "wss://stream.binance.com:9443"

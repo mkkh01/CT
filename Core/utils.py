@@ -158,29 +158,21 @@ class DiagnosticLogger:
         """المرحلة 5: Smart Money"""
         DiagnosticLogger.section(5, "Smart Money")
         
-        # استخراج البيانات العامة التي ليست قواميس (مثل direction, bullish_score, etc)
-        meta_keys = ['direction', 'bullish_score', 'bearish_score', 'confirmations']
-        for key in meta_keys:
-            if key in smc_data:
-                val = smc_data[key]
-                print(f"📊 {key:15} : {val}")
+        print(f"📊 الاتجاه: {smc_data.get('direction', 'N/A')}")
+        print(f"📊 القوة: {smc_data.get('strength', 0)}")
+        print(f"🎯 الثقة: {smc_data.get('confidence', 0)}%")
+        print(f"🐂 نقاط الشراء: {smc_data.get('bullish_score', 0)}")
+        print(f"🐻 نقاط البيع: {smc_data.get('bearish_score', 0)}")
         
         print("-" * 30)
-        
-        for item, details in smc_data.items():
-            if item in meta_keys:
-                continue
-                
-            # التأكد من أن التفاصيل عبارة عن قاموس قبل استخدام .get()
-            if isinstance(details, dict):
-                exists = details.get('exists', any(details.values()))
-                info = details.get('info', 'Available' if exists else 'N/A')
-                conf = details.get('confidence', 100 if exists else 0)
-                icon = "💎" if exists else "⚪"
-                print(f"{icon} {item:15} | Exist: {'✅' if exists else '❌'} | Info: {info} | Confidence: {conf}%")
-            else:
-                # التعامل مع القيم البسيطة إذا وجدت خارج meta_keys
-                print(f"🔹 {item:15} : {details}")
+        print("💎 الهياكل المكتشفة:")
+        for structure in smc_data.get('detected_structures', []):
+            print(f"   - {structure}")
+            
+        details = smc_data.get('details', {})
+        print("-" * 30)
+        print(f"🌊 سحب سيولة: {'✅' if details.get('has_liq_sweep') else '❌'}")
+        print(f"🏗️ هيكل مكتمل: {'✅' if details.get('has_structure') else '❌'}")
 
     @staticmethod
     def strategy_validation_phase(validation_data):
@@ -206,11 +198,15 @@ class DiagnosticLogger:
         breakdown = score_data.get('breakdown', {})
         if not breakdown:
             print("🔹 لا يوجد تفصيل للنقاط (يتم استخدام المجموع المباشر)")
-        for category, details in breakdown.items():
-            s = details.get('score', 0)
-            m = details.get('max', 0)
-            r = details.get('reason', 'N/A')
-            print(f"🔹 {category:15}: {s}/{m} | Reason: {r}")
+        else:
+            print(f"{'Category':<15} | {'Score':<7} | {'Reason'}")
+            print("-" * 50)
+            for category, details in breakdown.items():
+                s = details.get('score', 0)
+                m = details.get('max', 0)
+                r = details.get('reason', 'N/A')
+                print(f"{category:<15} | {s:>2}/{m:<2} | {r}")
+        print("-" * 50)
         print(f"🎯 Final Score: {score_data.get('total', 0)}/100")
 
     @staticmethod
@@ -224,6 +220,7 @@ class DiagnosticLogger:
             for r in reasons:
                 print(f"❌ {r}")
             print(f"📊 إجمالي أسباب الرفض: {len(reasons)}")
+            print("💡 Suggested Action: Wait for institutional confirmation or volume spike.")
 
     @staticmethod
     def quality_phase(quality_data):

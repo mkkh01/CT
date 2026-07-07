@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
+import config
 from dataclasses import dataclass
-from math import exp
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -11,6 +12,7 @@ from ta.trend import ADXIndicator, EMAIndicator, MACD
 from ta.volatility import AverageTrueRange
 from ta.volume import OnBalanceVolumeIndicator
 
+logger = logging.getLogger("CT_System")
 
 @dataclass
 class DirectionalCandidate:
@@ -22,46 +24,58 @@ class DirectionalCandidate:
 
 
 class InstitutionalStrategies:
-    """Direction-aware scoring engine with hard gates for SMC, trend alignment,
-    and execution risk. The goal is to avoid the failure mode where a mixed score
-    produces a trade even when institutional confirmation is missing.
+    """
+    Radically redesigned Institutional Strategies Engine.
+    Implements Clean Architecture, Weighted SMC, Dynamic Market Regime, 
+    and Continuous Scoring.
     """
 
     def __init__(self):
         self.thresholds = {
             "adx": 20,
-            "volatility": 0.3,
+            "volatility_min": 0.3,
             "ema_distance_pct": 7,
             "rsi_buy": (30, 65),
             "rsi_sell": (35, 70),
             "min_candles": 200,
             "rr_min": 1.5,
-            "volume_min": 1.5,
-            "min_score": 85,
-            "min_smc_confirmations": 2,
-            "min_smc_score": 20,
+            "min_score": 80,
+            "htf_mode": getattr(config, "HTF_MODE", "SKIP"),
         }
 
-        # Total budget: 100. Directional scoring will only use the matching side.
+        # Score Engine Weights (Total = 100)
         self.weights = {
             "trend": 20,
-            "rsi": 10,
-            "macd": 10,
-            "volume": 10,
+            "momentum": 15,
+            "volume": 15,
             "volatility": 10,
-            "fvg": 15,
-            "bos": 15,
-            "liquidity": 10,
-            "order_block": 10,
+            "smc": 25,
+            "risk_context": 10,
+            "htf": 5,
         }
 
+        # SMC Component Weights (Total = 90 + Inducement = 95)
+        self.smc_weights = {
+            "bos": 20,
+            "choch": 20,
+            "liquidity_sweep": 15,
+            "fvg": 10,
+            "order_block": 5,
+            "breaker_block": 10,
+            "mitigation_block": 5,
+            "inducement": 5,
+        }
+
+        # Hysteresis state for Market Regime
+        self._last_regime = "Sideways/Neutral"
+
     # ---------------------------
-    # Market regime
+    # First: Market Regime Engine
     # ---------------------------
     def classify_market(self, df: pd.DataFrame) -> dict:
-        """Classify the current regime using EMA stack, ADX and ATR volatility.
-
-        Returns a state + bias that can be used as a hard gate.
+        """
+        Classifies the market regime with Hysteresis and EMA Alignment.
+        Prevents 'Regime Flapping' by requiring clear threshold crossings.
         """
         if len(df) < self.thresholds["min_candles"]:
             return {
@@ -69,571 +83,417 @@ class InstitutionalStrategies:
                 "bias": "NEUTRAL",
                 "confidence": 0,
                 "values": {},
-                "reason": (
-                    f"Not enough candles (minimum {self.thresholds['min_candles']} required)"
-                ),
-                "others_rejected": "All systems rejected due to insufficient data.",
+                "reason": f"Insufficient data ({len(df)} < {self.thresholds['min_candles']})",
+                "metrics": {}
             }
 
         close = df["close"].iloc[-1]
-        ema20 = EMAIndicator(df["close"], window=20).ema_indicator().iloc[-1]
-        ema50 = EMAIndicator(df["close"], window=50).ema_indicator().iloc[-1]
-        ema100 = EMAIndicator(df["close"], window=100).ema_indicator().iloc[-1]
-        ema200 = EMAIndicator(df["close"], window=200).ema_indicator().iloc[-1]
+        
+        # Calculate EMAs
+        ema20 = EMAIndicator(df["close"], window=20).ema_indicator()
+        ema50 = EMAIndicator(df["close"], window=50).ema_indicator()
+        ema100 = EMAIndicator(df["close"], window=100).ema_indicator()
+        ema200 = EMAIndicator(df["close"], window=200).ema_indicator()
+        
+        e20, e50, e100, e200 = ema20.iloc[-1], ema50.iloc[-1], ema100.iloc[-1], ema200.iloc[-1]
+        
+        # Slopes (last 5 candles)
+        def get_slope(series, period=5):
+            return (series.iloc[-1] - series.iloc[-period]) / period if len(series) >= period else 0
+
+        slope50 = get_slope(ema50)
+        slope200 = get_slope(ema200)
+        
+        # Volatility & Trend Indicators
         adx = ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
-
-        rolling_20 = df["close"].rolling(20)
-        std_dev = rolling_20.std().iloc[-1]
-        avg_price = rolling_20.mean().iloc[-1]
-        volatility_ratio = (std_dev / avg_price) * 100 if avg_price else 0
-
         atr = AverageTrueRange(df["high"], df["low"], df["close"]).average_true_range().iloc[-1]
         atr_pct = (atr / close) * 100 if close else 0
+        
+        rolling_20 = df["close"].rolling(20)
+        volatility_ratio = (rolling_20.std().iloc[-1] / rolling_20.mean().iloc[-1]) * 100 if rolling_20.mean().iloc[-1] else 0
 
-        slope = (df["close"].iloc[-1] - df["close"].iloc[-5]) / 5 if len(df) >= 5 else 0
+        # EMA Alignment check
+        bullish_alignment = e20 > e50 > e100 > e200
+        bearish_alignment = e20 < e50 < e100 < e200
+        
+        # Entanglement check
+        ema_values = [e20, e50, e100, e200]
+        ema_spread = (max(ema_values) - min(ema_values)) / e200
+        is_entangled = ema_spread < 0.008  # 0.8% threshold for entanglement
 
-        values = {
-            "EMA20": round(ema20, 6),
-            "EMA50": round(ema50, 6),
-            "EMA100": round(ema100, 6),
-            "EMA200": round(ema200, 6),
-            "ADX": round(adx, 2),
-            "ATR": round(atr, 8),
-            "ATR%": round(atr_pct, 4),
-            "Volatility": round(volatility_ratio, 4),
-            "Slope": round(slope, 8),
-            "Distance EMA200": round(abs(close - ema200), 8),
-        }
+        # Logic determination
+        new_state = "Sideways/Neutral"
+        bias = "NEUTRAL"
+        reason = "Market is in a range or transitioning."
 
-        others_rejected: List[str] = []
-        bullish_alignment = close > ema20 > ema50 > ema100 > ema200
-        bearish_alignment = close < ema20 < ema50 < ema100 < ema200
+        if is_entangled or (abs(slope50) < 0.00001 and abs(slope200) < 0.00001):
+            new_state = "Sideways/Neutral"
+            reason = "EMAs are entangled or slopes are near zero."
+        elif bullish_alignment and slope50 > -0.001:
+            if adx > self.thresholds["adx"]:
+                new_state = "Strong Uptrend"
+                bias = "BULLISH"
+                reason = "Full bullish alignment with strong ADX and positive slope."
+            else:
+                new_state = "Weak Uptrend"
+                bias = "BULLISH"
+                reason = "Bullish alignment but weak ADX."
+        elif bearish_alignment and slope50 < 0:
+            if adx > self.thresholds["adx"]:
+                new_state = "Strong Downtrend"
+                bias = "BEARISH"
+                reason = "Full bearish alignment with strong ADX and negative slope."
+            else:
+                new_state = "Weak Downtrend"
+                bias = "BEARISH"
+                reason = "Bearish alignment but weak ADX."
+        elif abs(close - e200) / e200 < 0.015:
+            new_state = "Distribution/Accumulation"
+            reason = "Price is oscillating around EMA200."
 
-        if volatility_ratio < self.thresholds["volatility"]:
-            state = "Low Volatility Range"
-            bias = "NEUTRAL"
-            reason = f"Volatility ratio ({round(volatility_ratio, 2)}%) is below threshold."
-            others_rejected.append("Trend: Volatility too low")
-        elif bullish_alignment and adx > self.thresholds["adx"]:
-            state = "Strong Uptrend"
-            bias = "BULLISH"
-            reason = "Full EMA alignment (20>50>100>200) and ADX > threshold."
-        elif bearish_alignment and adx > self.thresholds["adx"]:
-            state = "Strong Downtrend"
-            bias = "BEARISH"
-            reason = "Full EMA alignment (20<50<100<200) and ADX > threshold."
-        elif close > ema200 and adx > 15:
-            state = "Weak Uptrend"
-            bias = "BULLISH"
-            reason = "Price above EMA200 but incomplete EMA alignment."
-        elif close < ema200 and adx > 15:
-            state = "Weak Downtrend"
-            bias = "BEARISH"
-            reason = "Price below EMA200 but incomplete EMA alignment."
-        elif abs(close - ema200) / ema200 < 0.02:
-            state = "Distribution/Accumulation"
-            bias = "NEUTRAL"
-            reason = "Price hovering near EMA200."
-        else:
-            state = "Sideways/Neutral"
-            bias = "NEUTRAL"
-            reason = "No clear trend or volatility breakout."
+        # Hysteresis: Prevent flapping
+        if "Trend" in self._last_regime and "Trend" not in new_state:
+            # If moving from Trend to Neutral, check if it's just a minor dip
+            if adx > 18 and ((self._last_regime == "Strong Uptrend" and close > e100) or 
+                            (self._last_regime == "Strong Downtrend" and close < e100)):
+                new_state = self._last_regime
+                reason = f"Hysteresis active: Maintaining {new_state}."
 
-        confidence = 85 if "Strong" in state else (60 if "Weak" in state else 40)
+        self._last_regime = new_state
+        
+        # Confidence calculation
+        conf = 0
+        if "Strong" in new_state: conf = 75 + min(25, adx)
+        elif "Weak" in new_state: conf = 50 + min(20, adx)
+        else: conf = 30 + min(20, volatility_ratio * 10)
 
         return {
-            "state": state,
+            "state": new_state,
             "bias": bias,
-            "confidence": confidence,
-            "values": values,
+            "confidence": round(conf, 2),
             "reason": reason,
-            "others_rejected": " | ".join(others_rejected),
+            "values": {
+                "EMA200": round(e200, 4),
+                "Slope50": round(slope50, 6),
+                "ADX": round(adx, 2),
+                "ATR%": round(atr_pct, 4),
+                "EMA_Spread": round(ema_spread, 6)
+            },
+            "metrics": {
+                "is_entangled": is_entangled,
+                "volatility_ratio": round(volatility_ratio, 4)
+            }
         }
 
     # ---------------------------
-    # Indicators
-    # ---------------------------
-    def get_indicators_data(self, df: pd.DataFrame) -> dict:
-        close = df["close"]
-        high = df["high"]
-        low = df["low"]
-        volume = df["volume"]
-
-        rsi = RSIIndicator(close).rsi().iloc[-1]
-        macd_ind = MACD(close)
-        macd_hist = macd_ind.macd_diff().iloc[-1]
-        atr = AverageTrueRange(high, low, close).average_true_range().iloc[-1]
-        atr_pct = (atr / close.iloc[-1]) * 100 if close.iloc[-1] else 0
-        avg_vol = volume.rolling(20).mean().iloc[-1]
-        curr_vol = volume.iloc[-1]
-        rel_vol = curr_vol / avg_vol if avg_vol and avg_vol > 0 else 0
-        ema200 = EMAIndicator(close, window=200).ema_indicator().iloc[-1]
-        dist_ema200 = abs(close.iloc[-1] - ema200) / close.iloc[-1] * 100 if close.iloc[-1] else 0
-        obv = OnBalanceVolumeIndicator(close=close, volume=volume).on_balance_volume().iloc[-1]
-
-        return {
-            "RSI": {
-                "current": round(rsi, 2),
-                "required_buy": f"{self.thresholds['rsi_buy'][0]}~{self.thresholds['rsi_buy'][1]}",
-                "required_sell": f"{self.thresholds['rsi_sell'][0]}~{self.thresholds['rsi_sell'][1]}",
-                "status_buy": self.thresholds["rsi_buy"][0] < rsi < self.thresholds["rsi_buy"][1],
-                "status_sell": self.thresholds["rsi_sell"][0] < rsi < self.thresholds["rsi_sell"][1],
-            },
-            "MACD": {
-                "current": round(macd_hist, 8),
-                "required": "> -0.0001 (Buy) / < 0.0001 (Sell)",
-                "status_buy": macd_hist > -0.0001,
-                "status_sell": macd_hist < 0.0001,
-            },
-            "ATR %": {
-                "current": round(atr_pct, 4),
-                "required": f"> {self.thresholds['volatility']}",
-                "status": atr_pct > self.thresholds["volatility"],
-            },
-            "Volume": {
-                "current": round(rel_vol, 2),
-                "required": f"> {self.thresholds['volume_min']}",
-                "status": rel_vol > self.thresholds["volume_min"],
-                "info": f"Curr: {round(curr_vol, 0)} / Avg: {round(avg_vol, 0)}",
-            },
-            "EMA Distance": {
-                "current": round(dist_ema200, 2),
-                "required": f"< {self.thresholds['ema_distance_pct']}%",
-                "status": dist_ema200 < self.thresholds["ema_distance_pct"],
-            },
-            "OBV": {
-                "current": round(obv, 2),
-                "required": "directional context only",
-                "status": True,
-            },
-        }
-
-    # ---------------------------
-    # Smart Money Concepts
+    # Third: Smart Money Engine
     # ---------------------------
     def get_smc_data(self, df: pd.DataFrame) -> dict:
-        """Directional SMC detection.
-
-        Important: Order Block is no longer a passive log-only field. It contributes
-        to the directional SMC score and to the hard entry gate.
+        """
+        Redesigned SMC Engine with weighted scoring and confirmation logic.
         """
         last_50 = df.iloc[-50:]
         highest_high = last_50["high"].max()
         lowest_low = last_50["low"].min()
         curr_close = df["close"].iloc[-1]
+        
+        # Structures
+        # Check if current close breaks the highest high of the PREVIOUS 50 candles (excluding current)
+        prev_highest = df["high"].iloc[-51:-1].max()
+        prev_lowest = df["low"].iloc[-51:-1].min()
+        bos_bull = curr_close > prev_highest
+        bos_bear = curr_close < prev_lowest
+        
+        # CHOCH (Change of Character)
+        choch_bull = False
+        choch_bear = False
+        if len(df) > 40:
+            prev_high = df["high"].iloc[-40:-20].max()
+            prev_low = df["low"].iloc[-40:-20].min()
+            if curr_close > prev_high and df["close"].iloc[-21] < prev_low:
+                choch_bull = True
+            elif curr_close < prev_low and df["close"].iloc[-21] > prev_high:
+                choch_bear = True
 
-        fvg_bullish = False
-        fvg_bearish = False
-        if len(df) > 3:
-            if df["low"].iloc[-1] > df["high"].iloc[-3]:
-                fvg_bullish = True
-            elif df["high"].iloc[-1] < df["low"].iloc[-3]:
-                fvg_bearish = True
-
-        bos_bullish = curr_close > highest_high
-        bos_bearish = curr_close < lowest_low
-
-        liq_sweep_bullish = df["low"].iloc[-1] < lowest_low and curr_close > lowest_low
-        liq_sweep_bearish = df["high"].iloc[-1] > highest_high and curr_close < highest_high
-
-        # Simplified OB heuristic: last candle impulsive close after opposite candle.
-        ob_bullish = False
-        ob_bearish = False
+        # Liquidity Sweep
+        liq_bull = df["low"].iloc[-1] < prev_lowest and curr_close > prev_lowest
+        liq_bear = df["high"].iloc[-1] > prev_highest and curr_close < prev_highest
+        
+        # FVG
+        fvg_bull = df["low"].iloc[-1] > df["high"].iloc[-3] if len(df) > 3 else False
+        fvg_bear = df["high"].iloc[-1] < df["low"].iloc[-3] if len(df) > 3 else False
+        
+        # Order Block (Impulsive move with volume)
+        ob_bull = False
+        ob_bear = False
         if len(df) > 5:
-            if df["close"].iloc[-1] > df["open"].iloc[-1] and df["close"].iloc[-2] < df["open"].iloc[-2]:
-                ob_bullish = True
-            elif df["close"].iloc[-1] < df["open"].iloc[-1] and df["close"].iloc[-2] > df["open"].iloc[-2]:
-                ob_bearish = True
+            if df["close"].iloc[-1] > df["open"].iloc[-1] and df["close"].iloc[-2] < df["open"].iloc[-2] and df["volume"].iloc[-1] > df["volume"].iloc[-2] * 1.2:
+                ob_bull = True
+            elif df["close"].iloc[-1] < df["open"].iloc[-1] and df["close"].iloc[-2] > df["open"].iloc[-2] and df["volume"].iloc[-1] > df["volume"].iloc[-2] * 1.2:
+                ob_bear = True
 
-        bullish_strength = 0
-        bearish_strength = 0
+        # Breaker / Mitigation Block (Simplified)
+        breaker_bull = False
+        breaker_bear = False
+        # Inducement (Simplified: Sweep of recent minor high/low)
+        inducement_bull = False
+        inducement_bear = False
+        if len(df) > 10:
+            minor_low = df["low"].iloc[-10:-1].min()
+            minor_high = df["high"].iloc[-10:-1].max()
+            if df["low"].iloc[-1] < minor_low and curr_close > minor_low:
+                inducement_bull = True
+            elif df["high"].iloc[-1] > minor_high and curr_close < minor_high:
+                inducement_bear = True
 
-        if fvg_bullish:
-            bullish_strength += self.weights["fvg"]
-        if bos_bullish:
-            bullish_strength += self.weights["bos"]
-        if liq_sweep_bullish:
-            bullish_strength += self.weights["liquidity"]
-        if ob_bullish:
-            bullish_strength += self.weights["order_block"]
+        def calculate_side_smc(is_bull: bool):
+            score = 0
+            found = []
+            
+            if (is_bull and bos_bull) or (not is_bull and bos_bear):
+                score += self.smc_weights["bos"]
+                found.append("BOS")
+            if (is_bull and choch_bull) or (not is_bull and choch_bear):
+                score += self.smc_weights["choch"]
+                found.append("CHOCH")
+            if (is_bull and liq_bull) or (not is_bull and liq_bear):
+                score += self.smc_weights["liquidity_sweep"]
+                found.append("Liquidity Sweep")
+            if (is_bull and fvg_bull) or (not is_bull and fvg_bear):
+                score += self.smc_weights["fvg"]
+                found.append("FVG")
+            
+            if (is_bull and inducement_bull) or (not is_bull and inducement_bear):
+                score += self.smc_weights["inducement"]
+                found.append("Inducement")
 
-        if fvg_bearish:
-            bearish_strength += self.weights["fvg"]
-        if bos_bearish:
-            bearish_strength += self.weights["bos"]
-        if liq_sweep_bearish:
-            bearish_strength += self.weights["liquidity"]
-        if ob_bearish:
-            bearish_strength += self.weights["order_block"]
+            # OB/Breaker logic: If no BOS/CHOCH, OB is just a zone (reduced points)
+            has_structure = any(x in ["BOS", "CHOCH"] for x in found)
+            if (is_bull and ob_bull) or (not is_bull and ob_bear):
+                val = self.smc_weights["order_block"] if has_structure else 2
+                score += val
+                found.append("Order Block" if has_structure else "OB Zone")
+                
+            return score, found
 
-        direction = "BUY" if bullish_strength > bearish_strength else ("SELL" if bearish_strength > bullish_strength else "NEUTRAL")
-        confirmations = int(bool(fvg_bullish or fvg_bearish)) + int(bool(bos_bullish or bos_bearish)) + int(bool(liq_sweep_bullish or liq_sweep_bearish)) + int(bool(ob_bullish or ob_bearish))
+        bull_score, bull_found = calculate_side_smc(True)
+        bear_score, bear_found = calculate_side_smc(False)
+        
+        direction = "BUY" if bull_score > bear_score else ("SELL" if bear_score > bull_score else "NEUTRAL")
+        active_score = bull_score if direction == "BUY" else bear_score
+        active_found = bull_found if direction == "BUY" else bear_found
+        
+        # SMC Confidence (Max weight = 100)
+        max_possible = sum(self.smc_weights.values())
+        confidence = (active_score / max_possible) * 100
 
         return {
             "direction": direction,
-            "bullish_score": bullish_strength,
-            "bearish_score": bearish_strength,
-            "confirmations": confirmations,
-            "BOS": {
-                "exists": bos_bullish or bos_bearish,
-                "info": "Bullish BOS" if bos_bullish else ("Bearish BOS" if bos_bearish else "None"),
-                "confidence": 90 if (bos_bullish or bos_bearish) else 0,
-                "bullish": bos_bullish,
-                "bearish": bos_bearish,
-            },
-            "FVG": {
-                "exists": fvg_bullish or fvg_bearish,
-                "info": "Bullish FVG" if fvg_bullish else ("Bearish FVG" if fvg_bearish else "None"),
-                "confidence": 80 if (fvg_bullish or fvg_bearish) else 0,
-                "bullish": fvg_bullish,
-                "bearish": fvg_bearish,
-            },
-            "Liquidity": {
-                "exists": liq_sweep_bullish or liq_sweep_bearish,
-                "info": "Bullish Sweep" if liq_sweep_bullish else ("Bearish Sweep" if liq_sweep_bearish else "None"),
-                "confidence": 85 if (liq_sweep_bullish or liq_sweep_bearish) else 0,
-                "bullish": liq_sweep_bullish,
-                "bearish": liq_sweep_bearish,
-            },
-            "OrderBlock": {
-                "exists": ob_bullish or ob_bearish,
-                "info": "Bullish OB" if ob_bullish else ("Bearish OB" if ob_bearish else "None"),
-                "confidence": 75 if (ob_bullish or ob_bearish) else 0,
-                "bullish": ob_bullish,
-                "bearish": ob_bearish,
-            },
+            "strength": active_score,
+            "confidence": round(confidence, 2),
+            "reasons": active_found,
+            "detected_structures": active_found,
+            "bullish_score": bull_score,
+            "bearish_score": bear_score,
+            "details": {
+                "has_liq_sweep": liq_bull or liq_bear,
+                "has_structure": bos_bull or bos_bear or choch_bull or choch_bear
+            }
         }
 
     # ---------------------------
-    # Helpers
+    # Sixth: Relative Volume
     # ---------------------------
-    def _conservative_probability(self, score: float, side: str, smc_confirmations: int, validated: bool) -> int:
-        """Map score to a conservative estimated probability.
-
-        This is intentionally not 1:1 with score to avoid conflating a heuristic score
-        with a real win probability.
+    def get_indicators_data(self, df: pd.DataFrame) -> dict:
         """
-        if not validated:
-            return 0
-        base = 0
-        if score >= 90:
-            base = 78
-        elif score >= 80:
-            base = 62
-        elif score >= 70:
-            base = 54
-        elif score >= 60:
-            base = 45
-        else:
-            base = 32
+        Indicators with Dynamic Relative Volume (Z-Score).
+        """
+        close = df["close"]
+        volume = df["volume"]
+        
+        rsi = RSIIndicator(close).rsi().iloc[-1]
+        macd = MACD(close).macd_diff().iloc[-1]
+        atr = AverageTrueRange(df["high"], df["low"], df["close"]).average_true_range().iloc[-1]
+        atr_pct = (atr / close.iloc[-1]) * 100 if close.iloc[-1] else 0
+        
+        # Dynamic Volume (Z-Score over 20 periods)
+        vol_mean = volume.rolling(20).mean().iloc[-1]
+        vol_std = volume.rolling(20).std().iloc[-1]
+        rel_vol = volume.iloc[-1] / vol_mean if vol_mean > 0 else 0
+        z_score_vol = (volume.iloc[-1] - vol_mean) / vol_std if vol_std > 0 else 0
+        
+        # Dynamic Threshold: Base 1.5, adjusted by ATR (higher volatility needs higher volume)
+        dynamic_threshold = 1.5 + (0.2 if atr_pct > 1.0 else 0)
 
-        bonus = min(12, smc_confirmations * 4)
-        if side in {"BUY", "SELL"}:
-            bonus += 3
-        return int(min(95, base + bonus))
-
-    def _score_direction(self, regime: dict, inds: dict, smc: dict, side: str) -> DirectionalCandidate:
-        reasons: List[str] = []
-        score = 0.0
-
-        trend_state = regime["state"]
-        trend_ok = False
-        if side == "BUY":
-            trend_ok = trend_state in {"Strong Uptrend", "Weak Uptrend"}
-            if trend_state == "Strong Uptrend":
-                score += self.weights["trend"]
-                reasons.append("Strong bullish trend")
-            elif trend_state == "Weak Uptrend":
-                score += self.weights["trend"] * 0.6
-                reasons.append("Weak bullish trend")
-        elif side == "SELL":
-            trend_ok = trend_state in {"Strong Downtrend", "Weak Downtrend"}
-            if trend_state == "Strong Downtrend":
-                score += self.weights["trend"]
-                reasons.append("Strong bearish trend")
-            elif trend_state == "Weak Downtrend":
-                score += self.weights["trend"] * 0.6
-                reasons.append("Weak bearish trend")
-
-        rsi_ok = inds["RSI"][f"status_{'buy' if side == 'BUY' else 'sell'}"]
-        if rsi_ok:
-            score += self.weights["rsi"]
-            reasons.append(f"RSI: {inds['RSI']['current']}")
-
-        macd_ok = inds["MACD"][f"status_{'buy' if side == 'BUY' else 'sell'}"]
-        if macd_ok:
-            score += self.weights["macd"]
-            reasons.append(f"MACD Hist: {inds['MACD']['current']}")
-
-        if inds["Volume"]["status"]:
-            score += self.weights["volume"]
-            reasons.append(f"Rel Vol: {inds['Volume']['current']}")
-
-        if inds["ATR %"]["status"]:
-            score += self.weights["volatility"]
-            reasons.append(f"ATR %: {inds['ATR %']['current']}")
-
-        # Directional SMC scoring: require confirmations beyond OB-only setups.
-        smc_score = 0
-        if side == "BUY":
-            if smc["FVG"]["bullish"]:
-                smc_score += self.weights["fvg"]
-            if smc["BOS"]["bullish"]:
-                smc_score += self.weights["bos"]
-            if smc["Liquidity"]["bullish"]:
-                smc_score += self.weights["liquidity"]
-            if smc["OrderBlock"]["bullish"]:
-                smc_score += self.weights["order_block"]
-        else:
-            if smc["FVG"]["bearish"]:
-                smc_score += self.weights["fvg"]
-            if smc["BOS"]["bearish"]:
-                smc_score += self.weights["bos"]
-            if smc["Liquidity"]["bearish"]:
-                smc_score += self.weights["liquidity"]
-            if smc["OrderBlock"]["bearish"]:
-                smc_score += self.weights["order_block"]
-
-        if smc_score > 0:
-            score += smc_score
-            reasons.append(
-                f"SMC: {smc_score} (dir={side}, FVG={smc['FVG']['info']}, BOS={smc['BOS']['info']}, Liq={smc['Liquidity']['info']}, OB={smc['OrderBlock']['info']})"
-            )
-
-        valid = trend_ok and rsi_ok and macd_ok and inds["Volume"]["status"] and inds["ATR %"]["status"]
-        return DirectionalCandidate(
-            side=side,
-            score=score,
-            reasons=reasons,
-            smc_confirmations=smc["confirmations"],
-            valid=valid,
-        )
-
-    def _hard_gate(self, regime: dict, htf_data: dict, inds: dict, smc: dict, side: str) -> Tuple[bool, List[str]]:
-        reasons: List[str] = []
-        ok = True
-
-        if regime["state"] == "Low Data":
-            return False, ["Insufficient candles"]
-
-        if not inds["ATR %"]["status"]:
-            ok = False
-            reasons.append("Volatility below threshold")
-
-        if not inds["Volume"]["status"]:
-            ok = False
-            reasons.append("Relative volume below threshold")
-
-        if not inds["EMA Distance"]["status"]:
-            ok = False
-            reasons.append("Price too far from EMA200")
-
-        if side == "BUY" and regime["bias"] == "BEARISH":
-            ok = False
-            reasons.append("Trend/regime conflict for BUY")
-        if side == "SELL" and regime["bias"] == "BULLISH":
-            ok = False
-            reasons.append("Trend/regime conflict for SELL")
-
-        htf_supported = htf_data.get("supported", True)
-        if not htf_supported:
-            ok = False
-            reasons.append("HTF does not support this direction")
-
-        side_has_smc = (
-            smc["FVG"]["bullish"]
-            or smc["FVG"]["bearish"]
-            or smc["BOS"]["bullish"]
-            or smc["BOS"]["bearish"]
-            or smc["Liquidity"]["bullish"]
-            or smc["Liquidity"]["bearish"]
-            or smc["OrderBlock"]["bullish"]
-            or smc["OrderBlock"]["bearish"]
-        )
-        if not side_has_smc:
-            ok = False
-            reasons.append("No SMC confirmation")
-
-        directional_smc_confirmations = sum(
-            [
-                int(smc["FVG"]["bullish"] if side == "BUY" else smc["FVG"]["bearish"]),
-                int(smc["BOS"]["bullish"] if side == "BUY" else smc["BOS"]["bearish"]),
-                int(smc["Liquidity"]["bullish"] if side == "BUY" else smc["Liquidity"]["bearish"]),
-                int(smc["OrderBlock"]["bullish"] if side == "BUY" else smc["OrderBlock"]["bearish"]),
-            ]
-        )
-        if directional_smc_confirmations < self.thresholds["min_smc_confirmations"]:
-            ok = False
-            reasons.append("Directional SMC confirmation missing")
-
-        return ok, reasons
+        return {
+            "RSI": {
+                "current": round(rsi, 2),
+                "status_buy": self.thresholds["rsi_buy"][0] < rsi < self.thresholds["rsi_buy"][1],
+                "status_sell": self.thresholds["rsi_sell"][0] < rsi < self.thresholds["rsi_sell"][1],
+            },
+            "MACD": {
+                "current": round(macd, 6),
+                "status_buy": macd > -0.0001,
+                "status_sell": macd < 0.0001,
+            },
+            "Volume": {
+                "current": round(rel_vol, 2),
+                "z_score": round(z_score_vol, 2),
+                "threshold": round(dynamic_threshold, 2),
+                "status": rel_vol > dynamic_threshold
+            },
+            "ATR%": {
+                "current": round(atr_pct, 4),
+                "status": atr_pct > self.thresholds["volatility_min"]
+            }
+        }
 
     # ---------------------------
-    # Combined score & verdict
+    # Fourth & Fifth: Scoring & Probability
     # ---------------------------
-    def calculate_combined_score(self, df: pd.DataFrame, df_higher: pd.DataFrame = None) -> dict:
+    def calculate_combined_score(self, df: pd.DataFrame, df_higher: Optional[pd.DataFrame]) -> dict:
+        """
+        The Core Analysis Engine. Integrates all modules with hard gates and 
+        continuous scoring.
+        """
         regime = self.classify_market(df)
         inds = self.get_indicators_data(df)
         smc = self.get_smc_data(df)
-
-        validation_conditions = [
-            {"name": "Min Candles", "status": len(df) >= self.thresholds["min_candles"]},
-            {"name": "Volatility Check", "status": inds["ATR %"]["status"]},
-            {"name": "Volume Check", "status": inds["Volume"]["status"]},
-            {"name": "EMA Distance Check", "status": inds["EMA Distance"]["status"]},
-        ]
-
-        if df_higher is not None and len(df_higher) >= self.thresholds["min_candles"]:
+        
+        # HTF Filter (Second Requirement)
+        htf_data = {"supported": False, "state": "No HTF Data", "reason": "No HTF Data"}
+        if df_higher is not None:
             htf_regime = self.classify_market(df_higher)
-            htf_supported_buy = htf_regime["bias"] in {"BULLISH", "NEUTRAL"}
-            htf_supported_sell = htf_regime["bias"] in {"BEARISH", "NEUTRAL"}
-            htf_info = {
+            htf_data = {
                 "supported": True,
                 "state": htf_regime["state"],
                 "bias": htf_regime["bias"],
-                "reason": htf_regime["reason"],
-                "conditions": [
-                    {"name": "HTF BUY Alignment", "status": htf_supported_buy, "value": htf_regime["state"]},
-                    {"name": "HTF SELL Alignment", "status": htf_supported_sell, "value": htf_regime["state"]},
-                ],
+                "reason": htf_regime["reason"]
             }
-        else:
-            htf_supported_buy = True
-            htf_supported_sell = True
-            htf_info = {
-                "supported": True,
-                "state": "No HTF Data",
-                "bias": "NEUTRAL",
-                "reason": "No HTF Data",
-                "conditions": [],
-            }
+        
+        # Decision Logic
+        side = smc["direction"]
+        if side == "NEUTRAL":
+            side = regime["bias"]
+        
+        # If still neutral, pick bias from HTF if available
+        if side == "NEUTRAL" and htf_data["supported"]:
+            side = htf_data["bias"]
+            
+        # Continuous Scoring Breakdown
+        breakdown = {}
+        
+        # 1. Trend (20)
+        trend_score = 0
+        if (side == "BUY" and regime["bias"] == "BULLISH") or (side == "SELL" and regime["bias"] == "BEARISH"):
+            trend_score = self.weights["trend"] if "Strong" in regime["state"] else self.weights["trend"] * 0.6
+        breakdown["Trend"] = {"score": round(trend_score, 1), "max": self.weights["trend"], "reason": regime["reason"]}
+        
+        # 2. Momentum (15) - RSI & MACD
+        mom_score = 0
+        if side == "BUY":
+            if inds["RSI"]["status_buy"]: mom_score += self.weights["momentum"] * 0.5
+            if inds["MACD"]["status_buy"]: mom_score += self.weights["momentum"] * 0.5
+        elif side == "SELL":
+            if inds["RSI"]["status_sell"]: mom_score += self.weights["momentum"] * 0.5
+            if inds["MACD"]["status_sell"]: mom_score += self.weights["momentum"] * 0.5
+        breakdown["Momentum"] = {"score": round(mom_score, 1), "max": self.weights["momentum"], "reason": f"RSI: {inds['RSI']['current']}"}
+        
+        # 3. Volume (15) - Continuous Scoring
+        # Instead of 0 or 10, use a continuous curve based on Z-Score or Relative Volume
+        vol_ratio = inds["Volume"]["current"] / inds["Volume"]["threshold"]
+        vol_score = min(1.0, vol_ratio) * self.weights["volume"]
+        # If extremely high volume (Z-Score > 2), give a small bonus
+        if inds["Volume"]["z_score"] > 2.0:
+            vol_score = min(self.weights["volume"], vol_score * 1.1)
+        breakdown["Volume"] = {"score": round(vol_score, 1), "max": self.weights["volume"], "reason": f"Rel Vol: {inds['Volume']['current']} (Z: {inds['Volume']['z_score']})"}
+        
+        # 4. Volatility (10)
+        volat_score = self.weights["volatility"] if inds["ATR%"]["status"] else 0
+        breakdown["Volatility"] = {"score": round(volat_score, 1), "max": self.weights["volatility"], "reason": f"ATR%: {inds['ATR%']['current']}"}
+        
+        # 5. SMC (25) - Weighted
+        smc_score = (smc["confidence"] / 100) * self.weights["smc"]
+        breakdown["SMC"] = {"score": round(smc_score, 1), "max": self.weights["smc"], "reason": ", ".join(smc["reasons"])}
+        
+        # 6. HTF (5)
+        htf_score = 0
+        if htf_data["supported"]:
+            htf_aligned = (side == "BUY" and htf_data["bias"] == "BULLISH") or (side == "SELL" and htf_data["bias"] == "BEARISH")
+            if htf_aligned:
+                htf_score = self.weights["htf"]
+        breakdown["HTF"] = {"score": round(htf_score, 1), "max": self.weights["htf"], "reason": htf_data["state"]}
+        
+        # 7. Risk Context (10)
+        risk_score = self.weights["risk_context"]
+        if inds["ATR%"]["current"] > 2.0: risk_score *= 0.5 # High risk environment
+        breakdown["Risk Context"] = {"score": round(risk_score, 1), "max": self.weights["risk_context"], "reason": "Market risk assessed"}
 
-        buy_candidate = self._score_direction(regime, inds, smc, "BUY")
-        sell_candidate = self._score_direction(regime, inds, smc, "SELL")
-
-        buy_gate, buy_gate_reasons = self._hard_gate(regime, {"supported": htf_supported_buy}, inds, smc, "BUY")
-        sell_gate, sell_gate_reasons = self._hard_gate(regime, {"supported": htf_supported_sell}, inds, smc, "SELL")
-
-        score_breakdown = {
-            "Trend": {"score": 0, "max": self.weights["trend"], "reason": regime["reason"]},
-            "RSI": {"score": 0, "max": self.weights["rsi"], "reason": f"RSI: {inds['RSI']['current']}"},
-            "MACD": {"score": 0, "max": self.weights["macd"], "reason": f"MACD Hist: {inds['MACD']['current']}"},
-            "Volume": {"score": 0, "max": self.weights["volume"], "reason": f"Rel Vol: {inds['Volume']['current']}"},
-            "Volatility": {"score": 0, "max": self.weights["volatility"], "reason": f"ATR %: {inds['ATR %']['current']}"},
-            "SMC": {"score": 0, "max": sum(self.weights[k] for k in ["fvg", "bos", "liquidity", "order_block"]), "reason": "Directional SMC gated"},
-        }
-
-        # Use the better side only if it is valid and above threshold.
-        selected = buy_candidate if buy_candidate.score >= sell_candidate.score else sell_candidate
-        selected_gate = buy_gate if selected.side == "BUY" else sell_gate
-        selected_gate_reasons = buy_gate_reasons if selected.side == "BUY" else sell_gate_reasons
-
-        # Populate score breakdown with the selected side, so the logs stay readable.
-        score_breakdown["Trend"]["score"] = self.weights["trend"] if "Strong" in regime["state"] and selected.side == ("BUY" if regime["bias"] == "BULLISH" else "SELL") else (
-            self.weights["trend"] * 0.6 if "Weak" in regime["state"] and selected.side == ("BUY" if regime["bias"] == "BULLISH" else "SELL") else 0
-        )
-        score_breakdown["RSI"]["score"] = self.weights["rsi"] if inds["RSI"][f"status_{'buy' if selected.side == 'BUY' else 'sell'}"] else 0
-        score_breakdown["MACD"]["score"] = self.weights["macd"] if inds["MACD"][f"status_{'buy' if selected.side == 'BUY' else 'sell'}"] else 0
-        score_breakdown["Volume"]["score"] = self.weights["volume"] if inds["Volume"]["status"] else 0
-        score_breakdown["Volatility"]["score"] = self.weights["volatility"] if inds["ATR %"]["status"] else 0
-        score_breakdown["SMC"]["score"] = max(selected.score - score_breakdown["Trend"]["score"] - score_breakdown["RSI"]["score"] - score_breakdown["MACD"]["score"] - score_breakdown["Volume"]["score"] - score_breakdown["Volatility"]["score"], 0)
-        score_breakdown["SMC"]["reason"] = (
-            f"FVG: {smc['FVG']['info']}, BOS: {smc['BOS']['info']}, Liq: {smc['Liquidity']['info']}, OB: {smc['OrderBlock']['info']}"
-        )
-
-        total_score = int(round(sum(v["score"] for v in score_breakdown.values())))
-
-        rejection_reasons: List[str] = []
-        if not all(c["status"] for c in validation_conditions):
-            for c in validation_conditions:
-                if not c["status"]:
-                    rejection_reasons.append(f"Failed: {c['name']}")
-
-        if selected.side == "BUY":
-            if regime["bias"] == "BEARISH":
-                rejection_reasons.append("Trend/regime conflict for BUY")
-            if not htf_supported_buy:
-                rejection_reasons.append("HTF does not support BUY")
-        elif selected.side == "SELL":
-            if regime["bias"] == "BULLISH":
-                rejection_reasons.append("Trend/regime conflict for SELL")
-            if not htf_supported_sell:
-                rejection_reasons.append("HTF does not support SELL")
-
-        # Hard reject if SMC does not support the chosen side.
-        if selected.side == "BUY":
-            side_smc_count = sum(
-                [
-                    int(smc["FVG"]["bullish"]),
-                    int(smc["BOS"]["bullish"]),
-                    int(smc["Liquidity"]["bullish"]),
-                    int(smc["OrderBlock"]["bullish"]),
-                ]
-            )
-        else:
-            side_smc_count = sum(
-                [
-                    int(smc["FVG"]["bearish"]),
-                    int(smc["BOS"]["bearish"]),
-                    int(smc["Liquidity"]["bearish"]),
-                    int(smc["OrderBlock"]["bearish"]),
-                ]
-            )
-
-        if side_smc_count < self.thresholds["min_smc_confirmations"]:
-            rejection_reasons.append("Directional SMC confirmation missing")
-
-        if selected.score < self.thresholds["min_score"]:
-            rejection_reasons.append(f"Score {selected.score} below threshold {self.thresholds['min_score']}")
-
-        rejection_reasons.extend([r for r in selected_gate_reasons if r not in rejection_reasons])
-
-        if selected.side not in {"BUY", "SELL"}:
-            rejection_reasons.append("No valid direction selected")
-
-        final_verdict = selected.side if not rejection_reasons and selected.valid and selected_gate and total_score >= self.thresholds["min_score"] else "SKIP"
-
-        active_reasons = selected.reasons if final_verdict != "SKIP" else (rejection_reasons or ["No positive signals"])
-        probability = self._conservative_probability(total_score, selected.side, smc["confirmations"], final_verdict != "SKIP")
+        total_score = sum(v["score"] for v in breakdown.values())
+        
+        # Hard Gates & Rejection Reasons (Eighth Requirement)
+        rejections = []
+        if side == "NEUTRAL": 
+            rejections.append("No clear directional bias detected in Regime or SMC.")
+        
+        if not smc["details"]["has_structure"]: 
+            rejections.append("SMC: No BOS or CHOCH detected after last sweep. Zone is unconfirmed.")
+        
+        if not smc["details"]["has_liq_sweep"]: 
+            rejections.append("SMC: No Liquidity Sweep found. Entry lacks institutional confirmation.")
+            
+        if inds["Volume"]["current"] < 0.8: 
+            impact = round((1 - inds["Volume"]["current"]) * 100, 1)
+            rejections.append(f"Volume: Relative Volume {inds['Volume']['current']} is {impact}% below average. Low participation.")
+        
+        # HTF Logic (Second Requirement)
+        if htf_data["state"] == "No HTF Data":
+            mode = self.thresholds["htf_mode"]
+            if mode == "SKIP":
+                rejections.append("HTF: Higher Timeframe data missing. Safety SKIP enabled.")
+            elif mode == "CONTINUE_LOW_CONF":
+                total_score *= 0.7
+                rejections.append("HTF: Data missing. Continuing with 30% confidence penalty.")
+        elif htf_data["bias"] != side and htf_data["bias"] != "NEUTRAL":
+            # If side is same but just different string, ignore
+            if not (side in ["BUY", "SELL"] and htf_data["bias"] in ["BULLISH", "BEARISH"] and 
+                   ((side == "BUY" and htf_data["bias"] == "BULLISH") or (side == "SELL" and htf_data["bias"] == "BEARISH"))):
+                rejections.append(f"HTF: Trend conflict. HTF is {htf_data['bias']} while LTF is {side}.")
+        
+        # Verdict
+        verdict = "SKIP"
+        if not rejections and total_score >= self.thresholds["min_score"]:
+            verdict = side
+            
+        # Probability Model (Fifth Requirement)
+        # Prob = Math-based independent model
+        # Factors: Score (40%), SMC Confidence (30%), Regime (20%), Volatility/Volume (10%)
+        p_score = (total_score / 100) * 40
+        p_smc = (smc["confidence"] / 100) * 30
+        p_regime = (regime["confidence"] / 100) * 20
+        p_vol = (min(1.0, inds["Volume"]["current"] / 1.5)) * 10
+        
+        prob = p_score + p_smc + p_regime + p_vol
+        # Probability should not be zero unless data is invalid
+        prob = max(5, min(98, prob)) if verdict != "SKIP" else max(2, prob * 0.5)
 
         return {
-            "total_score": total_score,
-            "verdict": final_verdict,
-            "reasons": active_reasons,
-            "reason": " | ".join(active_reasons),
+            "total_score": int(total_score),
+            "verdict": verdict,
+            "reasons": rejections if verdict == "SKIP" else smc["reasons"],
+            "reason": " | ".join(rejections if verdict == "SKIP" else smc["reasons"]),
             "regime_data": regime,
             "indicators_data": inds,
             "smc_data": smc,
-            "htf_data": htf_info,
-            "confidence": total_score,
-            "probability": probability,
-            "score_data": {"total": total_score, "breakdown": score_breakdown},
-            "quality_data": {"total": total_score, "breakdown": {k: v["score"] for k, v in score_breakdown.items()}},
-            "validation_data": {"conditions": validation_conditions},
-            "rejection_data": {"reasons": rejection_reasons},
-            "directional_candidates": {
-                "buy": {
-                    "score": round(buy_candidate.score, 2),
-                    "valid": buy_candidate.valid,
-                    "smc_confirmations": buy_candidate.smc_confirmations,
-                    "reasons": buy_candidate.reasons,
-                    "gate": buy_gate,
-                    "gate_reasons": buy_gate_reasons,
-                },
-                "sell": {
-                    "score": round(sell_candidate.score, 2),
-                    "valid": sell_candidate.valid,
-                    "smc_confirmations": sell_candidate.smc_confirmations,
-                    "reasons": sell_candidate.reasons,
-                    "gate": sell_gate,
-                    "gate_reasons": sell_gate_reasons,
-                },
-            },
+            "htf_data": htf_data,
+            "confidence": int(total_score),
+            "probability": int(prob),
+            "score_data": {"total": int(total_score), "breakdown": breakdown},
+            "quality_data": {"total": int(total_score), "breakdown": {k: v["score"] for k, v in breakdown.items()}},
+            "rejection_data": {"reasons": rejections},
+            "validation_data": {"conditions": []}
         }
 
-    # ---------------------------
-    # Trade parameters
-    # ---------------------------
     def get_trade_params(self, df: pd.DataFrame, side: str = "BUY") -> dict:
         price = float(df["close"].iloc[-1])
         atr = float(AverageTrueRange(df["high"], df["low"], df["close"]).average_true_range().iloc[-1])
@@ -644,18 +504,14 @@ class InstitutionalStrategies:
 
         if side == "BUY":
             local_low = float(df["low"].iloc[-20:].min())
-            sl = min(local_low, price - (atr * 1.5))
-            if price > 0 and (price - sl) / price > 0.08:
-                sl = price * 0.92
+            sl = min(local_low, price - (atr * 2.0))
             risk = price - sl
-            tp = price + (risk * 1.8)
+            tp = price + (risk * 2.0)
         else:
             local_high = float(df["high"].iloc[-20:].max())
-            sl = max(local_high, price + (atr * 1.5))
-            if price > 0 and (sl - price) / price > 0.08:
-                sl = price * 1.08
+            sl = max(local_high, price + (atr * 2.0))
             risk = sl - price
-            tp = price - (risk * 1.8)
+            tp = price - (risk * 2.0)
 
         risk_pct = round((abs(price - sl) / price) * 100, 2) if price else 0.0
         rr = round(abs(tp - price) / abs(price - sl), 2) if price != sl else 0.0
