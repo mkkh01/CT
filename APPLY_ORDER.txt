@@ -1,0 +1,4 @@
+1) Replace strategies.py with the bundled version.
+2) Apply Core_utils_smart_money_guard.patch (or edit smart_money_phase accordingly).
+3) Apply Core_ai_engine_smc_guard.patch (or normalize smc_data before logging).
+4) Restart the service.
