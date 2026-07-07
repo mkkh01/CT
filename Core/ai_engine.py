@@ -23,6 +23,8 @@ class AIEngine:
         })
         from Core.redis_client import redis_client
         self.redis = redis_client
+        self._analysis_locks = {} # أقفال لمنع تراكب التحليل لكل رمز
+        self._last_analysis_time = {} # تتبع وقت آخر تحليل لكل رمز
 
     async def _handle_binance_error(self, e, attempt):
         error_str = str(e)
@@ -38,6 +40,8 @@ class AIEngine:
             
             rate_limiter.set_ban(retry_after)
             print(f"🛑 [BINANCE API] تم تلقي 418/429. حظر جميع الطلبات لـ {retry_after} ثانية.")
+            # عند حدوث 418/429، نرفع استثناء فوراً لإنهاء المهمة الحالية ومنع Retries المتوازية
+            raise Exception(f"BANNED: Binance 418/429 detected. Waiting {retry_after}s.")
             return retry_after
         
         wait_time = min((2 ** attempt) + (0.1 * attempt), 60)
@@ -50,6 +54,9 @@ class AIEngine:
         symbol = kwargs.pop('symbol', args[0] if args else "Unknown")
         timeframe = kwargs.pop('timeframe', args[1] if len(args) > 1 else "Unknown")
         source = kwargs.pop('source', 'Unknown')
+        
+        # Diagnostic Log: قبل الاستدعاء
+        print(f"📡 [API CALL] {source} -> {func.__name__}({symbol}, {timeframe}, {kwargs})")
         
         start_time = time.time()
         for attempt in range(5):
@@ -103,7 +110,28 @@ class AIEngine:
         return None
 
     async def analyze_and_trade(self, symbol: str, **kwargs):
-        async with AsyncSessionLocal() as session:
+        # 0. منع تراكب التحليل لنفس الرمز
+        if symbol not in self._analysis_locks:
+            self._analysis_locks[symbol] = asyncio.Lock()
+        
+        if self._analysis_locks[symbol].locked():
+            print(f"⏳ [SYSTEM] تحليل {symbol} قيد التنفيذ بالفعل. تخطي المهمة الجديدة.")
+            return
+
+        # تتبع عدد المهام المتزامنة
+        active_tasks = sum(1 for lock in self._analysis_locks.values() if lock.locked())
+        print(f"📊 [SYSTEM] مهام التحليل النشطة: {active_tasks + 1} | الرمز الحالي: {symbol}")
+
+        async with self._analysis_locks[symbol]:
+            # التحقق من الوقت منذ آخر تحليل (منع التكرار السريع في الفحص الدوري)
+            now_ts = time.time()
+            if symbol in self._last_analysis_time and (now_ts - self._last_analysis_time[symbol]) < 60:
+                # إذا تم التحليل قبل أقل من دقيقة (مثلاً عبر حدث شمعة)، نتخطى الفحص الدوري
+                if kwargs.get('source') == 'SCANNER':
+                    print(f"⏩ [SCANNER] تم تحليل {symbol} مؤخراً. تخطي.")
+                    return
+
+            async with AsyncSessionLocal() as session:
             # 1. جلب إعدادات المستخدم والعملة
             cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
             cfg = cfg_res.scalars().first()
@@ -121,14 +149,18 @@ class AIEngine:
                 ohlcv = self.redis.get_data(hist_key)
                 
                 if not ohlcv:
+                    # 2.1 محاولة استخدام بيانات WebSocket المتراكمة إذا كانت كافية (Stale Cache Guard)
+                    # هذا يقلل الاعتماد على REST عند إعادة التشغيل إذا كانت البيانات موجودة في Redis
                     lock = await self.redis.get_lock(hist_key)
                     async with lock:
                         ohlcv = self.redis.get_data(hist_key)
                         if not ohlcv:
-                            print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol}...")
+                            # جلب من REST فقط عند الضرورة القصوى (Cache Miss الحقيقي)
+                            print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol} من REST...")
                             ohlcv = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, coin.timeframe, limit=250, source="HIST_REST")
                             if ohlcv:
-                                self.redis.set_data(hist_key, ohlcv, ttl=86400)
+                                # TTL أطول للبيانات التاريخية (3 أيام بدلاً من يوم واحد) لأنها ثابتة نسبياً
+                                self.redis.set_data(hist_key, ohlcv, ttl=259200) 
                             else:
                                 print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol}. تخطي التحليل.")
                                 return
@@ -236,6 +268,9 @@ class AIEngine:
             )
             session.add(new_live)
             await session.commit()
+            
+            # تحديث وقت آخر تحليل ناجح
+            self._last_analysis_time[symbol] = time.time()
             
             print(f"🚀 [EXECUTION] تم فتح صفقة مؤسسية لـ {symbol} بنقاط {total_score}")
             if self.bot:

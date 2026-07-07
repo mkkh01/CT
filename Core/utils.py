@@ -18,12 +18,18 @@ class RateLimiter:
 
     async def wait_if_needed(self, weight=1):
         async with self.lock:
+            now = time.time()
             if self.is_banned:
-                remaining_ban = self.ban_until - time.time()
+                remaining_ban = self.ban_until - now
                 if remaining_ban > 0:
-                    print(f"🚫 [RATE LIMITER] النظام محظور حالياً. الانتظار لـ {remaining_ban:.1f} ثانية...")
+                    # لا نطبع الرسالة في كل مرة لتقليل الضجيج، فقط عند الضرورة
                     await asyncio.sleep(remaining_ban)
+                    now = time.time()
                 self.is_banned = False
+                # فترة هدوء إضافية بعد الحظر لضمان استقرار API
+                print(f"✨ [RATE LIMITER] انتهى الحظر. بدء فترة هدوء (5s)...")
+                await asyncio.sleep(5)
+                now = time.time()
 
             now = time.time()
             self.calls = [c for c in self.calls if now - c < self.period]

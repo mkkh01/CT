@@ -94,8 +94,8 @@ class TradeMonitor:
                                 api_calls = redis_client.get_data("binance_api_calls") or 0
                                 print(f"🔍 [SCANNER] فحص شامل دوري ({len(symbols)}) | API Calls: {api_calls}")
                                 for s in symbols:
-                                    asyncio.create_task(ai.analyze_and_trade(s))
-                                    await asyncio.sleep(0.5)
+                                    asyncio.create_task(ai.analyze_and_trade(s, source='SCANNER'))
+                                    await asyncio.sleep(1.0) # زيادة التأخير قليلاً لتخفيف الضغط المتزامن
                                 last_analysis_time = datetime.now()
                                 print("✨ [SCANNER] اكتمل الفحص الدوري.")
 

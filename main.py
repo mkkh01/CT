@@ -44,13 +44,23 @@ async def error_handler(update, context):
     print(f"❌ [TELEGRAM ERROR] {tb_string}")
 
 def main():
-    # منع تشغيل أكثر من نسخة للبوت
-    import socket
+    # منع تشغيل أكثر من نسخة للبوت باستخدام File Lock (أكثر موثوقية في بيئات الـ Containers)
+    lock_file = "/tmp/bot.lock"
     try:
-        lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        lock_socket.bind(('127.0.0.1', 47111))
-    except socket.error:
-        print("⚠️ [SYSTEM] هناك نسخة أخرى من البوت تعمل بالفعل. إغلاق النسخة الحالية.")
+        import fcntl
+        f = open(lock_file, 'w')
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (ImportError, IOError):
+        # Fallback to socket if fcntl is not available (e.g. Windows)
+        import socket
+        try:
+            lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            lock_socket.bind(('127.0.0.1', 47111))
+        except socket.error:
+            print("⚠️ [SYSTEM] هناك نسخة أخرى من البوت تعمل بالفعل (Socket Lock). إغلاق النسخة الحالية.")
+            sys.exit(1)
+    except Exception as e:
+        print(f"⚠️ [SYSTEM] هناك نسخة أخرى من البوت تعمل بالفعل (File Lock).")
         sys.exit(1)
 
     print("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
