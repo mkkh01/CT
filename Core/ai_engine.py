@@ -132,155 +132,155 @@ class AIEngine:
                     return
 
             async with AsyncSessionLocal() as session:
-            # 1. جلب إعدادات المستخدم والعملة
-            cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
-            cfg = cfg_res.scalars().first()
-            if not cfg or not cfg.is_active or cfg.emergency_stop: return
-            
-            coin_res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
-            coin = coin_res.scalars().first()
-            if not coin or not coin.enabled: return
-
-            print(f"🧠 [ANALYSIS] جاري التحليل المؤسسي لـ {symbol} ({coin.timeframe})...")
-
-            # 2. جلب البيانات من الذاكرة اللحظية (Redis & WebSocket)
-            try:
-                hist_key = f"hist_{symbol}_{coin.timeframe}"
-                ohlcv = self.redis.get_data(hist_key)
+                # 1. جلب إعدادات المستخدم والعملة
+                cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
+                cfg = cfg_res.scalars().first()
+                if not cfg or not cfg.is_active or cfg.emergency_stop: return
                 
-                if not ohlcv:
-                    # 2.1 محاولة استخدام بيانات WebSocket المتراكمة إذا كانت كافية (Stale Cache Guard)
-                    # هذا يقلل الاعتماد على REST عند إعادة التشغيل إذا كانت البيانات موجودة في Redis
-                    lock = await self.redis.get_lock(hist_key)
-                    async with lock:
-                        ohlcv = self.redis.get_data(hist_key)
-                        if not ohlcv:
-                            # جلب من REST فقط عند الضرورة القصوى (Cache Miss الحقيقي)
-                            print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol} من REST...")
-                            ohlcv = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, coin.timeframe, limit=250, source="HIST_REST")
-                            if ohlcv:
-                                # TTL أطول للبيانات التاريخية (3 أيام بدلاً من يوم واحد) لأنها ثابتة نسبياً
-                                self.redis.set_data(hist_key, ohlcv, ttl=259200) 
-                            else:
-                                print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol}. تخطي التحليل.")
-                                return
-                else:
-                    log_api_request(symbol, coin.timeframe, "HIST_FETCH", from_cache=True)
-                
-                if not ohlcv or len(ohlcv) == 0:
-                    print(f"❌ [ANALYSIS] بيانات OHLCV فارغة تماماً لـ {symbol}.")
-                    return
+                coin_res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
+                coin = coin_res.scalars().first()
+                if not coin or not coin.enabled: return
 
-                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                
-                # دمج الشمعة الحية من WebSocket إذا لزم الأمر
-                klines_data = self.redis.get_data("live_klines") or {}
-                if symbol in klines_data:
-                    k = klines_data[symbol]
-                    if k.get('x', False): # شمعة مغلقة
-                        last_ts = ohlcv[-1][0]
-                        if k.get('t', 0) > last_ts:
-                            print(f"📥 [DATA] إضافة شمعة مغلقة جديدة من WebSocket لـ {symbol} (TS: {k['t']})")
-                            new_row = [k['t'], k['o'], k['h'], k['l'], k['c'], k['v']]
-                            ohlcv.append(new_row)
-                            if len(ohlcv) > 300: ohlcv.pop(0)
-                            self.redis.set_data(hist_key, ohlcv, ttl=86400)
-                            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                print(f"🧠 [ANALYSIS] جاري التحليل المؤسسي لـ {symbol} ({coin.timeframe})...")
+
+                # 2. جلب البيانات من الذاكرة اللحظية (Redis & WebSocket)
+                try:
+                    hist_key = f"hist_{symbol}_{coin.timeframe}"
+                    ohlcv = self.redis.get_data(hist_key)
                     
-                    # منع تحليل الشمعة الحية (غير المكتملة)
-                    if not k.get('x', False):
-                        df = df[df['timestamp'] < k.get('t', 10**15)]
-                
-                if len(df) < 100:
-                    print(f"❌ [ANALYSIS] البيانات المغلقة لـ {symbol} غير كافية (الطول: {len(df)}).")
+                    if not ohlcv:
+                        # 2.1 محاولة استخدام بيانات WebSocket المتراكمة إذا كانت كافية (Stale Cache Guard)
+                        # هذا يقلل الاعتماد على REST عند إعادة التشغيل إذا كانت البيانات موجودة في Redis
+                        lock = await self.redis.get_lock(hist_key)
+                        async with lock:
+                            ohlcv = self.redis.get_data(hist_key)
+                            if not ohlcv:
+                                # جلب من REST فقط عند الضرورة القصوى (Cache Miss الحقيقي)
+                                print(f"📥 [BINANCE API] جلب بيانات تاريخية أولية لـ {symbol} من REST...")
+                                ohlcv = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, coin.timeframe, limit=250, source="HIST_REST")
+                                if ohlcv:
+                                    # TTL أطول للبيانات التاريخية (3 أيام بدلاً من يوم واحد) لأنها ثابتة نسبياً
+                                    self.redis.set_data(hist_key, ohlcv, ttl=259200) 
+                                else:
+                                    print(f"❌ [ANALYSIS] تعذر الحصول على بيانات لـ {symbol}. تخطي التحليل.")
+                                    return
+                    else:
+                        log_api_request(symbol, coin.timeframe, "HIST_FETCH", from_cache=True)
+                    
+                    if not ohlcv or len(ohlcv) == 0:
+                        print(f"❌ [ANALYSIS] بيانات OHLCV فارغة تماماً لـ {symbol}.")
+                        return
+
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    
+                    # دمج الشمعة الحية من WebSocket إذا لزم الأمر
+                    klines_data = self.redis.get_data("live_klines") or {}
+                    if symbol in klines_data:
+                        k = klines_data[symbol]
+                        if k.get('x', False): # شمعة مغلقة
+                            last_ts = ohlcv[-1][0]
+                            if k.get('t', 0) > last_ts:
+                                print(f"📥 [DATA] إضافة شمعة مغلقة جديدة من WebSocket لـ {symbol} (TS: {k['t']})")
+                                new_row = [k['t'], k['o'], k['h'], k['l'], k['c'], k['v']]
+                                ohlcv.append(new_row)
+                                if len(ohlcv) > 300: ohlcv.pop(0)
+                                self.redis.set_data(hist_key, ohlcv, ttl=86400)
+                                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        
+                        # منع تحليل الشمعة الحية (غير المكتملة)
+                        if not k.get('x', False):
+                            df = df[df['timestamp'] < k.get('t', 10**15)]
+                    
+                    if len(df) < 100:
+                        print(f"❌ [ANALYSIS] البيانات المغلقة لـ {symbol} غير كافية (الطول: {len(df)}).")
+                        return
+                    
+                    # Debug: التأكد من حداثة البيانات
+                    last_candle_time = datetime.fromtimestamp(df['timestamp'].iloc[-1] / 1000)
+                    print(f"🔍 [DEBUG] آخر شمعة لـ {symbol}: {last_candle_time} | عدد الشموع: {len(df)}")
+
+                except Exception as e:
+                    print(f"⚠️ [SYSTEM] خطأ غير متوقع في معالجة بيانات {symbol}: {e}")
                     return
                 
-                # Debug: التأكد من حداثة البيانات
-                last_candle_time = datetime.fromtimestamp(df['timestamp'].iloc[-1] / 1000)
-                print(f"🔍 [DEBUG] آخر شمعة لـ {symbol}: {last_candle_time} | عدد الشموع: {len(df)}")
+                # 3. تحليل الإطار الزمني الأعلى (Filter)
+                df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
+                
+                # 4. نظام التقييم (Scoring Engine)
+                analysis = self.strategies.calculate_combined_score(df, df_higher)
+                total_score = analysis["total_score"]
+                
+                # تسجيل صفقة ظل (Shadow Trade) دائماً للتعلم (Phase 8)
+                new_shadow = ShadowTrade(
+                    symbol=symbol,
+                    indicators_snapshot=analysis,
+                    market_state=analysis["market_state"],
+                    score=total_score
+                )
+                session.add(new_shadow)
+                await session.commit()
 
-            except Exception as e:
-                print(f"⚠️ [SYSTEM] خطأ غير متوقع في معالجة بيانات {symbol}: {e}")
-                return
-            
-            # 3. تحليل الإطار الزمني الأعلى (Filter)
-            df_higher = await self.get_higher_timeframe_data(symbol, coin.timeframe)
-            
-            # 4. نظام التقييم (Scoring Engine)
-            analysis = self.strategies.calculate_combined_score(df, df_higher)
-            total_score = analysis["total_score"]
-            
-            # تسجيل صفقة ظل (Shadow Trade) دائماً للتعلم (Phase 8)
-            new_shadow = ShadowTrade(
-                symbol=symbol,
-                indicators_snapshot=analysis,
-                market_state=analysis["market_state"],
-                score=total_score
-            )
-            session.add(new_shadow)
-            await session.commit()
+                # 5. الفلترة الصارمة (نرفع الحد الأدنى لضمان الجودة)
+                if total_score < 75 or analysis["quality_score"] < 60:
+                    print(f"🚫 [VALIDATION] تم رفض {symbol}: النقاط {total_score}, الجودة {analysis['quality_score']}")
+                    return
 
-            # 5. الفلترة الصارمة (نرفع الحد الأدنى لضمان الجودة)
-            if total_score < 75 or analysis["quality_score"] < 60:
-                print(f"🚫 [VALIDATION] تم رفض {symbol}: النقاط {total_score}, الجودة {analysis['quality_score']}")
-                return
+                # 6. تنفيذ الصفقة الحقيقية (Live Trade)
+                params = self.strategies.get_trade_params(df)
+                
+                # فلترة المخاطرة (R:R Check)
+                if params["rr"] < 1.5:
+                    print(f"🚫 [RISK] تم رفض {symbol}: نسبة العائد للمخاطرة ضعيفة {params['rr']}")
+                    return
 
-            # 6. تنفيذ الصفقة الحقيقية (Live Trade)
-            params = self.strategies.get_trade_params(df)
-            
-            # فلترة المخاطرة (R:R Check)
-            if params["rr"] < 1.5:
-                print(f"🚫 [RISK] تم رفض {symbol}: نسبة العائد للمخاطرة ضعيفة {params['rr']}")
-                return
+                # حساب حجم الصفقة (Risk Engine)
+                risk_amount = coin.capital * (coin.risk_percentage / 100)
+                sl_pct = abs(params["entry"] - params["sl"]) / params["entry"]
+                amount = risk_amount / sl_pct if sl_pct > 0 else 0
+                
+                if amount <= 0 or amount > coin.capital * 2: # حماية من الرافعة المالية المفرطة
+                    print(f"🚫 [RISK] حجم صفقة غير منطقي لـ {symbol}: {amount}")
+                    return
 
-            # حساب حجم الصفقة (Risk Engine)
-            risk_amount = coin.capital * (coin.risk_percentage / 100)
-            sl_pct = abs(params["entry"] - params["sl"]) / params["entry"]
-            amount = risk_amount / sl_pct if sl_pct > 0 else 0
-            
-            if amount <= 0 or amount > coin.capital * 2: # حماية من الرافعة المالية المفرطة
-                print(f"🚫 [RISK] حجم صفقة غير منطقي لـ {symbol}: {amount}")
-                return
+                # التأكد من عدم وجود صفقة مفتوحة
+                check = await session.execute(select(LiveTrade).where((LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")))
+                if check.scalars().first(): 
+                    print(f"⏳ [SYSTEM] توجد صفقة مفتوحة بالفعل لـ {symbol}")
+                    return
 
-            # التأكد من عدم وجود صفقة مفتوحة
-            check = await session.execute(select(LiveTrade).where((LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")))
-            if check.scalars().first(): 
-                print(f"⏳ [SYSTEM] توجد صفقة مفتوحة بالفعل لـ {symbol}")
-                return
-
-            new_live = LiveTrade(
-                symbol=symbol,
-                type="BUY",
-                entry_price=params["entry"],
-                stop_loss=params["sl"],
-                take_profit=params["tp"],
-                amount=amount,
-                score=total_score,
-                entry_reason=analysis["report"],
-                market_state=analysis["market_state"],
-                # إضافة بيانات إضافية للتشخيص
-                indicators_snapshot={
-                    "rr": params["rr"],
-                    "atr": params["atr"],
-                    "quality": analysis["quality_score"],
-                    "timestamp": datetime.now().isoformat()
-                }
-            )
-            session.add(new_live)
-            await session.commit()
-            
-            # تحديث وقت آخر تحليل ناجح
-            self._last_analysis_time[symbol] = time.time()
-            
-            print(f"🚀 [EXECUTION] تم فتح صفقة مؤسسية لـ {symbol} بنقاط {total_score}")
-            if self.bot:
-                msg = (f"🚀 *صفقة مؤسسية جديدة*\n"
-                       f"━━━━━━━━━━━━━━\n"
-                       f"🪙 العملة: #{symbol}\n"
-                       f"🎯 النقاط: {total_score}/100\n"
-                       f"💰 الدخول: `{params['entry']}`\n"
-                       f"🛡️ الوقف: `{params['sl']}`\n"
-                       f"🏁 الهدف: `{params['tp']}`\n"
-                       f"━━━━━━━━━━━━━━\n"
-                       f"📊 السبب: {analysis['report']}")
-                await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
+                new_live = LiveTrade(
+                    symbol=symbol,
+                    type="BUY",
+                    entry_price=params["entry"],
+                    stop_loss=params["sl"],
+                    take_profit=params["tp"],
+                    amount=amount,
+                    score=total_score,
+                    entry_reason=analysis["report"],
+                    market_state=analysis["market_state"],
+                    # إضافة بيانات إضافية للتشخيص
+                    indicators_snapshot={
+                        "rr": params["rr"],
+                        "atr": params["atr"],
+                        "quality": analysis["quality_score"],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+                session.add(new_live)
+                await session.commit()
+                
+                # تحديث وقت آخر تحليل ناجح
+                self._last_analysis_time[symbol] = time.time()
+                
+                print(f"🚀 [EXECUTION] تم فتح صفقة مؤسسية لـ {symbol} بنقاط {total_score}")
+                if self.bot:
+                    msg = (f"🚀 *صفقة مؤسسية جديدة*\n"
+                           f"━━━━━━━━━━━━━━\n"
+                           f"🪙 العملة: #{symbol}\n"
+                           f"🎯 النقاط: {total_score}/100\n"
+                           f"💰 الدخول: `{params['entry']}`\n"
+                           f"🛡️ الوقف: `{params['sl']}`\n"
+                           f"🏁 الهدف: `{params['tp']}`\n"
+                           f"━━━━━━━━━━━━━━\n"
+                           f"📊 السبب: {analysis['report']}")
+                    await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
