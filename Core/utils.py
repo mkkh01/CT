@@ -41,12 +41,10 @@ def make_json_safe(data: Any) -> Any:
     if data is None:
         return None
     try:
-        # استخدام المحول المخصص للتحويل إلى string ثم العودة لـ dict/list
         json_str = json.dumps(data, cls=JSONEncoder)
         return json.loads(json_str)
     except Exception as e:
         logger.error(f"JSON Safety Conversion Error: {e}")
-        # محاولة أخيرة للتنظيف اليدوي إذا فشل الـ JSON
         if isinstance(data, dict):
             return {str(k): make_json_safe(v) for k, v in data.items()}
         elif isinstance(data, list):
@@ -71,13 +69,12 @@ class RateLimiter:
                     await asyncio.sleep(remaining_ban)
                     now = time.time()
                 self.is_banned = False
-                print(f"✨ [RATE LIMITER] انتهى الحظر. بدء فترة هدوء (5s)...")
+                print("✨ [RATE LIMITER] انتهى الحظر. بدء فترة هدوء (5s)...")
                 await asyncio.sleep(5)
                 now = time.time()
 
-            now = time.time()
             self.calls = [c for c in self.calls if now - c < self.period]
-            
+
             while len(self.calls) + weight > self.max_calls:
                 wait_time = self.period - (now - self.calls[0])
                 if wait_time > 0:
@@ -121,26 +118,24 @@ class DiagnosticLogger:
         DiagnosticLogger.section(2, "Market Regime")
         print(f"📈 النظام المكتشف: {regime_data.get('state', 'N/A')}")
         print(f"🎯 درجة الثقة: {regime_data.get('confidence', 0)}%")
+        print(f"📊 قوة الترند: {regime_data.get('trend_strength', 0)}%")
         print(f"📊 القيم المستخدمة:")
         values = regime_data.get('values', {})
         for k, v in values.items():
             print(f"   - {k}: {v}")
         print(f"📝 سبب الاختيار: {regime_data.get('reason', 'N/A')}")
-        if regime_data.get('others_rejected'):
-            print(f"🚫 أسباب رفض الأنظمة الأخرى: {regime_data.get('others_rejected')}")
 
     @staticmethod
     def htf_filter_phase(htf_data):
         """المرحلة 3: HTF Filter"""
         DiagnosticLogger.section(3, "HTF Filter")
-        conditions = htf_data.get('conditions', [])
-        for cond in conditions:
-            icon = "✅" if cond.get('status') else "❌"
-            print(f"{icon} {cond.get('name')}: {cond.get('value')}")
-        
-        verdict = "PASS" if htf_data.get('supported') else "REJECT"
-        icon = "✅" if verdict == "PASS" else "❌"
-        print(f"🏁 القرار النهائي: {icon} {verdict}")
+        print(f"🏷️ الحالة: {htf_data.get('status', 'N/A')}")
+        print(f"🧭 قرار الفلتر: {htf_data.get('decision_state', 'N/A')}")
+        print(f"🔗 متوافق: {'✅' if htf_data.get('aligned') else '❌'}")
+        print(f"🎯 Penalty Confidence: {htf_data.get('confidence_penalty', 0)}")
+        print(f"📉 Penalty Probability: {htf_data.get('probability_penalty', 0)}")
+        print(f"📌 الحد الأدنى للشموع: {htf_data.get('required_candles', 'N/A')}")
+        print(f"📌 الشموع المتوفرة: {htf_data.get('available_candles', 'N/A')}")
         print(f"💬 السبب: {htf_data.get('reason', 'N/A')}")
 
     @staticmethod
@@ -157,22 +152,22 @@ class DiagnosticLogger:
     def smart_money_phase(smc_data):
         """المرحلة 5: Smart Money"""
         DiagnosticLogger.section(5, "Smart Money")
-        
         print(f"📊 الاتجاه: {smc_data.get('direction', 'N/A')}")
         print(f"📊 القوة: {smc_data.get('strength', 0)}")
         print(f"🎯 الثقة: {smc_data.get('confidence', 0)}%")
+        print(f"🏛️ Institutional Grade: {'✅' if smc_data.get('institutional_grade') else '❌'}")
         print(f"🐂 نقاط الشراء: {smc_data.get('bullish_score', 0)}")
         print(f"🐻 نقاط البيع: {smc_data.get('bearish_score', 0)}")
-        
         print("-" * 30)
         print("💎 الهياكل المكتشفة:")
         for structure in smc_data.get('detected_structures', []):
             print(f"   - {structure}")
-            
         details = smc_data.get('details', {})
         print("-" * 30)
         print(f"🌊 سحب سيولة: {'✅' if details.get('has_liq_sweep') else '❌'}")
         print(f"🏗️ هيكل مكتمل: {'✅' if details.get('has_structure') else '❌'}")
+        print(f"🔁 إعادة اختبار: {'✅' if details.get('has_retest') else '❌'}")
+        print(f"📦 حجم مؤكد: {'✅' if details.get('has_volume') else '❌'}")
 
     @staticmethod
     def strategy_validation_phase(validation_data):
@@ -186,9 +181,15 @@ class DiagnosticLogger:
         for cond in conditions:
             status = cond.get('status', False)
             icon = "✅" if status else "❌"
-            print(f"{icon} {cond.get('name')}")
-            if status: success_count += 1
-            else: fail_count += 1
+            current = cond.get("current_value", "N/A")
+            required = cond.get("required_value", "N/A")
+            impact = cond.get("impact", 0)
+            fix = cond.get("suggested_fix", "N/A")
+            print(f"{icon} {cond.get('name')} | Current: {current} | Required: {required} | Impact: {impact} | Fix: {fix}")
+            if status:
+                success_count += 1
+            else:
+                fail_count += 1
         print(f"📊 النتيجة: {success_count} ناجح | {fail_count} فاشل")
 
     @staticmethod
@@ -218,7 +219,14 @@ class DiagnosticLogger:
             print("✅ لا توجد أسباب رفض (الصفقة مقبولة مبدئياً)")
         else:
             for r in reasons:
-                print(f"❌ {r}")
+                if isinstance(r, dict):
+                    print(f"❌ {r.get('name')}")
+                    print(f"   - Current: {r.get('current_value')}")
+                    print(f"   - Required: {r.get('required_value')}")
+                    print(f"   - Impact: {r.get('impact')}")
+                    print(f"   - Fix: {r.get('suggested_fix')}")
+                else:
+                    print(f"❌ {r}")
             print(f"📊 إجمالي أسباب الرفض: {len(reasons)}")
             print("💡 Suggested Action: Wait for institutional confirmation or volume spike.")
 
@@ -245,6 +253,18 @@ class DiagnosticLogger:
         print(f"🛡️ Risk: {decision_data.get('risk_pct', 0)}%")
         print(f"💰 Expected RR: {decision_data.get('rr', 0)}")
         print(f"💬 أسباب القرار: {decision_data.get('reason', 'N/A')}")
+
+    @staticmethod
+    def debug_report_phase(debug_report):
+        DiagnosticLogger.section(11, "Debug Report")
+        print(f"🧩 Inputs: {debug_report.get('inputs', {})}")
+        print(f"🧪 Thresholds: {debug_report.get('thresholds', {})}")
+        print(f"⚖️ Weights: {debug_report.get('weights', {})}")
+        print(f"🧭 Decision Path: {debug_report.get('decision_path', [])}")
+        print(f"⏱️ Execution Time: {debug_report.get('execution_time_seconds', 0)}s")
+        intermediate = debug_report.get("intermediate", {})
+        for key, value in intermediate.items():
+            print(f"   - {key}: {value}")
 
     @staticmethod
     def warning(msg, reason, location):

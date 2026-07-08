@@ -176,6 +176,8 @@ class AIEngine:
                 diag_logger.score_engine_phase(analysis["score_data"])
                 diag_logger.rejection_reasons_phase(analysis["rejection_data"])
                 diag_logger.quality_phase(analysis["quality_data"])
+                if analysis.get("debug_report"):
+                    diag_logger.debug_report_phase(analysis["debug_report"])
 
                 # Phase 10: Final Decision
                 params = self.strategies.get_trade_params(df, side=analysis["verdict"])
