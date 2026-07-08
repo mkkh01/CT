@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import logging
+import time
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
 from sqlalchemy import select, delete, func
@@ -123,15 +124,103 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.clear()
 
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """زر الأسعار المباشرة — يقرأ من Redis مع fallback محلي و freshness."""
     from Core.redis_client import redis_client
-    prices = redis_client.get_data("live_prices")
-    if not prices:
-        await update.message.reply_text("⏳ جاري الاتصال بالرادار أو لا توجد بيانات حالياً...")
+    from Core.observability import Obs, _log
+
+    now_ts = time.time()
+    source = "Redis"
+    redis_alive = True
+    prices = None
+
+    # ── 1. Try Redis ──
+    try:
+        if redis_client.redis:
+            prices = redis_client.get_data("live_prices")
+        else:
+            redis_alive = False
+    except Exception:
+        redis_alive = False
+
+    # ── 2. Fallback: local /tmp file ──
+    if not prices and not redis_alive:
+        source = "local-fallback"
+        try:
+            local_path = "/tmp/local_live_prices.json"
+            if os.path.exists(local_path):
+                with open(local_path, "r") as f:
+                    prices = json.load(f)
+        except Exception:
+            prices = None
+
+    # ── 3. Calculate freshness ──
+    fresh_data: dict = {}
+    if prices:
+        for sym, d in prices.items():
+            try:
+                dtime_str = d.get("time", "")
+                if dtime_str:
+                    dtime = datetime.strptime(dtime_str, "%H:%M:%S").time()
+                    today = datetime.utcnow()
+                    dtime_dt = datetime.combine(today.date(), dtime)
+                    age = (today - dtime_dt).total_seconds()
+                    if age < 0:
+                        age += 86400
+                else:
+                    age = 99999
+            except Exception:
+                age = 99999
+            fresh_data[sym] = {"price": d.get("price", "?"), "age_s": age}
+
+    # ── 4. Diagnostics log ──
+    sym_count = len(prices) if prices else 0
+    oldest_age = max((v["age_s"] for v in fresh_data.values()), default=99999)
+    newest_age = min((v["age_s"] for v in fresh_data.values()), default=99999)
+    _log(
+        f"  [BTN:LIVE] source={source} redis={'UP' if redis_alive else 'DOWN'} "
+        f"symbols={sym_count} newest={newest_age:.0f}s oldest={oldest_age:.0f}s"
+    )
+    Obs.event_log("Bot", "show_live_prices",
+                  f"source={source} symbols={sym_count}",
+                  status="OK" if sym_count > 0 else "EMPTY")
+
+    # ── 5. Build response ──
+    if not prices or not fresh_data:
+        if not redis_alive:
+            await update.message.reply_text(
+                "🔴 *مصدر التخزين غير متاح*\n\n"
+                "Redis لا يستجيب ولا يوجد كاش محلي.",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                "⏳ *لا توجد أسعار وصلت بعد*\n\n"
+                "الرادار متصل لكن لم تصل تكة سعر.\n"
+                "تأكد من إضافة عملات (➕ إضافة عملة).",
+                parse_mode="Markdown",
+            )
         return
-    msg = "📈 *الأسعار المباشرة*\n━━━━━━━━━━━━━━\n"
-    for s, d in prices.items():
-        msg += f"🪙 {s}: `{d['price']}` (🕒 {d.get('time', 'N/A')})\n"
-    await update.message.reply_text(msg, parse_mode='Markdown')
+
+    # ── 6. Per-symbol display with freshness ──
+    STALE = 120
+    lines = [f"📈 *الأسعار المباشرة*  (عبر {source})", "━━━━━━━━━━━━━━"]
+    for sym, d in sorted(fresh_data.items(), key=lambda x: x[1]["age_s"]):
+        age = d["age_s"]
+        price = d["price"]
+        if age > STALE:
+            tag = "⚠️"
+            age_s = f"منذ {int(age)}s"
+        elif age < 5:
+            tag = "🟢"
+            age_s = "الآن"
+        else:
+            tag = "🟡"
+            age_s = f"منذ {int(age)}s"
+        lines.append(f"{tag} *{sym}*: `{price}`  ({age_s})")
+    lines.append("━━━━━━━━━━━━━━")
+    if source == "local-fallback":
+        lines.append("⚠️ Redis متوقف — بيانات من الكاش المحلي")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:

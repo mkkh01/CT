@@ -42,6 +42,13 @@ logging.basicConfig(
 # Suppress httpx/httpcore request spam — we only want errors
 for _lib in ("httpx", "httpcore"):
     logging.getLogger(_lib).setLevel(logging.WARNING)
+
+# Structured JSON log sink (optional — set OBS_JSON_LOG=events.jsonl)
+_obs_json_path = os.environ.get("OBS_JSON_LOG", "")
+if _obs_json_path:
+    os.environ["OBS_JSON_LOG"] = _obs_json_path  # propage to observability
+    logger.info("[SYSTEM] Structured event log: %s", _obs_json_path)
+
 logger = logging.getLogger("CT_Main")
 
 # ── Globals ────────────────────────────────────────────────────────
