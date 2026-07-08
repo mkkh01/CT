@@ -11,7 +11,6 @@ import numpy as np
 from database import AsyncSessionLocal, ShadowTrade, UserConfig
 from config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
-    REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
     DECISION_CONFIG,
     ADMIN_ID,
 )
