@@ -156,13 +156,8 @@ def _kv(k: str, v: Any, indent: int = 2) -> str:
     return f"{' ' * indent}{k:<18s} {v}"
 
 def _log(msg: str):
-    """Print to stdout only — Render captures both stdout and stderr.
-
-    We intentionally do NOT also log via the logging module, because
-    basicConfig already emits to stderr which Render also captures,
-    producing duplicate lines for every observability event.
-    """
-    print(msg)
+    """Print to stdout with immediate flush for Render."""
+    print(msg, flush=True)
 
 
 def info(lines: List[str]):

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from database import AsyncSessionLocal, LiveTrade, TrackedCoin, UserConfig
 from config import ADMIN_ID, DEBUG_MODE
 from Core.redis_client import redis_client
-from Core.observability import Obs, Level, is_level
+from Core.observability import Obs, Level, is_level, _log
 
 logger_ws = __import__("logging").getLogger("CT_Monitor")
 
@@ -71,6 +71,7 @@ class TradeMonitor:
                     symbols = [c.symbol for c in coins]
 
                     if not symbols:
+                        _log(f"  [MONITOR] ℹ️  لا توجد عملات مفعلة — أضف عملة من بوت تلجرام (➕ إضافة عملة)")
                         await asyncio.sleep(15)
                         continue
 
