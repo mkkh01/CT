@@ -3,9 +3,11 @@ import sys
 import asyncio
 import logging
 import traceback
+import time
 from keep_alive import keep_alive
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from telegram.request import HTTPXRequest
+from telegram.error import Conflict
 from config import TELEGRAM_TOKEN, ADMIN_ID
 from database import init_db, AsyncSessionLocal, UserConfig
 
@@ -21,9 +23,66 @@ from bot.handlers import (
     ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF
 )
 from Core.trade_monitor import TradeMonitor
+from Core.redis_client import redis_client
 
 # تشغيل خادم Keep-Alive
 keep_alive()
+
+BOT_INSTANCE_LOCK_KEY = "ct:telegram:polling_lock"
+BOT_INSTANCE_LOCK_TTL = int(os.environ.get("BOT_INSTANCE_LOCK_TTL", "300"))
+BOT_INSTANCE_LOCK_REFRESH = int(os.environ.get("BOT_INSTANCE_LOCK_REFRESH", "120"))
+
+
+def _instance_lock_client():
+    return getattr(redis_client, "redis", None)
+
+
+def acquire_bot_instance_lock(max_wait_seconds: int = 60, retry_interval: int = 5) -> bool:
+    """Acquire a distributed lock so only one bot instance polls Telegram."""
+    client = _instance_lock_client()
+    if client is None:
+        logger.warning("⚠️ [SYSTEM] Redis غير متاح؛ سيتم تشغيل البوت بدون قفل موزع.")
+        return True
+
+    token = f"{os.getenv('RENDER_SERVICE_ID', 'local')}:{os.getpid()}:{int(time.time()*1000)}"
+    deadline = time.time() + max_wait_seconds
+    while True:
+        try:
+            ok = client.set(BOT_INSTANCE_LOCK_KEY, token, nx=True, ex=BOT_INSTANCE_LOCK_TTL)
+            if ok:
+                app_state = {"token": token, "client": client}
+                globals()["_BOT_LOCK_STATE"] = app_state
+                return True
+        except Exception as exc:
+            logger.warning(f"⚠️ [SYSTEM] تعذر إنشاء قفل البوت الموزع: {exc}")
+            return True
+
+        if time.time() >= deadline:
+            logger.error("❌ [SYSTEM] يوجد مثيل آخر من البوت يعمل الآن. سيتم الإقلاع بدون polling لتجنب تضارب Telegram.")
+            return False
+
+        logger.info("⏳ [SYSTEM] انتظار تحرير قفل البوت قبل بدء polling...")
+        time.sleep(retry_interval)
+
+
+async def refresh_bot_instance_lock():
+    state = globals().get("_BOT_LOCK_STATE")
+    if not state:
+        return
+    client = state.get("client")
+    token = state.get("token")
+    while True:
+        await asyncio.sleep(BOT_INSTANCE_LOCK_REFRESH)
+        try:
+            current = client.get(BOT_INSTANCE_LOCK_KEY)
+            if current != token:
+                logger.error("❌ [SYSTEM] فُقد قفل البوت الموزع؛ إيقاف التحديث الذاتي.")
+                return
+            client.expire(BOT_INSTANCE_LOCK_KEY, BOT_INSTANCE_LOCK_TTL)
+        except Exception as exc:
+            logger.warning(f"⚠️ [SYSTEM] تعذر تحديث قفل البوت الموزع: {exc}")
+            return
+
 
 async def start_background_tasks(app):
     """تشغيل الرادار المؤسسي والمراقبة"""
@@ -37,6 +96,7 @@ async def start_background_tasks(app):
 async def post_init(app: Application):
     from Core.utils import safe_create_task
     safe_create_task(start_background_tasks(app), name="StartBackgroundTasks")
+    safe_create_task(refresh_bot_instance_lock(), name="RefreshBotInstanceLock")
 
 async def error_handler(update, context):
     """سجل الأخطاء مع Traceback كامل"""
@@ -94,7 +154,13 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ النظام المؤسسي جاهز بالكامل.")
-    app.run_polling(drop_pending_updates=True)
+    if not acquire_bot_instance_lock():
+        logger.error("🚫 [SYSTEM] تم منع تشغيل polling لمنع تضارب getUpdates بين مثيلين.")
+        return
+    try:
+        app.run_polling(drop_pending_updates=True)
+    except Conflict as exc:
+        logger.error(f"🚫 [TELEGRAM] Conflict detected: {exc}")
 
 if __name__ == "__main__":
     main()

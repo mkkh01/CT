@@ -95,6 +95,110 @@ import config
 logger = logging.getLogger("CT_System")
 
 
+class _DecisionConfigProxy:
+    """Compatibility layer that keeps the strategy engine working even when
+    config.py does not expose a rich DECISION_CONFIG object.
+
+    Missing values fall back to conservative defaults so the engine prefers
+    skipping trades over entering weak setups.
+    """
+
+    DEFAULTS = {
+        "score_max": 100.0,
+        "score_min": 0.0,
+        "neutral_score": 50.0,
+        "epsilon": 1e-9,
+        "adx_min_trend": 20.0,
+        "min_candles_ltf": 120,
+        "min_candles_htf": 120,
+        "rr_min": 2.0,
+        "required_data_quality": 100.0,
+        "data_quality_required_for_entry": 100.0,
+        "trend_confidence_min": 75.0,
+        "confidence_floor": 0.0,
+        "confidence_ceiling": 100.0,
+        "probability_floor": 0.0,
+        "probability_ceiling": 100.0,
+        "htf_missing_policy": getattr(config, "HTF_MODE", "SKIP"),
+        "htf_missing_confidence_penalty": 30.0,
+        "htf_missing_probability_penalty": 35.0,
+        "htf_conflict_confidence_penalty": 55.0,
+        "htf_conflict_probability_penalty": 60.0,
+        "equal_level_tolerance_atr": 0.15,
+        "sweep_volume_multiplier": 1.25,
+        "sweep_wick_ratio_min": 0.55,
+        "min_break_distance_atr": 0.50,
+        "min_close_beyond_atr": 0.20,
+        "confirmation_closes": 2,
+        "ob_lookback": 20,
+        "fvg_min_gap_atr": 0.25,
+        "atr_stop_multiplier": 1.5,
+        "swing_stop_buffer_atr": 0.20,
+        "volume_lookback": 20,
+        "volume_session_boost": {
+            "ASIA": 0.95,
+            "LONDON": 1.10,
+            "NEW_YORK": 1.15,
+            "OVERLAP": 1.20,
+            "OFF_HOURS": 0.85,
+        },
+        "volume_rel_threshold": 1.20,
+        "volume_high_threshold": 1.50,
+        "volume_percentile_threshold": 70.0,
+        "volume_zscore_threshold": 1.0,
+        "rsi_neutral": 50.0,
+        "rsi_band": 10.0,
+        "macd_scale_atr_mult": 0.50,
+        "swing_left": 3,
+        "swing_right": 2,
+        "trend_persistence_lookback": 5,
+        "ema_fast": 20,
+        "ema_mid": 50,
+        "ema_slow": 100,
+        "ema_anchor": 200,
+        "slope_lookback": 5,
+        "ema_entanglement_ratio": 0.004,
+        "confidence_weights": {
+            "data_quality": 0.20,
+            "trend_quality": 0.20,
+            "momentum_quality": 0.15,
+            "smc_quality": 0.20,
+            "htf_quality": 0.10,
+            "volume_quality": 0.10,
+            "regime_stability": 0.05,
+        },
+        "probability_weights": {
+            "trend_strength": 0.20,
+            "regime": 0.15,
+            "momentum": 0.15,
+            "volume": 0.10,
+            "htf": 0.10,
+            "smc": 0.15,
+            "risk": 0.10,
+            "historical_performance": 0.05,
+        },
+        "momentum_weights": {
+            "rsi": 0.35,
+            "macd": 0.35,
+            "trend": 0.30,
+        },
+        "asia_session": (0, 7),
+        "london_session": (7, 13),
+        "new_york_session": (13, 21),
+        "overlap_session": (13, 16),
+    }
+
+    def __init__(self, base: Any = None):
+        self._base = base
+
+    def __getattr__(self, item: str):
+        if self._base is not None and hasattr(self._base, item):
+            return getattr(self._base, item)
+        if item in self.DEFAULTS:
+            return self.DEFAULTS[item]
+        raise AttributeError(item)
+
+
 @dataclass(frozen=True)
 class SMCComponent:
     name: str
@@ -113,7 +217,8 @@ class InstitutionalStrategies:
     """
 
     def __init__(self, decision_config: Optional[config.DecisionConfig] = None):
-        self.cfg = decision_config or config.DECISION_CONFIG
+        base_cfg = decision_config if decision_config is not None else getattr(config, "DECISION_CONFIG", None)
+        self.cfg = _DecisionConfigProxy(base_cfg)
 
         # Backwards-compatible dictionaries for older code paths.
         self.thresholds = {

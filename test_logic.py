@@ -38,7 +38,7 @@ def generate_mock_data(trend="bullish"):
         
     return df
 
-async def test_analysis():
+async def run_analysis():
     strategies = InstitutionalStrategies()
     
     print("\n--- Testing Bullish Scenario ---")
@@ -63,4 +63,4 @@ async def test_analysis():
         print(f"❌ JSON Serialization Failed: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(test_analysis())
+    asyncio.run(run_analysis())
