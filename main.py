@@ -5,8 +5,9 @@ Lifecycle:
   START:  config → db → redis → telegram manager → background tasks
   STOP:   background tasks → telegram polling → db connections
 
-Only one Telegram polling instance is ever active (enforced by
-Core/telegram_manager.py + distributed Redis lock).
+Observability:
+  OBSERVABILITY_LEVEL=normal|debug|trace  (default: normal)
+  OBS_JSON_LOG=path/to/events.jsonl       (optional structured log sink)
 """
 
 import asyncio
@@ -28,74 +29,63 @@ from config import (
 from database import init_db, AsyncSessionLocal, UserConfig
 from Core.redis_client import redis_client
 from Core.telegram_manager import TelegramManager, set_telegram_manager
-from Core.diagnostics import Diagnostics, set_debug_mode, get_diagnostics
+from Core.observability import Obs, Level, set_level, is_level
 from Core.trade_monitor import TradeMonitor
 from Core.utils import safe_create_task
 from keep_alive import keep_alive
 
-# ── Logging setup ───────────────────────────────────────────────────
+# ── Logging setup ──────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s [%(name)-18s] %(levelname)-8s %(message)s",
     level=logging.DEBUG if DEBUG_MODE else logging.INFO,
 )
 logger = logging.getLogger("CT_Main")
 
-# ── Globals ─────────────────────────────────────────────────────────
+# ── Globals ────────────────────────────────────────────────────────
 _started_at = time.time()
 _shutdown_event = asyncio.Event()
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 # Telegram error handler
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 
 async def telegram_error_handler(update, context):
-    """Log errors centrally; never crash on Telegram errors."""
     if isinstance(context.error, Conflict):
-        logger.warning("[TELEGRAM] Conflict detected (another instance?) — ignoring.")
+        logger.warning("[TELEGRAM] Conflict detected — ignoring.")
         return
-    tb = "".join(
-        traceback.format_exception(
-            None, context.error, context.error.__traceback__
-        )
-    )
-    logger.error("[TELEGRAM] Exception: %s\n%s", context.error, tb)
-    get_diagnostics().error_report(
-        module="Telegram",
+    Obs.error_full(
+        component="Telegram",
         function="error_handler",
         error_type=type(context.error).__name__,
         message=str(context.error),
-        stack_trace=tb,
+        cause="Unexpected Telegram API error",
+        fix="Check network connectivity and bot token validity",
     )
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 # Background tasks
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 
 async def start_background_tasks(app):
-    """Launch TradeMonitor after Telegram is ready."""
     logger.info("[SYSTEM] Launching institutional radar (TradeMonitor)...")
     await asyncio.sleep(2)
     monitor = TradeMonitor(bot=app.bot)
     safe_create_task(monitor.check_prices(), name="TradeMonitor_CheckPrices")
-    logger.info("[SYSTEM] ✅ Institutional radar active.")
+    Obs.event_log("Main", "start_background_tasks", "TradeMonitor launched",
+                   status="OK")
 
 
 async def post_init(app):
-    """Telegram post_init callback — run after Application is built."""
-    safe_create_task(
-        start_background_tasks(app), name="StartBackgroundTasks"
-    )
+    safe_create_task(start_background_tasks(app), name="StartBackgroundTasks")
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 # Startup health checks
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 
 async def run_health_checks() -> dict:
-    """Verify every subsystem before starting the bot."""
-    diag = get_diagnostics()
     results: dict[str, bool] = {}
 
     # Database
@@ -118,7 +108,7 @@ async def run_health_checks() -> dict:
         logger.warning("Redis health check: %s", e)
         results["Redis"] = bool(redis_client.redis)
 
-    # Telegram token presence
+    # Telegram config
     results["Telegram Config"] = bool(TELEGRAM_TOKEN and TELEGRAM_TOKEN.strip())
 
     # Environment
@@ -130,7 +120,7 @@ async def run_health_checks() -> dict:
         RiskManager()
         results["Risk Manager"] = True
     except Exception as e:
-        logger.warning("Risk Manager init: %s", e)
+        logger.warning("Risk Manager: %s", e)
         results["Risk Manager"] = False
 
     # Strategies
@@ -139,97 +129,76 @@ async def run_health_checks() -> dict:
         InstitutionalStrategies()
         results["Strategies"] = True
     except Exception as e:
-        logger.warning("Strategies init: %s", e)
+        logger.warning("Strategies: %s", e)
         results["Strategies"] = False
 
     results["Core Engine"] = True
     results["Decision Engine"] = True
-
     return results
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 # Signal handling
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 
-def setup_signal_handlers(telegram_manager: TelegramManager, loop: asyncio.AbstractEventLoop):
-    """Register OS signal handlers for graceful shutdown."""
-
+def setup_signal_handlers(telegram_manager: TelegramManager,
+                          loop: asyncio.AbstractEventLoop):
     def _shutdown(signame: str):
-        logger.info("[SYSTEM] Received %s — shutting down gracefully...", signame)
+        logger.info("[SYSTEM] %s — shutting down...", signame)
         _shutdown_event.set()
-        # Schedule the async stop on the event loop
-        asyncio.run_coroutine_threadsafe(_graceful_shutdown(telegram_manager), loop)
+        asyncio.run_coroutine_threadsafe(
+            _graceful_shutdown(telegram_manager), loop
+        )
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, lambda s=sig: _shutdown(s.name))
         except NotImplementedError:
-            # Windows / some environments don't support add_signal_handler
             signal.signal(sig, lambda s, f: _shutdown(s.name))
 
 
 async def _graceful_shutdown(telegram_manager: TelegramManager):
-    """Stop all services in reverse order."""
-    logger.info("[SYSTEM] ========== SHUTDOWN SEQUENCE ==========")
-
-    # 1. Stop background tasks (TradeMonitor stops via shutdown_event)
-    logger.info("[SYSTEM] 1/3 Stopping trade monitor...")
+    Obs.event_log("Main", "shutdown", "Sequence started")
     _shutdown_event.set()
-
-    # 2. Stop Telegram polling
-    logger.info("[SYSTEM] 2/3 Stopping Telegram bot...")
     await telegram_manager.stop()
-
-    # 3. Close database
-    logger.info("[SYSTEM] 3/3 Closing database connections...")
     try:
         from database import engine
         await engine.dispose()
     except Exception as e:
         logger.warning("DB dispose: %s", e)
+    Obs.event_log("Main", "shutdown", "Complete", status="OK")
 
-    logger.info("[SYSTEM] ========== SHUTDOWN COMPLETE ==========")
 
-
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 # Main
-# ═══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 
 async def async_main():
-    """Primary async entry point."""
-    diag = get_diagnostics()
-
-    # ── Banner ──
-    diag.startup_banner()
+    # ── Startup Banner ──
+    Obs.startup_banner()
 
     # ── Validate config ──
-    logger.info("[SYSTEM] Validating configuration...")
     try:
         validate_config()
+        Obs.event_log("Config", "validate", "Passed", status="OK")
     except RuntimeError as cfg_err:
-        logger.critical(str(cfg_err))
-        print(f"\n🚫 FATAL: {cfg_err}")
+        Obs.error_full("Config", "validate", "RuntimeError",
+                       str(cfg_err), cause="Missing required config",
+                       fix="Set all required environment variables")
         return 1
+
+    # ── Config dump (non-secret values) ──
+    if is_level(Level.DEBUG):
+        import config as cfg_mod
+        Obs.config_dump(cfg_mod)
 
     # ── Health checks ──
-    logger.info("[SYSTEM] Running subsystem health checks...")
     components = await run_health_checks()
-    diag.startup_report(components)
+    Obs.startup_report(components)
 
     if not components.get("Database", False):
-        logger.critical("Database is unavailable — cannot start.")
+        logger.critical("Database unavailable — cannot start.")
         return 1
-
-    # ── Config diagnostics ──
-    ws_ok = True  # Will be verified when TradeMonitor connects
-    diag.config_status(
-        db_ok=components.get("Database", False),
-        redis_ok=components.get("Redis", False),
-        telegram_ok=components.get("Telegram Config", False),
-        ws_ok=ws_ok,
-        env_ok=components.get("Environment", False),
-    )
 
     # ── Create Telegram manager ──
     tg = TelegramManager(
@@ -239,27 +208,36 @@ async def async_main():
     )
     set_telegram_manager(tg)
 
-    # ── Start Flask keep-alive server ──
+    # ── Start Flask keep-alive ──
     keep_alive()
 
     # ── Start Telegram ──
     ok = await tg.start()
     if not ok:
-        logger.critical("[SYSTEM] Telegram failed to start after retries.")
+        logger.critical("[SYSTEM] Telegram failed to start.")
         return 1
 
-    # Set up graceful shutdown
+    # ── Periodic snapshots ──
     loop = asyncio.get_running_loop()
     setup_signal_handlers(tg, loop)
 
-    # ── Wait for shutdown signal ──
+    async def periodic_snapshot():
+        while not _shutdown_event.is_set():
+            await asyncio.sleep(300)
+            Obs.system_snapshot(
+                uptime=time.time() - _started_at,
+                api_calls=Obs.api_rest_count,
+            )
+
+    safe_create_task(periodic_snapshot(), name="PeriodicSnapshot")
+
+    # ── Wait for shutdown ──
     await _shutdown_event.wait()
     await _graceful_shutdown(tg)
     return 0
 
 
 def main():
-    """Synchronous entry — creates event loop and runs async_main."""
     exit_code = 1
     try:
         exit_code = asyncio.run(async_main())
@@ -267,7 +245,9 @@ def main():
         logger.info("[SYSTEM] KeyboardInterrupt — exiting.")
         exit_code = 0
     except Exception as e:
-        logger.critical("[SYSTEM] Fatal error: %s", e, exc_info=True)
+        Obs.error_full("Main", "main", type(e).__name__, str(e),
+                       cause="Unexpected fatal error",
+                       fix="Check logs and restart")
         exit_code = 1
     sys.exit(exit_code)
 

@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import logging
+import time
 import traceback
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
@@ -17,27 +18,30 @@ from config import (
 from Core.redis_client import redis_client
 from strategies import InstitutionalStrategies
 from Core.utils import safe_create_task, DiagnosticLogger
-from Core.diagnostics import Diagnostics, get_diagnostics, is_debug
+from Core.observability import Obs, Level, is_level
 
 logger = logging.getLogger("CT_System")
 
-# ── Module helpers ─────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════
+# Helpers
+# ══════════════════════════════════════════════════════════════════
 
 def _fmt_ts(ts_val) -> str:
-    """Safe timestamp formatting for diagnostics."""
     if ts_val is None or ts_val == 0:
         return "N/A"
     try:
         if isinstance(ts_val, (int, float)):
-            return datetime.fromtimestamp(ts_val / 1000 if ts_val > 1e12 else ts_val, tz=timezone.utc).strftime("%H:%M:%S")
+            return datetime.fromtimestamp(
+                ts_val / 1000 if ts_val > 1e12 else ts_val, tz=timezone.utc
+            ).strftime("%H:%M:%S")
         return str(ts_val)
     except Exception:
         return str(ts_val)
 
 
-def _build_checklist(analysis: Dict, params: Dict, symbol: str) -> list:
-    """Build a structured decision checklist from analysis results."""
-    items = []
+def _build_decision_checklist(analysis: Dict, params: Dict) -> list:
+    """Build structured checklist for Obs.decision_report()."""
     score = analysis.get("total_score", 0)
     quality = analysis.get("quality_data", {}).get("total", 0)
     confidence = analysis.get("confidence", 0)
@@ -48,31 +52,50 @@ def _build_checklist(analysis: Dict, params: Dict, symbol: str) -> list:
     smc_ok = analysis.get("smc_data", {}).get("institutional_grade", False)
     regime = analysis.get("regime_data", {}).get("state", "Unknown")
     rejection = analysis.get("rejection_data", {}).get("reasons", [])
+    trend = analysis.get("regime_data", {}).get("state", "Unknown")
 
-    items.append({"name": "Score >= 70", "current": score, "required": 70, "passed": score >= 70, "module": "strategies.py"})
-    items.append({"name": "Quality >= 60", "current": quality, "required": 60, "passed": quality >= 60, "module": "strategies.py"})
-    items.append({"name": "Confidence >= 50", "current": confidence, "required": 50, "passed": confidence >= 50, "module": "strategies.py"})
-    items.append({"name": "Probability >= 50", "current": probability, "required": 50, "passed": probability >= 50, "module": "strategies.py"})
-    items.append({"name": "Risk <= 2%", "current": f"{risk_pct}%", "required": "≤2%", "passed": risk_pct <= 2, "module": "risk_manager.py"})
-    items.append({"name": "HTF Alignment", "current": "YES" if htf_aligned else "NO", "required": "YES", "passed": htf_aligned, "module": "strategies.py"})
-    items.append({"name": "SMC Validated", "current": "YES" if smc_ok else "NO", "required": "YES", "passed": smc_ok, "module": "Core/utils.py"})
-    items.append({"name": "Regime Allowed", "current": regime, "required": "Not SKIP", "passed": regime != "SKIP", "module": "strategies.py"})
-    items.append({"name": "RR >= 1.5", "current": rr, "required": 1.5, "passed": rr >= 1.5, "module": "risk_manager.py"})
-    items.append({"name": "No Rejection Reason", "current": len(rejection), "required": 0, "passed": len(rejection) == 0, "module": "strategies.py"})
-    return items
+    return [
+        {"name": "Score >= 70",        "current": f"{score:.0f}",   "required": "70",     "passed": score >= 70,        "module": "strategies.py"},
+        {"name": "Quality >= 60",      "current": f"{quality:.0f}", "required": "60",     "passed": quality >= 60,      "module": "strategies.py"},
+        {"name": "Confidence >= 50",   "current": f"{confidence:.0f}", "required": "50",  "passed": confidence >= 50,   "module": "strategies.py"},
+        {"name": "Probability >= 50",  "current": f"{probability:.0f}", "required": "50", "passed": probability >= 50,  "module": "strategies.py"},
+        {"name": "Risk <= 2%",         "current": f"{risk_pct:.2f}%", "required": "≤2%",  "passed": risk_pct <= 2,      "module": "risk_manager.py"},
+        {"name": "HTF Alignment",      "current": "YES" if htf_aligned else "NO", "required": "YES", "passed": htf_aligned, "module": "strategies.py"},
+        {"name": "SMC Validated",      "current": "YES" if smc_ok else "NO", "required": "YES", "passed": smc_ok, "module": "Core/utils.py"},
+        {"name": "Regime Allowed",     "current": regime,           "required": "Not SKIP", "passed": regime != "SKIP",  "module": "strategies.py"},
+        {"name": "Trend Direction",    "current": trend,            "required": "Bullish/Bearish", "passed": trend not in ("SKIP", "Unknown"), "module": "strategies.py"},
+        {"name": "RR >= 1.5",          "current": f"{rr:.1f}",      "required": "1.5",    "passed": rr >= 1.5,          "module": "risk_manager.py"},
+        {"name": "No Rejection Reas.", "current": str(len(rejection)), "required": "0",   "passed": len(rejection) == 0, "module": "strategies.py"},
+    ]
 
+
+def _build_smc_checks(smc_data: Dict) -> list:
+    """Build SMC strategy checks for Obs.strategy_check()."""
+    details = smc_data.get("details", {})
+    structures = smc_data.get("detected_structures", [])
+    return [
+        {"name": "BOS (Break of Structure)", "current": smc_data.get("direction", "?"), "required": "Bullish/Bearish", "status": bool(smc_data.get("direction"))},
+        {"name": "CHoCH (Change of Char.)",  "current": str(structures), "required": "≥1 structure", "status": bool(structures)},
+        {"name": "Liquidity Sweep",          "current": "YES" if details.get("has_liq_sweep") else "NO", "required": "YES", "status": bool(details.get("has_liq_sweep"))},
+        {"name": "Order Block",               "current": "YES" if smc_data.get("institutional_grade") else "NO", "required": "YES", "status": bool(smc_data.get("institutional_grade"))},
+        {"name": "FVG / Retest",              "current": "YES" if details.get("has_retest") else "NO", "required": "YES", "status": bool(details.get("has_retest"))},
+        {"name": "Volume Confirmation",       "current": "YES" if details.get("has_volume") else "NO", "required": "YES", "status": bool(details.get("has_volume"))},
+    ]
+
+
+# ══════════════════════════════════════════════════════════════════
+# AIEngine
+# ══════════════════════════════════════════════════════════════════
 
 class AIEngine:
     """
     Institutional AI analysis and signal-generation engine.
 
-    يعمل بوضعين:
-    • وضع المراقبة (افتراضي): بيانات السوق من Binance العامة بدون API keys.
-    • وضع المصادقة: مع BINANCE_API_KEY + BINANCE_API_SECRET للحصول على
-      معدل طلبات أعلى ووصول للنقاط الخاصة.
+    Dual mode:
+      • Monitoring-only (default): public Binance endpoints, no API keys.
+      • Authenticated: BINANCE_API_KEY + BINANCE_API_SECRET for higher limits.
 
-    في كلا الوضعين، الأخطاء تُسجّل ويعاد DataFrame فارغ
-    بدلاً من انهيار event loop.
+    Every decision is fully transparent via Core.observability.Obs.
     """
 
     def __init__(self, bot=None):
@@ -81,179 +104,186 @@ class AIEngine:
         self._last_analysis = {}
         self._analysis_lock = asyncio.Lock()
 
-        # Track whether live Binance credentials are available.
-        self._has_credentials = bool(BINANCE_API_KEY and BINANCE_API_KEY.strip()
-                                     and BINANCE_API_SECRET and BINANCE_API_SECRET.strip())
-        if not self._has_credentials:
-            logger.info(
-                "ℹ️  [AI ENGINE] Running in monitoring-only mode — "
-                "public Binance endpoints will be used for market data."
-            )
-        else:
-            logger.info("🔐 [AI ENGINE] Authenticated Binance session enabled.")
+        self._has_credentials = bool(
+            BINANCE_API_KEY and BINANCE_API_KEY.strip()
+            and BINANCE_API_SECRET and BINANCE_API_SECRET.strip()
+        )
+        Obs.event_log(
+            "AIEngine", "__init__",
+            f"Mode: {'Authenticated' if self._has_credentials else 'Monitoring-only'}",
+            status="OK"
+        )
 
-    async def get_market_data(self, symbol: str, timeframe: str = "15m", limit: int = 500) -> pd.DataFrame:
-        """جلب بيانات OHLCV من Binance عبر ccxt.
-
-        يدعم وضعين:
-        - وضع المراقبة (بدون API keys): يستخدم النقاط العامة فقط.
-        - وضع المصادقة (مع API keys): يستخدم جلسة مصادقة بمعدل طلبات أعلى.
-
-        في كلا الوضعين، الأخطاء تُسجّل ويعاد DataFrame فارغ بدلاً من رمي استثناء.
-        """
+    async def get_market_data(self, symbol: str, timeframe: str = "15m",
+                              limit: int = 500) -> pd.DataFrame:
         import ccxt.async_support as ccxt
 
-        exchange_kwargs: dict = {'enableRateLimit': True}
+        t0 = time.time()
+        exchange_kwargs: dict = {"enableRateLimit": True}
         if self._has_credentials:
-            exchange_kwargs['apiKey'] = BINANCE_API_KEY
-            exchange_kwargs['secret'] = BINANCE_API_SECRET
+            exchange_kwargs["apiKey"] = BINANCE_API_KEY
+            exchange_kwargs["secret"] = BINANCE_API_SECRET
 
         exchange = ccxt.binance(exchange_kwargs)
         try:
             ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            elapsed = time.time() - t0
+            Obs.api_rest_call(f"fetch_ohlcv/{symbol}/{timeframe}", elapsed_ms=elapsed * 1000)
             return df
         except Exception as e:
-            logger.error(f"❌ [AI ENGINE] Error fetching data for {symbol}: {e}")
+            Obs.error_full("AIEngine", "get_market_data", type(e).__name__,
+                           str(e), input_data={"symbol": symbol, "tf": timeframe},
+                           cause="Binance REST API unreachable or rate limited",
+                           fix="Check network, retry after cooldown")
             return pd.DataFrame()
         finally:
             await exchange.close()
 
     async def analyze_and_trade(self, symbol: str):
-        """المحرك الرئيسي للتحليل واتخاذ القرار"""
+        """Main analysis pipeline — fully observable."""
         async with self._analysis_lock:
             async with AsyncSessionLocal() as session:
+                t_cycle = time.time()
+                perf = {}  # per-phase timings
                 diag_logger = DiagnosticLogger(symbol)
-                diag_logger.info(f"إطلاق المحرك المؤسسي لـ {symbol}")
 
-                # Phase 1: Data Acquisition
+                # ── Phase 1: Data Acquisition ──
+                t1 = time.time()
                 df = await self.get_market_data(symbol, timeframe="15m", limit=300)
                 df_htf = await self.get_market_data(symbol, timeframe="4h", limit=100)
+                perf["Data Fetch"] = time.time() - t1
 
                 if df.empty:
-                    diag_logger.error("فشل جلب البيانات", "Empty DataFrame from Binance", "Data Phase")
+                    Obs.event_log("AIEngine", "analyze_and_trade",
+                                  f"{symbol}: empty DataFrame", status="FAIL")
                     return
+                Obs.market_data_loaded(symbol, df, df_htf, perf["Data Fetch"])
 
-                # Phase 2: Core Analysis Engine
+                # ── Phase 2: Core Analysis ──
+                t2 = time.time()
                 try:
                     analysis = self.strategies.analyze(df, df_htf=df_htf, symbol=symbol)
                 except Exception as e:
-                    diag_logger.error("خطأ في محرك التحليل", str(e), "Analysis Phase")
-                    logger.error(f"❌ [AI ENGINE] Analysis Crash for {symbol}: {e}\n{traceback.format_exc()}")
+                    Obs.error_full("AIEngine", "strategies.analyze",
+                                   type(e).__name__, str(e),
+                                   input_data={"symbol": symbol},
+                                   cause="Strategy engine crashed",
+                                   fix="Check strategies.py logic and input data shape")
+                    return
+                perf["Strategy Analysis"] = time.time() - t2
+
+                # ── Strategy Transparency (DEBUG) ──
+                if is_level(Level.DEBUG):
+                    # SMC strategy check
+                    smc = analysis.get("smc_data", {})
+                    smc_checks = _build_smc_checks(smc)
+                    smc_score = smc.get("confidence", 0) if smc_checks else 0
+                    smc_passed = smc.get("institutional_grade", False)
+                    Obs.strategy_check(
+                        "Smart Money Concept (SMC)",
+                        smc_checks, smc_score, smc_passed,
+                        reason="SMC validated" if smc_passed else "Missing SMC confirmation"
+                    )
+
+                    # Regime strategy
+                    reg = analysis.get("regime_data", {})
+                    reg_checks = [
+                        {"name": "Trend Detected", "current": reg.get("state", "?"),
+                         "required": "Not SKIP", "status": reg.get("state", "SKIP") != "SKIP"},
+                        {"name": "Trend Strength", "current": f"{reg.get('trend_strength', 0):.0f}%",
+                         "required": "≥30%", "status": reg.get("trend_strength", 0) >= 30},
+                    ]
+                    Obs.strategy_check(
+                        "Market Regime",
+                        reg_checks, reg.get("confidence", 0),
+                        reg.get("state", "SKIP") != "SKIP",
+                        reason=f"Regime: {reg.get('state', 'Unknown')}"
+                    )
+
+                # ── Phase 3: Decision Engine ──
+                t3 = time.time()
+                try:
+                    params = self.strategies.get_trade_params(df, side=analysis["verdict"])
+                except Exception as e:
+                    Obs.error_full("AIEngine", "get_trade_params",
+                                   type(e).__name__, str(e),
+                                   input_data={"symbol": symbol, "verdict": analysis.get("verdict")},
+                                   cause="Risk manager failed to compute trade params",
+                                   fix="Check RiskManager.calculate_sl_tp and entry price")
                     return
 
-                # Execution of Logs
-                diag_logger.market_regime_phase(analysis["regime_data"])
-                diag_logger.htf_filter_phase(analysis["htf_data"])
-                diag_logger.indicators_phase(analysis["indicators_data"])
-                diag_logger.smart_money_phase(analysis["smc_data"])
-                diag_logger.score_engine_phase(analysis["score_data"])
-                diag_logger.rejection_reasons_phase(analysis["rejection_data"])
-                diag_logger.quality_phase(analysis["quality_data"])
-                if analysis.get("debug_report"):
-                    diag_logger.debug_report_phase(analysis["debug_report"])
-
-                # Phase 10: Final Decision
-                params = self.strategies.get_trade_params(df, side=analysis["verdict"])
-
-                # ── Diagnostic: market summary (DEBUG_MODE only) ──
-                diag_sys = get_diagnostics()
-                try:
-                    smc = analysis.get("smc_data", {})
-                    ind = analysis.get("indicators_data", {})
-                    reg = analysis.get("regime_data", {})
-                    htf = analysis.get("htf_data", {})
-                    score_d = analysis.get("score_data", {})
-                    last_close = df["close"].iloc[-1] if not df.empty else 0
-                    last_candle_ts = df["timestamp"].iloc[-1] if not df.empty else 0
-
-                    diag_sys.market_analysis_summary({
-                        "symbol": symbol,
-                        "timeframe": "15m / 4h",
-                        "price": f"{last_close:.8f}",
-                        "candle_time": _fmt_ts(last_candle_ts),
-                        "candle_count": f"{len(df)} LTF / {len(df_htf)} HTF",
-                        "trend": reg.get("state", "?"),
-                        "htf_align": "✅" if htf.get("aligned") else "❌",
-                        "rsi": ind.get("RSI", {}).get("current", "?"),
-                        "macd": ind.get("MACD", {}).get("current", "?"),
-                        "ema": ind.get("EMA", {}).get("current", "?"),
-                        "atr": ind.get("ATR", {}).get("current", "?"),
-                        "volume": ind.get("Volume", {}).get("current", "?"),
-                        "smc_bos": smc.get("direction", "?"),
-                        "smc_choch": "✅" if smc.get("detected_structures") else "❌",
-                        "smc_fvg": "✅" if smc.get("details", {}).get("has_retest") else "❌",
-                        "smc_liq_sweep": "✅" if smc.get("details", {}).get("has_liq_sweep") else "❌",
-                        "smc_ob": "✅" if smc.get("institutional_grade") else "❌",
-                        "strat_breakout": "?",
-                        "strat_momentum": "?",
-                        "strat_meanrev": "?",
-                        "score": str(analysis.get("total_score", "?")),
-                        "confidence": str(analysis.get("confidence", "?")),
-                        "risk": str(params.get("risk_pct", "?")),
-                        "verdict": analysis.get("verdict", "?"),
-                        "reason": reason_text,
-                    })
-                except Exception:
-                    pass  # Diagnostics must never crash the pipeline
-
-                # ── Diagnostic: decision checklist ──
-                try:
-                    checklist = _build_checklist(analysis, params, symbol)
-                    diag_sys.decision_checklist(checklist)
-                except Exception:
-                    pass
-                
-                # إصلاح معالجة الأسباب (Reasons) لتجنب TypeError: sequence item 0: expected str instance, dict found
+                # ── Build reasons ──
                 reasons_list = analysis.get("reasons", [])
                 formatted_reasons = []
                 for r in reasons_list:
                     if isinstance(r, dict):
-                        # إذا كان قاموساً (حالة الرفض)، استخرج الاسم والقيم
                         name = r.get("name", "Unknown")
                         curr = r.get("current_value", "?")
                         req = r.get("required_value", "?")
                         formatted_reasons.append(f"{name}({curr}/{req})")
                     else:
-                        # إذا كان نصاً (حالة SMC)، أضفه مباشرة
                         formatted_reasons.append(str(r))
-                
                 reason_text = " | ".join(formatted_reasons) if formatted_reasons else "No specific reasons"
 
-                decision_data = {
-                    "verdict": analysis["verdict"],
-                    "confidence": analysis["confidence"],
-                    "probability": analysis["probability"],
-                    "risk_pct": params["risk_pct"],
-                    "rr": params["rr"],
-                    "reason": reason_text
-                }
-                diag_logger.final_decision_phase(decision_data)
-
-                # Phase 3: Shadow Trade
+                # ── Save shadow trade ──
                 from Core.utils import make_json_safe
                 new_shadow = ShadowTrade(
                     symbol=symbol,
                     indicators_snapshot=make_json_safe(analysis),
-                    market_state=analysis["regime_data"]["state"],
-                    score=analysis["total_score"]
+                    market_state=analysis.get("regime_data", {}).get("state", "Unknown"),
+                    score=analysis.get("total_score", 0),
                 )
                 session.add(new_shadow)
                 await session.commit()
+                Obs.db_query("INSERT", "shadow_trades_v4", elapsed_ms=(time.time()-t3)*1000)
 
-                if analysis["verdict"] == "SKIP": return
+                # ── PERFORMANCE SUMMARY (DEBUG) ──
+                total_cycle = time.time() - t_cycle
+                perf["Decision + DB"] = time.time() - t3
+                perf["TOTAL CYCLE"] = total_cycle
+                Obs.perf_summary(perf)
 
-                # Final Checks before Live Execution
-                if params["rr"] < 1.5:
-                    diag_logger.warning("Low Risk Reward", f"RR is {params['rr']} which is below 1.5", "Execution Phase")
+                # ── DECISION REPORT (ALWAYS — full box) ──
+                checklist = _build_decision_checklist(analysis, params)
+                verdict = analysis.get("verdict", "SKIP")
+                Obs.decision_report(
+                    symbol=symbol,
+                    verdict=verdict,
+                    confidence=analysis.get("confidence", 0),
+                    probability=analysis.get("probability", 0),
+                    quality=analysis.get("quality_data", {}).get("total", 0),
+                    risk_pct=params.get("risk_pct", 0),
+                    rr=params.get("rr", 0),
+                    conditions=checklist,
+                    reasons=reason_text,
+                )
+
+                # ── Final decision box ──
+                decision_data = {
+                    "verdict": verdict,
+                    "confidence": analysis["confidence"],
+                    "probability": analysis["probability"],
+                    "risk_pct": params["risk_pct"],
+                    "rr": params["rr"],
+                    "reason": reason_text,
+                }
+
+                if verdict == "SKIP":
                     return
 
-                # Telegram Alert
+                # ── Trade validation ──
+                if params.get("rr", 0) < 1.5:
+                    Obs.event_log("AIEngine", "validation",
+                                  f"{symbol}: RR {params['rr']:.1f} < 1.5 — rejected",
+                                  status="FAIL")
+                    return
+
+                # ── Telegram Alert ──
                 if self.bot:
                     await self.send_signal_alert(symbol, analysis, params)
 
     async def send_signal_alert(self, symbol: str, analysis: Dict, params: Dict):
-        """إرسال تنبيه احترافي إلى تلجرام"""
         emoji = "🚀" if analysis["verdict"] == "BUY" else "🔻"
         msg = (
             f"{emoji} **تنبيه مؤسسي جديد: {symbol}**\n\n"
@@ -268,5 +298,11 @@ class AIEngine:
         )
         try:
             await self.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
+            Obs.event_log("AIEngine", "send_signal_alert",
+                          f"{symbol}: {analysis['verdict']} signal sent to Telegram")
         except Exception as e:
-            logger.error(f"❌ [AI ENGINE] Telegram Alert Failed: {e}")
+            Obs.error_full("AIEngine", "send_signal_alert",
+                           type(e).__name__, str(e),
+                           input_data={"symbol": symbol},
+                           cause="Telegram send failed",
+                           fix="Check bot permissions and ADMIN_ID")
