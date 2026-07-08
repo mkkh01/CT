@@ -307,21 +307,34 @@ class _Obs:
                    ask: float = None, volume_24h: float = None,
                    high_24h: float = None, low_24h: float = None,
                    candle_close: float = None, spread: float = None):
-        """Log a live price tick. At NORMAL: summary every 60s. At TRACE: every tick."""
+        """Log a live price tick.
 
+        NORMAL: compact 1-line summary per symbol every 60s.
+        TRACE:  full box with bid/ask/spread/24h stats every tick.
+        """
         prev = self._price_cache.get(symbol)
         self._price_cache[symbol] = price
         now = time.time()
-        self._price_last_ts[symbol] = now
+        # NOTE: save last_seen BEFORE updating so delay detection works
+        last_seen = self._price_last_seen.get(symbol, 0)
         self._price_last_seen[symbol] = now
+        self._price_last_ts[symbol] = now
 
-        # Always track for JSON
         _json_event("price_tick", {
             "s": symbol, "p": price, "prev": prev,
             "bid": bid, "ask": ask, "v24": volume_24h,
         })
 
-        # TRACE: every tick
+        # NORMAL: per-symbol compact summary every 60s + first tick always
+        ts_key = f"_price_summary_{symbol}"
+        last_summary = getattr(self, ts_key, 0)
+        if prev is None or now - last_summary >= 60:
+            setattr(self, ts_key, now)
+            chg = (price - prev) if prev else 0
+            chg_str = f"  Δ {chg:+.4f}" if prev else "  (first tick)"
+            _log(f"  [LIVE] {symbol}: {price} {chg_str}  {_now_iso()}")
+
+        # TRACE: full price stream box
         if is_trace():
             chg = (price - prev) if prev else 0
             chg_pct = ((price / prev) - 1) * 100 if prev else 0
@@ -342,14 +355,13 @@ class _Obs:
                 _SEP55,
             ])
 
-        # Price delay detection
-        last = self._price_last_seen.get(symbol, 0)
-        if now - last > 60 and last > 0:
+        # Price delay detection — use last_seen from BEFORE this tick
+        if last_seen > 0 and now - last_seen > 60:
             info([
                 _divider(f"{_ICON_WARN} PRICE DELAY DETECTED"),
                 f"  Symbol:          {symbol}",
-                f"  Last update:     {_fmt_ts(last)}",
-                f"  Delay:           {now - last:.1f}s",
+                f"  Last update:     {_fmt_ts(last_seen)}",
+                f"  Delay:           {now - last_seen:.1f}s",
                 f"  Expected:        ≤1s",
                 f"  Action:          WebSocket may be stale — will auto-reconnect",
                 _SEP55,
