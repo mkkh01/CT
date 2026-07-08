@@ -283,7 +283,7 @@ class _Obs:
         for name, ok in components.items():
             lines.append(f"  {_icon(ok)} {name}")
         lines.append(f"  {'─'*30}")
-        lines.append(f"  {'✅' if all_ok else '❌'} SYSTEM {'READY' if all_ok else 'HAS ISSUES'}")
+        lines.append(f"  {'✅' if all_ok else '❌'} SYSTEM " + ("READY" if all_ok else "HAS ISSUES"))
         lines.append(_SEP55)
         info(lines)
 
@@ -608,7 +608,8 @@ class _Obs:
         for check, status in results.items():
             lines.append(f"║  {_icon(status)} {check}".ljust(54) + "║")
         lines.append("╠" + "═" * 53 + "╣")
-        lines.append(f"║  SYSTEM STATUS: {'ALL CHECKS PASSED' if all_ok else 'FAILED CHECKS'}".ljust(54) + "║")
+        status_msg = "ALL CHECKS PASSED" if all_ok else "FAILED CHECKS"
+        lines.append(f"║  SYSTEM STATUS: {status_msg}".ljust(54) + "║")
         lines.append("╚" + "═" * 53 + "╝")
         info(lines)
         _json_event("final_validation_report", {
@@ -912,7 +913,8 @@ class _Obs:
         ])
 
     def ws_reconnect(self, attempt: int, reason: str = ""):
-        info([f"  {_ICON_WARN} [WS] Reconnect #{attempt}: {reason}" if reason else f"  {_ICON_WARN} [WS] Reconnect #{attempt}"])
+        msg = f"  {_ICON_WARN} [WS] Reconnect #{attempt}: {reason}" if reason else f"  {_ICON_WARN} [WS] Reconnect #{attempt}"
+        info([msg])
 
     def db_query(self, operation: str, table: str, result: str = "SUCCESS",
                  elapsed_ms: float = 0, error: str = ""):

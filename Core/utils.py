@@ -267,7 +267,10 @@ class DiagnosticLogger:
 
     @staticmethod
     def system(msg, **kwargs):
-        extra = f" | {' | '.join([f'{k}: {v}' for k, v in kwargs.items()])}" if kwargs else ""
+        extra = ""
+        if kwargs:
+            kv_pairs = [f"{k}: {v}" for k, v in kwargs.items()]
+            extra = " | " + " | ".join(kv_pairs)
         print(f"🖥️ [SYSTEM] {msg}{extra}")
 
 diag_logger = DiagnosticLogger()
