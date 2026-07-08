@@ -156,10 +156,13 @@ def _kv(k: str, v: Any, indent: int = 2) -> str:
     return f"{' ' * indent}{k:<18s} {v}"
 
 def _log(msg: str):
-    """Print to stdout AND structured log."""
+    """Print to stdout only — Render captures both stdout and stderr.
+
+    We intentionally do NOT also log via the logging module, because
+    basicConfig already emits to stderr which Render also captures,
+    producing duplicate lines for every observability event.
+    """
     print(msg)
-    # also feed python logging
-    logging.getLogger("CT_Obs").info(msg)
 
 
 def info(lines: List[str]):
@@ -693,9 +696,20 @@ class _Obs:
             import psutil
             mem = psutil.Process().memory_info().rss / 1024 / 1024
             cpu = psutil.cpu_percent(interval=0.1)
-        except ImportError:
-            mem = 0
-            cpu = 0
+        except (ImportError, Exception):
+            try:
+                # Linux /proc fallback — works on Render without extra deps
+                with open("/proc/self/status") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            mem = int(line.split()[1]) / 1024.0  # kB → MB
+                            break
+                    else:
+                        mem = 0
+                cpu = 0.0
+            except Exception:
+                mem = 0
+                cpu = 0
 
         lines = [
             "",

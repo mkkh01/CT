@@ -39,6 +39,9 @@ logging.basicConfig(
     format="%(asctime)s [%(name)-18s] %(levelname)-8s %(message)s",
     level=logging.DEBUG if DEBUG_MODE else logging.INFO,
 )
+# Suppress httpx/httpcore request spam — we only want errors
+for _lib in ("httpx", "httpcore"):
+    logging.getLogger(_lib).setLevel(logging.WARNING)
 logger = logging.getLogger("CT_Main")
 
 # ── Globals ────────────────────────────────────────────────────────
@@ -226,7 +229,7 @@ async def async_main():
             await asyncio.sleep(300)
             Obs.system_snapshot(
                 uptime=time.time() - _started_at,
-                api_calls=Obs.api_rest_count,
+                api_calls=Obs.get().api_rest_count,
             )
 
     safe_create_task(periodic_snapshot(), name="PeriodicSnapshot")
