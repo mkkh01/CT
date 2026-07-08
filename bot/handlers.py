@@ -21,29 +21,30 @@ async def check_admin(update: Update) -> bool:
     return update.effective_user.id == ADMIN_ID
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_admin(update): return
+    if not await check_admin(update): 
+        return
     user_id = update.effective_user.id
     async with AsyncSessionLocal() as session:
         try:
-            async with session.begin():
-                res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == user_id))
-                if not res.scalars().first():
-                    new_user = UserConfig(telegram_id=user_id)
-                    session.add(new_user)
+            res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == user_id))
+            if not res.scalars().first():
+                new_user = UserConfig(telegram_id=user_id)
+                session.add(new_user)
+                await session.commit()
         except Exception as e:
             logger.error(f"Error in start command: {e}")
-            await session.rollback()
-    
+
     await update.message.reply_text(
         "👋 أهلاً بك في نظام التداول المؤسسي CT V4.0\nتم تصميم هذا النظام لحماية رأس مالك وتحقيق نمو مستقر.",
         reply_markup=get_main_menu()
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_admin(update): return
+    if not await check_admin(update): 
+        return
     text = update.message.text
     action = context.user_data.get('action')
-    
+
     if action:
         await process_text_input(update, context)
         return
@@ -94,8 +95,8 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if action == 'delete_coin':
         async with AsyncSessionLocal() as session:
             try:
-                async with session.begin():
-                    await session.execute(delete(TrackedCoin).where(TrackedCoin.symbol == text))
+                await session.execute(delete(TrackedCoin).where(TrackedCoin.symbol == text))
+                await session.commit()
                 await update.message.reply_text(f"✅ تم حذف {text} بنجاح.")
             except Exception as e:
                 logger.error(f"Error deleting coin: {e}")
@@ -110,11 +111,11 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 cap = float(text)
                 symbol = context.user_data['edit_target']
-                async with session.begin():
-                    res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
-                    coin = res.scalars().first()
-                    if coin:
-                        coin.capital = cap
+                res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
+                coin = res.scalars().first()
+                if coin:
+                    coin.capital = cap
+                    await session.commit()
                 await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
             except ValueError:
                 await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة.")
@@ -123,37 +124,57 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await session.rollback()
         context.user_data.clear()
 
+
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """زر الأسعار المباشرة — يقرأ من Redis مع fallback محلي و freshness."""
+    """
+    زر الأسعار المباشرة — تشخيص دقيق لكل حالة.
+    """
     from Core.redis_client import redis_client
     from Core.observability import Obs, _log
+    from Core.utils import get_task_status
 
     now_ts = time.time()
     source = "Redis"
     redis_alive = True
     prices = None
+    diagnostic_lines = []
 
-    # ── 1. Try Redis ──
+    # ── 1. فحص Redis ──
     try:
         if redis_client.redis:
             prices = redis_client.get_data("live_prices")
         else:
             redis_alive = False
-    except Exception:
+            source = "local-fallback"
+    except Exception as e:
         redis_alive = False
-
-    # ── 2. Fallback: local /tmp file ──
-    if not prices and not redis_alive:
         source = "local-fallback"
+        logger.error(f"[BTN:LIVE] Redis error: {e}")
+        diagnostic_lines.append(f"Redis error: {e}")
+
+    # ── 2. Fallback محلي ──
+    if not prices and not redis_alive:
         try:
             local_path = "/tmp/local_live_prices.json"
             if os.path.exists(local_path):
                 with open(local_path, "r") as f:
                     prices = json.load(f)
-        except Exception:
+                source = "local-fallback"
+        except Exception as e:
             prices = None
+            diagnostic_lines.append(f"Local fallback error: {e}")
 
-    # ── 3. Calculate freshness ──
+    # ── 3. فحص حالة مهمة الرادار ──
+    task_status = get_task_status("TradeMonitor_CheckPrices")
+    radar_alive = task_status.get("running", False)
+    radar_restarts = task_status.get("restarts", 0)
+
+    # ── 4. فحص heartbeat ──
+    heartbeat = redis_client.get_data("trade_monitor_heartbeat") or {}
+    hb_age = now_ts - heartbeat.get("ts", 0) if heartbeat.get("ts") else 99999
+    hb_state = heartbeat.get("state", "unknown")
+
+    # ── 5. حساب حداثة البيانات ──
     fresh_data: dict = {}
     if prices:
         for sym, d in prices.items():
@@ -172,36 +193,73 @@ async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 age = 99999
             fresh_data[sym] = {"price": d.get("price", "?"), "age_s": age}
 
-    # ── 4. Diagnostics log ──
     sym_count = len(prices) if prices else 0
     oldest_age = max((v["age_s"] for v in fresh_data.values()), default=99999)
     newest_age = min((v["age_s"] for v in fresh_data.values()), default=99999)
+
+    # ── 6. لوقز تشخيصي ──
     _log(
         f"  [BTN:LIVE] source={source} redis={'UP' if redis_alive else 'DOWN'} "
+        f"radar_task={'UP' if radar_alive else 'DOWN'} "
+        f"radar_restarts={radar_restarts} "
+        f"hb_state={hb_state} hb_age={hb_age:.0f}s "
         f"symbols={sym_count} newest={newest_age:.0f}s oldest={oldest_age:.0f}s"
     )
     Obs.event_log("Bot", "show_live_prices",
-                  f"source={source} symbols={sym_count}",
+                  f"source={source} radar={radar_alive} hb={hb_state} symbols={sym_count}",
                   status="OK" if sym_count > 0 else "EMPTY")
 
-    # ── 5. Build response ──
+    # ── 7. بناء الرد حسب الحالة الدقيقة ──
     if not prices or not fresh_data:
+        # حالة 1: Redis معطل + لا يوجد كاش
         if not redis_alive:
             await update.message.reply_text(
                 "🔴 *مصدر التخزين غير متاح*\n\n"
-                "Redis لا يستجيب ولا يوجد كاش محلي.",
+                "Redis لا يستجيب ولا يوجد كاش محلي.\n"
+                f"التشخيص: {', '.join(diagnostic_lines) or 'لا يوجد اتصال'}",
                 parse_mode="Markdown",
             )
-        else:
+            return
+
+        # حالة 2: المهمة ميتة
+        if not radar_alive:
             await update.message.reply_text(
-                "⏳ *لا توجد أسعار وصلت بعد*\n\n"
-                "الرادار متصل لكن لم تصل تكة سعر.\n"
-                "تأكد من إضافة عملات (➕ إضافة عملة).",
+                "💀 *الرادار متوقف*\n\n"
+                f"حالة المهمة: ميتة (إعادة تشغيل سابقة: {radar_restarts})\n"
+                f"نبضة الحياة: {hb_state} (منذ {hb_age:.0f}ث)\n\n"
+                "السبب المحتمل: تعطل مهمة الخلفية.\n"
+                "تحقق من اللوقز بحثًا عن أخطاء.",
                 parse_mode="Markdown",
             )
+            return
+
+        # حالة 3: المهمة حية لكن WebSocket غير متصل
+        if radar_alive and hb_state in ("disconnected", "starting"):
+            await update.message.reply_text(
+                "⏳ *الرادار يعمل لكنه غير متصل بـ Binance*\n\n"
+                f"حالة الاتصال: {hb_state}\n"
+                f"نبضة الحياة: منذ {hb_age:.0f}ث\n\n"
+                "تأكد من:\n"
+                "• وجود عملات مفعلة (➕ إضافة عملة)\n"
+                "• اتصال الإنترنت بالخادم\n"
+                "• عدم وجود حظر IP",
+                parse_mode="Markdown",
+            )
+            return
+
+        # حالة 4: لا توجد بيانات رغم كل شيء
+        await update.message.reply_text(
+            "⏳ *لا توجد أسعار وصلت بعد*\n\n"
+            "الرادار يعمل والاتصال قائم، لكن لم تصل تكة سعر حية.\n"
+            "قد يكون السبب:\n"
+            "• Binance WebSocket مشغول\n"
+            "• لا توجد سيولة لحظية\n"
+            "انتظر 30-60 ثانية وحاول مجددًا.",
+            parse_mode="Markdown",
+        )
         return
 
-    # ── 6. Per-symbol display with freshness ──
+    # ── 8. عرض الأسعار مع حداثة كل رمز ──
     STALE = 120
     lines = [f"📈 *الأسعار المباشرة*  (عبر {source})", "━━━━━━━━━━━━━━"]
     for sym, d in sorted(fresh_data.items(), key=lambda x: x[1]["age_s"]):
@@ -218,9 +276,16 @@ async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
             age_s = f"منذ {int(age)}s"
         lines.append(f"{tag} *{sym}*: `{price}`  ({age_s})")
     lines.append("━━━━━━━━━━━━━━")
+
+    if newest_age > 60:
+        lines.append(f"⚠️ أقدم بيانات: منذ {int(oldest_age)}s")
     if source == "local-fallback":
         lines.append("⚠️ Redis متوقف — بيانات من الكاش المحلي")
+    if radar_restarts > 0:
+        lines.append(f"ℹ️ المهمة أُعيد تشغيلها {radar_restarts} مرة")
+
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -245,11 +310,11 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with AsyncSessionLocal() as session:
         try:
-            async with session.begin():
-                cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
-                if cfg:
-                    cfg.emergency_stop = True
-                    cfg.is_active = False
+            cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
+            if cfg:
+                cfg.emergency_stop = True
+                cfg.is_active = False
+                await session.commit()
             await update.message.reply_text("🛑 *EMERGENCY STOP ACTIVATED!*", parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Error in emergency_stop: {e}")
@@ -258,11 +323,11 @@ async def emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def toggle_trading(update: Update, context: ContextTypes.DEFAULT_TYPE, status: bool):
     async with AsyncSessionLocal() as session:
         try:
-            async with session.begin():
-                cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
-                if cfg:
-                    cfg.is_active = status
-                    cfg.emergency_stop = False
+            cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
+            if cfg:
+                cfg.is_active = status
+                cfg.emergency_stop = False
+                await session.commit()
             await update.message.reply_text("▶️ نظام التداول يعمل" if status else "⏸ نظام التداول متوقف")
         except Exception as e:
             logger.error(f"Error in toggle_trading: {e}")
@@ -315,7 +380,8 @@ async def show_remove_coin_list(update: Update, context: ContextTypes.DEFAULT_TY
                 await update.message.reply_text("❌ لا توجد عملات لحذفها.")
                 return
             msg = "➖ أرسل رمز العملة لحذفها:\n"
-            for c in coins: msg += f"- `{c.symbol}`\n"
+            for c in coins: 
+                msg += f"- `{c.symbol}`\n"
             await update.message.reply_text(msg, parse_mode='Markdown')
             context.user_data['action'] = 'delete_coin'
     except Exception as e:
@@ -324,13 +390,13 @@ async def show_remove_coin_list(update: Update, context: ContextTypes.DEFAULT_TY
 async def process_add_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['new_coin_symbol'] = update.message.text.strip().upper()
     await update.message.reply_text("💰 أدخل رأس المال المخصص لهذه العملة:")
-    return ADD_CAPITAL
+    return ADD_SYMBOL
 
 async def process_add_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data['new_coin_capital'] = float(update.message.text)
         await update.message.reply_text("⚠️ أدخل نسبة المخاطرة (مثال: 1):")
-        return ADD_RISK
+        return ADD_CAPITAL
     except ValueError:
         await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة لرأس المال (مثال: 100).")
         return ADD_CAPITAL
@@ -339,7 +405,7 @@ async def process_add_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data['new_coin_risk'] = float(update.message.text)
         await update.message.reply_text("⏱ اختر الإطار الزمني:", reply_markup=get_timeframe_menu())
-        return ADD_TF
+        return ADD_RISK
     except ValueError:
         await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة لنسبة المخاطرة (مثال: 1).")
         return ADD_RISK
@@ -350,20 +416,19 @@ async def process_add_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tf = query.data.replace("tf_", "")
     async with AsyncSessionLocal() as session:
         try:
-            async with session.begin():
-                # التحقق من وجود العملة مسبقاً
-                res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == context.user_data['new_coin_symbol']))
-                if res.scalars().first():
-                    await query.edit_message_text(f"❌ العملة {context.user_data['new_coin_symbol']} موجودة بالفعل.")
-                    return ConversationHandler.END
-                
-                new_coin = TrackedCoin(
-                    symbol=context.user_data['new_coin_symbol'],
-                    capital=context.user_data['new_coin_capital'],
-                    risk_percentage=context.user_data['new_coin_risk'],
-                    timeframe=tf
-                )
-                session.add(new_coin)
+            res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == context.user_data['new_coin_symbol']))
+            if res.scalars().first():
+                await query.edit_message_text(f"❌ العملة {context.user_data['new_coin_symbol']} موجودة بالفعل.")
+                return ConversationHandler.END
+
+            new_coin = TrackedCoin(
+                symbol=context.user_data['new_coin_symbol'],
+                capital=context.user_data['new_coin_capital'],
+                risk_percentage=context.user_data['new_coin_risk'],
+                timeframe=tf
+            )
+            session.add(new_coin)
+            await session.commit()
             await query.edit_message_text(f"✅ تمت إضافة {context.user_data['new_coin_symbol']} بنجاح!")
         except Exception as e:
             logger.error(f"Error adding new coin: {e}")

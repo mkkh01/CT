@@ -99,7 +99,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def data_phase(data_info):
-        """المرحلة 1: DATA"""
         DiagnosticLogger.section(1, "DATA")
         print(f"🔹 مصدر البيانات: {data_info.get('source', 'Unknown')}")
         print(f"🔹 عدد الشموع: {data_info.get('count', 0)}")
@@ -114,7 +113,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def market_regime_phase(regime_data):
-        """المرحلة 2: Market Regime"""
         DiagnosticLogger.section(2, "Market Regime")
         print(f"📈 النظام المكتشف: {regime_data.get('state', 'N/A')}")
         print(f"🎯 درجة الثقة: {regime_data.get('confidence', 0)}%")
@@ -127,7 +125,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def htf_filter_phase(htf_data):
-        """المرحلة 3: HTF Filter"""
         DiagnosticLogger.section(3, "HTF Filter")
         print(f"🏷️ الحالة: {htf_data.get('status', 'N/A')}")
         print(f"🧭 قرار الفلتر: {htf_data.get('decision_state', 'N/A')}")
@@ -140,7 +137,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def indicators_phase(ind_data):
-        """المرحلة 4: Indicators"""
         DiagnosticLogger.section(4, "Indicators")
         for name, details in ind_data.items():
             status = details.get('status') or details.get('status_buy') or details.get('status_sell')
@@ -150,7 +146,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def smart_money_phase(smc_data):
-        """المرحلة 5: Smart Money"""
         DiagnosticLogger.section(5, "Smart Money")
         print(f"📊 الاتجاه: {smc_data.get('direction', 'N/A')}")
         print(f"📊 القوة: {smc_data.get('strength', 0)}")
@@ -171,7 +166,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def strategy_validation_phase(validation_data):
-        """المرحلة 6: Strategy Validation"""
         DiagnosticLogger.section(6, "Strategy Validation")
         conditions = validation_data.get('conditions', [])
         success_count = 0
@@ -194,7 +188,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def score_engine_phase(score_data):
-        """المرحلة 7: Score Engine"""
         DiagnosticLogger.section(7, "Score Engine")
         breakdown = score_data.get('breakdown', {})
         if not breakdown:
@@ -207,12 +200,11 @@ class DiagnosticLogger:
                 m = details.get('max', 0)
                 r = details.get('reason', 'N/A')
                 print(f"{category:<15} | {s:>2}/{m:<2} | {r}")
-        print("-" * 50)
+            print("-" * 50)
         print(f"🎯 Final Score: {score_data.get('total', 0)}/100")
 
     @staticmethod
     def rejection_reasons_phase(rejection_data):
-        """المرحلة 8: أسباب الرفض"""
         DiagnosticLogger.section(8, "أسباب الرفض")
         reasons = rejection_data.get('reasons', [])
         if not reasons:
@@ -232,7 +224,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def quality_phase(quality_data):
-        """المرحلة 9: Quality"""
         DiagnosticLogger.section(9, "Quality")
         breakdown = quality_data.get('breakdown', {})
         if not breakdown:
@@ -243,7 +234,6 @@ class DiagnosticLogger:
 
     @staticmethod
     def final_decision_phase(decision_data):
-        """المرحلة 10: القرار النهائي"""
         DiagnosticLogger.section(10, "القرار النهائي")
         verdict = decision_data.get('verdict', 'SKIP')
         icon = "🚀 TRADE" if verdict in ["BUY", "SELL"] else "🛑 SKIP"
@@ -285,17 +275,74 @@ def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=
     now = datetime.now().strftime('%H:%M:%S')
     print(f"📝 [{now}] {status} | {symbol} | {timeframe} | {source} | {execution_time:.3f}s")
 
-def safe_create_task(coro, name=None):
-    """إنشاء Task مع معالجة Exceptions و Stack Trace كامل"""
-    task = asyncio.create_task(coro, name=name)
-    def handle_result(t):
-        try:
-            t.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            import traceback
-            tb = traceback.format_exc()
-            logger.error(f"❌ Exception in task {name or t}:\n{tb}")
-    task.add_done_callback(handle_result)
-    return task
+
+# ══════════════════════════════════════════════════════════════════
+# safe_create_task — إعادة كتابة جذرية مع دعم إعادة التشغيل
+# ══════════════════════════════════════════════════════════════════
+
+_running_tasks: dict[str, asyncio.Task] = {}
+_task_restart_counts: dict[str, int] = {}
+
+
+def safe_create_task(coro, name=None, restart=True, restart_delay=5, max_restarts=10):
+    """
+    إنشاء Task مع:
+    - تسجيل كامل للأخطاء + traceback
+    - إعادة تشغيل تلقائية إذا ماتت (إذا restart=True)
+    - حد أقصى لعدد مرات إعادة التشغيل
+    """
+    task_name = name or coro.__name__ if hasattr(coro, '__name__') else str(coro)
+
+    def _schedule():
+        task = asyncio.create_task(coro, name=task_name)
+        _running_tasks[task_name] = task
+
+        def _on_done(t):
+            _running_tasks.pop(task_name, None)
+
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                logger.info(f"[TASK] {task_name} cancelled (expected shutdown).")
+            except Exception:
+                tb = traceback.format_exc()
+                logger.error(f"❌ [TASK] {task_name} crashed:\n{tb}")
+
+                if restart:
+                    count = _task_restart_counts.get(task_name, 0)
+                    if count < max_restarts:
+                        _task_restart_counts[task_name] = count + 1
+                        logger.warning(
+                            f"🔄 [TASK] Restarting {task_name} in {restart_delay}s "
+                            f"(attempt {count + 1}/{max_restarts})..."
+                        )
+                        asyncio.get_event_loop().call_later(
+                            restart_delay, 
+                            lambda: safe_create_task(coro, name=task_name, restart=True, restart_delay=restart_delay, max_restarts=max_restarts)
+                        )
+                    else:
+                        logger.critical(
+                            f"💀 [TASK] {task_name} exceeded max restarts ({max_restarts}). "
+                            f"Manual intervention required."
+                        )
+
+        task.add_done_callback(_on_done)
+        logger.info(f"🚀 [TASK] {task_name} started (restart={restart}).")
+        return task
+
+    return _schedule()
+
+
+def get_task_status(task_name: str) -> dict:
+    """الحصول على حالة مهمة حية"""
+    task = _running_tasks.get(task_name)
+    return {
+        "running": task is not None and not task.done(),
+        "done": task.done() if task else None,
+        "cancelled": task.cancelled() if task else None,
+        "restarts": _task_restart_counts.get(task_name, 0),
+    }
+
+
+def get_all_task_statuses() -> dict[str, dict]:
+    return {name: get_task_status(name) for name in list(_running_tasks.keys())}

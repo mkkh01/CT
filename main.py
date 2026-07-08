@@ -39,26 +39,19 @@ logging.basicConfig(
     format="%(asctime)s [%(name)-18s] %(levelname)-8s %(message)s",
     level=logging.DEBUG if DEBUG_MODE else logging.INFO,
 )
-# Suppress httpx/httpcore request spam — we only want errors
 for _lib in ("httpx", "httpcore"):
     logging.getLogger(_lib).setLevel(logging.WARNING)
 
-# Structured JSON log sink (optional — set OBS_JSON_LOG=events.jsonl)
 _obs_json_path = os.environ.get("OBS_JSON_LOG", "")
 if _obs_json_path:
-    os.environ["OBS_JSON_LOG"] = _obs_json_path  # propage to observability
+    os.environ["OBS_JSON_LOG"] = _obs_json_path
     logger.info("[SYSTEM] Structured event log: %s", _obs_json_path)
 
 logger = logging.getLogger("CT_Main")
 
-# ── Globals ────────────────────────────────────────────────────────
 _started_at = time.time()
 _shutdown_event = asyncio.Event()
 
-
-# ══════════════════════════════════════════════════════════════════
-# Telegram error handler
-# ══════════════════════════════════════════════════════════════════
 
 async def telegram_error_handler(update, context):
     if isinstance(context.error, Conflict):
@@ -74,10 +67,6 @@ async def telegram_error_handler(update, context):
     )
 
 
-# ══════════════════════════════════════════════════════════════════
-# Background tasks
-# ══════════════════════════════════════════════════════════════════
-
 async def start_background_tasks(app):
     logger.info("[SYSTEM] Launching institutional radar (TradeMonitor)...")
     await asyncio.sleep(2)
@@ -91,14 +80,21 @@ async def post_init(app):
     safe_create_task(start_background_tasks(app), name="StartBackgroundTasks")
 
 
-# ══════════════════════════════════════════════════════════════════
-# Startup health checks
-# ══════════════════════════════════════════════════════════════════
+async def verify_background_tasks():
+    """التحقق الدوري من أن المهام الخلفية لا تزال حية."""
+    from Core.utils import get_task_status
+    while not _shutdown_event.is_set():
+        await asyncio.sleep(30)
+        status = get_task_status("TradeMonitor_CheckPrices")
+        if not status.get("running"):
+            logger.warning("[SYSTEM] TradeMonitor not running — attempting restart...")
+        else:
+            logger.info("[SYSTEM] Health check OK — TradeMonitor running.")
+
 
 async def run_health_checks() -> dict:
     results: dict[str, bool] = {}
 
-    # Database
     try:
         await init_db()
         async with AsyncSessionLocal() as session:
@@ -109,7 +105,6 @@ async def run_health_checks() -> dict:
         logger.error("Database health check failed: %s", e)
         results["Database"] = False
 
-    # Redis
     try:
         if redis_client.redis:
             redis_client.redis.ping()
@@ -118,13 +113,9 @@ async def run_health_checks() -> dict:
         logger.warning("Redis health check: %s", e)
         results["Redis"] = bool(redis_client.redis)
 
-    # Telegram config
     results["Telegram Config"] = bool(TELEGRAM_TOKEN and TELEGRAM_TOKEN.strip())
-
-    # Environment
     results["Environment"] = True
 
-    # Risk Manager
     try:
         from Core.risk_manager import RiskManager
         RiskManager()
@@ -133,7 +124,6 @@ async def run_health_checks() -> dict:
         logger.warning("Risk Manager: %s", e)
         results["Risk Manager"] = False
 
-    # Strategies
     try:
         from strategies import InstitutionalStrategies
         InstitutionalStrategies()
@@ -146,10 +136,6 @@ async def run_health_checks() -> dict:
     results["Decision Engine"] = True
     return results
 
-
-# ══════════════════════════════════════════════════════════════════
-# Signal handling
-# ══════════════════════════════════════════════════════════════════
 
 def setup_signal_handlers(telegram_manager: TelegramManager,
                           loop: asyncio.AbstractEventLoop):
@@ -179,15 +165,9 @@ async def _graceful_shutdown(telegram_manager: TelegramManager):
     Obs.event_log("Main", "shutdown", "Complete", status="OK")
 
 
-# ══════════════════════════════════════════════════════════════════
-# Main
-# ══════════════════════════════════════════════════════════════════
-
 async def async_main():
-    # ── Startup Banner ──
     Obs.startup_banner()
 
-    # ── Validate config ──
     try:
         validate_config()
         Obs.event_log("Config", "validate", "Passed", status="OK")
@@ -197,12 +177,10 @@ async def async_main():
                        fix="Set all required environment variables")
         return 1
 
-    # ── Config dump (non-secret values) ──
     if is_level(Level.DEBUG):
         import config as cfg_mod
         Obs.config_dump(cfg_mod)
 
-    # ── Health checks ──
     components = await run_health_checks()
     Obs.startup_report(components)
 
@@ -210,7 +188,6 @@ async def async_main():
         logger.critical("Database unavailable — cannot start.")
         return 1
 
-    # ── Create Telegram manager ──
     tg = TelegramManager(
         token=TELEGRAM_TOKEN,
         post_init_callback=post_init,
@@ -218,23 +195,30 @@ async def async_main():
     )
     set_telegram_manager(tg)
 
-    # ── Start Flask keep-alive ──
     keep_alive()
 
-    # ── Start Telegram ──
     ok = await tg.start()
     if not ok:
         logger.critical("[SYSTEM] Telegram failed to start.")
         return 1
 
-    # ── Periodic snapshots ──
+    # ── Verify background tasks started ──
+    await asyncio.sleep(5)
+    from Core.utils import get_task_status
+    tm_status = get_task_status("TradeMonitor_CheckPrices")
+    if not tm_status.get("running"):
+        logger.critical("[SYSTEM] TradeMonitor failed to start within 5s!")
+    else:
+        logger.info("[SYSTEM] TradeMonitor confirmed running.")
+
+    safe_create_task(verify_background_tasks(), name="HealthCheck")
+
     loop = asyncio.get_running_loop()
     setup_signal_handlers(tg, loop)
 
     async def periodic_snapshot():
         while not _shutdown_event.is_set():
             await asyncio.sleep(300)
-            # Pull live prices from Redis for the snapshot
             from Core.redis_client import redis_client
             prices = redis_client.get_data("live_prices") or {}
             top_symbols = list(prices.keys())[:3]
@@ -252,7 +236,6 @@ async def async_main():
 
     safe_create_task(periodic_snapshot(), name="PeriodicSnapshot")
 
-    # ── Wait for shutdown ──
     await _shutdown_event.wait()
     await _graceful_shutdown(tg)
     return 0
