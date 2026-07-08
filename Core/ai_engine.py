@@ -1,173 +1,72 @@
-import pandas as pd
-import ccxt.async_support as ccxt
-from database import AsyncSessionLocal, LiveTrade, ShadowTrade, UserConfig, TrackedCoin
-from sqlalchemy import select
-from strategies import InstitutionalStrategies
-from datetime import datetime
-import asyncio
-import json
 import os
-import time
+import sys
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional
+import pandas as pd
+import numpy as np
 
-from Core.utils import rate_limiter, diag_logger, log_api_request
+from database import AsyncSessionLocal, ShadowTrade, UserConfig
+from config import (
+    BINANCE_API_KEY, BINANCE_API_SECRET,
+    REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
+    DECISION_CONFIG
+)
+from Core.redis_client import redis_client
+from strategies import InstitutionalStrategies
+from Core.utils import safe_create_task, DiagnosticLogger
+
+logger = logging.getLogger("CT_System")
 
 class AIEngine:
-    def __init__(self, bot=None, chat_id=None):
-        self.strategies = InstitutionalStrategies()
+    def __init__(self, bot=None):
         self.bot = bot
-        self.chat_id = chat_id
-        self.exchange = ccxt.binance({
-            'enableRateLimit': False,
-            'options': {'defaultType': 'spot'},
-            'timeout': 30000,
+        self.strategies = InstitutionalStrategies()
+        self._last_analysis = {}
+        self._analysis_lock = asyncio.Lock()
+
+    async def get_market_data(self, symbol: str, timeframe: str = "15m", limit: int = 500) -> pd.DataFrame:
+        """جلب البيانات من باينانس عبر ccxt"""
+        import ccxt.async_support as ccxt
+        exchange = ccxt.binance({
+            'apiKey': BINANCE_API_KEY,
+            'secret': BINANCE_API_SECRET,
+            'enableRateLimit': True,
         })
-        from Core.redis_client import redis_client
-        self.redis = redis_client
-        self._analysis_locks = {}
-        self._last_analysis_time = {}
+        try:
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            return df
+        except Exception as e:
+            logger.error(f"❌ [AI ENGINE] Error fetching data for {symbol}: {e}")
+            return pd.DataFrame()
+        finally:
+            await exchange.close()
 
-    async def _handle_binance_error(self, e, attempt):
-        error_str = str(e)
-        if "418" in error_str or "429" in error_str:
-            retry_after = 60
-            try:
-                if "retry-after" in error_str.lower():
-                    import re
-                    match = re.search(r'retry-after:?\s*(\d+)', error_str.lower())
-                    if match: retry_after = int(match.group(1))
-            except: pass
-            rate_limiter.set_ban(retry_after)
-            diag_logger.system(f"BANNED: Binance 418/429 detected", retry_after=retry_after)
-            raise Exception(f"BANNED: Binance 418/429 detected. Waiting {retry_after}s.")
-        
-        wait_time = min((2 ** attempt) + (0.1 * attempt), 60)
-        await asyncio.sleep(wait_time)
-        return wait_time
-
-    async def _safe_api_call(self, func, *args, **kwargs):
-        symbol = kwargs.pop('symbol', args[0] if args else "Unknown")
-        timeframe = kwargs.pop('timeframe', args[1] if len(args) > 1 else "Unknown")
-        source = kwargs.pop('source', 'Unknown')
-        
-        if rate_limiter.is_banned:
-            remaining = rate_limiter.ban_until - time.time()
-            if remaining > 0:
-                raise Exception(f"CIRCUIT BREAKER: REST calls paused for {remaining:.1f}s")
-
-        start_time = time.time()
-        for attempt in range(5):
-            try:
-                if rate_limiter.is_banned and (rate_limiter.ban_until - time.time()) > 0:
-                    raise Exception("CIRCUIT BREAKER: REST calls paused by another task")
-
-                await rate_limiter.wait_if_needed()
-                result = await func(*args, **kwargs)
-                exec_time = time.time() - start_time
-                return result, exec_time, False # result, time, from_cache
-            except Exception as e:
-                if attempt == 4: raise e
-                await self._handle_binance_error(e, attempt)
-
-    async def get_higher_timeframe_data(self, symbol, current_tf):
-        tf_map = {"5m": "15m", "15m": "1h", "30m": "4h", "1h": "4h", "4h": "1d"}
-        higher_tf = tf_map.get(current_tf, "1d")
-        cache_key = f"htf_{symbol}_{higher_tf}"
-        
-        cached_ohlcv = self.redis.get_data(cache_key)
-        if cached_ohlcv:
-            last_ts = cached_ohlcv[-1][0]
-            now_ms = time.time() * 1000
-            tf_ms = {"15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}.get(higher_tf, 3600000)
-            if (now_ms - last_ts) < (tf_ms * 1.5):
-                return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']), 0, True
-        
-        lock = await self.redis.get_lock(f"lock_{cache_key}")
-        async with lock:
-            cached_ohlcv = self.redis.get_data(cache_key)
-            if cached_ohlcv:
-                last_ts = cached_ohlcv[-1][0]
-                if (time.time() * 1000 - last_ts) < (tf_ms * 1.5):
-                    return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']), 0, True
-
-            try:
-                ohlcv, exec_time, _ = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, higher_tf, limit=100, source="HTF_REST")
-                if ohlcv:
-                    self.redis.set_data(cache_key, ohlcv, ttl=7200) 
-                    return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']), exec_time, False
-            except Exception as e:
-                logger.error(f"Error fetching HTF data for {symbol}: {e}")
-                if cached_ohlcv: return pd.DataFrame(cached_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']), 0, True
-                return None, 0, False
-        return None, 0, False
-
-    async def analyze_and_trade(self, symbol: str, **kwargs):
-        if symbol not in self._analysis_locks:
-            self._analysis_locks[symbol] = asyncio.Lock()
-        
-        if self._analysis_locks[symbol].locked(): return
-
-        async with self._analysis_locks[symbol]:
-            now_ts = time.time()
-            if symbol in self._last_analysis_time and (now_ts - self._last_analysis_time[symbol]) < 60:
-                return
-
+    async def analyze_and_trade(self, symbol: str):
+        """المحرك الرئيسي للتحليل واتخاذ القرار"""
+        async with self._analysis_lock:
             async with AsyncSessionLocal() as session:
-                cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
-                cfg = cfg_res.scalars().first()
-                if not cfg or not cfg.is_active or cfg.emergency_stop: return
-                
-                coin_res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
-                coin = coin_res.scalars().first()
-                if not coin or not coin.enabled: return
+                diag_logger = DiagnosticLogger(symbol)
+                diag_logger.info(f"إطلاق المحرك المؤسسي لـ {symbol}")
 
-                # Phase 1: Data Fetching
-                data_info = {"source": "Binance", "count": 0, "load_time": datetime.now().strftime('%H:%M:%S'), "exec_time": 0}
-                try:
-                    hist_key = f"hist_{symbol}_{coin.timeframe}"
-                    ohlcv = self.redis.get_data(hist_key)
-                    from_cache = True
-                    exec_time = 0
-                    
-                    if not ohlcv:
-                        lock = await self.redis.get_lock(hist_key)
-                        async with lock:
-                            ohlcv = self.redis.get_data(hist_key)
-                            if not ohlcv:
-                                ohlcv, exec_time, from_cache = await self._safe_api_call(self.exchange.fetch_ohlcv, symbol, coin.timeframe, limit=250, source="HIST_REST")
-                                if ohlcv: self.redis.set_data(hist_key, ohlcv, ttl=259200)
-                                else: 
-                                    data_info["error"] = "Failed to fetch OHLCV"
-                                    diag_logger.data_phase(data_info)
-                                    return
-                    
-                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    data_info.update({
-                        "source": "Cache" if from_cache else "Binance",
-                        "count": len(df),
-                        "last_candle": datetime.fromtimestamp(df['timestamp'].iloc[-1] / 1000).strftime('%Y-%m-%d %H:%M:%S'),
-                        "missing": len(df) < 250,
-                        "has_nan": df.isnull().values.any(),
-                        "has_duplicate": df['timestamp'].duplicated().any(),
-                        "exec_time": exec_time
-                    })
-                    diag_logger.data_phase(data_info)
-                    
-                    # Debug Mode Warning
-                    if df['close'].iloc[-1] == 0:
-                        diag_logger.warning("Price is zero!", "Critical data error", "AIEngine.analyze_and_trade")
+                # Phase 1: Data Acquisition
+                df = await self.get_market_data(symbol, timeframe="15m", limit=300)
+                df_htf = await self.get_market_data(symbol, timeframe="4h", limit=100)
 
-                except Exception as e:
-                    import traceback
-                    data_info["error"] = str(e)
-                    data_info["traceback"] = traceback.format_exc()
-                    diag_logger.data_phase(data_info)
-                    logger.error(f"Error in AIEngine for {symbol}: {e}\n{traceback.format_exc()}")
+                if df.empty:
+                    diag_logger.error("فشل جلب البيانات", "Empty DataFrame from Binance", "Data Phase")
                     return
 
-                # Phase 2-9: Strategy Analysis
-                df_higher, htf_exec, htf_cache = await self.get_higher_timeframe_data(symbol, coin.timeframe)
-                analysis = self.strategies.calculate_combined_score(df, df_higher)
-                
+                # Phase 2: Core Analysis Engine
+                try:
+                    analysis = self.strategies.analyze(df, df_htf=df_htf, symbol=symbol)
+                except Exception as e:
+                    diag_logger.error("خطأ في محرك التحليل", str(e), "Analysis Phase")
+                    logger.error(f"❌ [AI ENGINE] Analysis Crash for {symbol}: {e}\n{traceback.format_exc()}")
+                    return
+
                 # Execution of Logs
                 diag_logger.market_regime_phase(analysis["regime_data"])
                 diag_logger.htf_filter_phase(analysis["htf_data"])
@@ -181,13 +80,30 @@ class AIEngine:
 
                 # Phase 10: Final Decision
                 params = self.strategies.get_trade_params(df, side=analysis["verdict"])
+                
+                # إصلاح معالجة الأسباب (Reasons) لتجنب TypeError: sequence item 0: expected str instance, dict found
+                reasons_list = analysis.get("reasons", [])
+                formatted_reasons = []
+                for r in reasons_list:
+                    if isinstance(r, dict):
+                        # إذا كان قاموساً (حالة الرفض)، استخرج الاسم والقيم
+                        name = r.get("name", "Unknown")
+                        curr = r.get("current_value", "?")
+                        req = r.get("required_value", "?")
+                        formatted_reasons.append(f"{name}({curr}/{req})")
+                    else:
+                        # إذا كان نصاً (حالة SMC)، أضفه مباشرة
+                        formatted_reasons.append(str(r))
+                
+                reason_text = " | ".join(formatted_reasons) if formatted_reasons else "No specific reasons"
+
                 decision_data = {
                     "verdict": analysis["verdict"],
                     "confidence": analysis["confidence"],
                     "probability": analysis["probability"],
                     "risk_pct": params["risk_pct"],
                     "rr": params["rr"],
-                    "reason": " | ".join(analysis["reasons"]) if analysis["reasons"] else "No specific positive reasons"
+                    "reason": reason_text
                 }
                 diag_logger.final_decision_phase(decision_data)
 
@@ -209,33 +125,26 @@ class AIEngine:
                     diag_logger.warning("Low Risk Reward", f"RR is {params['rr']} which is below 1.5", "Execution Phase")
                     return
 
-                risk_amount = coin.capital * (coin.risk_percentage / 100)
-                sl_pct = abs(params["entry"] - params["sl"]) / params["entry"]
-                amount = risk_amount / sl_pct if sl_pct > 0 else 0
-                
-                check = await session.execute(select(LiveTrade).where((LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")))
-                if check.scalars().first(): return
-
-                new_live = LiveTrade(
-                    symbol=symbol, type=analysis["verdict"], entry_price=params["entry"], stop_loss=params["sl"],
-                    take_profit=params["tp"], amount=amount, score=analysis["total_score"],
-                    entry_reason=decision_data["reason"], market_state=analysis["regime_data"]["state"],
-                    indicators_snapshot=make_json_safe(analysis)
-                )
-                session.add(new_live)
-                await session.commit()
-                
-                self._last_analysis_time[symbol] = time.time()
-                diag_logger.system(f"🚀 OPEN TRADE: {symbol}", price=params['entry'], score=analysis["total_score"])
-
+                # Telegram Alert
                 if self.bot:
-                    msg = (f"🚀 *صفقة مؤسسية جديدة*\n"
-                           f"━━━━━━━━━━━━━━\n"
-                           f"🪙 العملة: #{symbol}\n"
-                           f"🎯 النقاط: {analysis['total_score']}/100\n"
-                           f"💰 الدخول: `{params['entry']}`\n"
-                           f"🛡️ الوقف: `{params['sl']}`\n"
-                           f"🏁 الهدف: `{params['tp']}`\n"
-                           f"━━━━━━━━━━━━━━\n"
-                           f"📊 الأسباب: {decision_data['reason']}")
-                    await self.bot.send_message(self.chat_id, msg, parse_mode='Markdown')
+                    await self.send_signal_alert(symbol, analysis, params)
+
+    async def send_signal_alert(self, symbol: str, analysis: Dict, params: Dict):
+        """إرسال تنبيه احترافي إلى تلجرام"""
+        emoji = "🚀" if analysis["verdict"] == "BUY" else "🔻"
+        msg = (
+            f"{emoji} **تنبيه مؤسسي جديد: {symbol}**\n\n"
+            f"🎯 **القرار:** {analysis['verdict']}\n"
+            f"📊 **الثقة:** {analysis['confidence']}%\n"
+            f"📈 **الاحتمالية:** {analysis['probability']}%\n"
+            f"⚖️ **العائد للمخاطرة:** 1:{params['rr']}\n\n"
+            f"📍 **نقطة الدخول:** `{params['entry']:.8f}`\n"
+            f"🛑 **وقف الخسارة:** `{params['stop']:.8f}`\n"
+            f"🏁 **الهدف:** `{params['target']:.8f}`\n\n"
+            f"📝 **الأسباب:** {analysis.get('reason', 'تحليل SMC متكامل')}"
+        )
+        from config import ADMIN_ID
+        try:
+            await self.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"❌ [AI ENGINE] Telegram Alert Failed: {e}")
