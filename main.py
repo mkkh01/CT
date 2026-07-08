@@ -8,7 +8,7 @@ from keep_alive import keep_alive
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from telegram.request import HTTPXRequest
 from telegram.error import Conflict
-from config import TELEGRAM_TOKEN, ADMIN_ID
+from config import TELEGRAM_TOKEN, ADMIN_ID, validate_config
 from database import init_db, AsyncSessionLocal, UserConfig
 
 # إعداد الـ Logging العام
@@ -149,6 +149,16 @@ def main():
         sys.exit(0)
 
     print("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
+
+    # Validate critical configuration before touching any external service.
+    # A failing validate_config() raises RuntimeError with a clear message.
+    try:
+        validate_config()
+    except RuntimeError as cfg_err:
+        logger.critical(str(cfg_err))
+        print(f"\n🚫 FATAL: {cfg_err}")
+        sys.exit(1)
+
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db())
     

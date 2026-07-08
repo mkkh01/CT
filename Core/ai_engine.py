@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import logging
+import traceback
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import pandas as pd
@@ -11,7 +12,8 @@ from database import AsyncSessionLocal, ShadowTrade, UserConfig
 from config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
-    DECISION_CONFIG
+    DECISION_CONFIG,
+    ADMIN_ID,
 )
 from Core.redis_client import redis_client
 from strategies import InstitutionalStrategies
@@ -20,20 +22,52 @@ from Core.utils import safe_create_task, DiagnosticLogger
 logger = logging.getLogger("CT_System")
 
 class AIEngine:
+    """
+    Institutional AI analysis and signal-generation engine.
+
+    يعمل بوضعين:
+    • وضع المراقبة (افتراضي): بيانات السوق من Binance العامة بدون API keys.
+    • وضع المصادقة: مع BINANCE_API_KEY + BINANCE_API_SECRET للحصول على
+      معدل طلبات أعلى ووصول للنقاط الخاصة.
+
+    في كلا الوضعين، الأخطاء تُسجّل ويعاد DataFrame فارغ
+    بدلاً من انهيار event loop.
+    """
+
     def __init__(self, bot=None):
         self.bot = bot
         self.strategies = InstitutionalStrategies()
         self._last_analysis = {}
         self._analysis_lock = asyncio.Lock()
 
+        # Track whether live Binance credentials are available.
+        self._has_credentials = bool(BINANCE_API_KEY and BINANCE_API_KEY.strip()
+                                     and BINANCE_API_SECRET and BINANCE_API_SECRET.strip())
+        if not self._has_credentials:
+            logger.info(
+                "ℹ️  [AI ENGINE] Running in monitoring-only mode — "
+                "public Binance endpoints will be used for market data."
+            )
+        else:
+            logger.info("🔐 [AI ENGINE] Authenticated Binance session enabled.")
+
     async def get_market_data(self, symbol: str, timeframe: str = "15m", limit: int = 500) -> pd.DataFrame:
-        """جلب البيانات من باينانس عبر ccxt"""
+        """جلب بيانات OHLCV من Binance عبر ccxt.
+
+        يدعم وضعين:
+        - وضع المراقبة (بدون API keys): يستخدم النقاط العامة فقط.
+        - وضع المصادقة (مع API keys): يستخدم جلسة مصادقة بمعدل طلبات أعلى.
+
+        في كلا الوضعين، الأخطاء تُسجّل ويعاد DataFrame فارغ بدلاً من رمي استثناء.
+        """
         import ccxt.async_support as ccxt
-        exchange = ccxt.binance({
-            'apiKey': BINANCE_API_KEY,
-            'secret': BINANCE_API_SECRET,
-            'enableRateLimit': True,
-        })
+
+        exchange_kwargs: dict = {'enableRateLimit': True}
+        if self._has_credentials:
+            exchange_kwargs['apiKey'] = BINANCE_API_KEY
+            exchange_kwargs['secret'] = BINANCE_API_SECRET
+
+        exchange = ccxt.binance(exchange_kwargs)
         try:
             ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -143,7 +177,6 @@ class AIEngine:
             f"🏁 **الهدف:** `{params['target']:.8f}`\n\n"
             f"📝 **الأسباب:** {analysis.get('reason', 'تحليل SMC متكامل')}"
         )
-        from config import ADMIN_ID
         try:
             await self.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
         except Exception as e:
