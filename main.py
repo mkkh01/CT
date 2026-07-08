@@ -156,6 +156,107 @@ async def _graceful_shutdown(telegram_manager: TelegramManager):
 
 async def async_main():
     Obs.startup_banner()
+    total_startup_steps = 10 # Estimate total steps for now, will refine
+    current_step = 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Load Config", status="START")
+    try:
+        validate_config()
+        Obs.startup_step(current_step, total_startup_steps, "Load Config", status="SUCCESS", elapsed_s=time.time() - start_time)
+        current_step += 1
+        Obs.event_log("Config", "validate", "Passed", status="OK")
+    except RuntimeError as cfg_err:
+        Obs.startup_step(current_step, total_startup_steps, "Load Config", status="FAILED", elapsed_s=time.time() - start_time, detail=str(cfg_err))
+        Obs.error_full(
+            component="Config",
+            function="validate",
+            error_type="RuntimeError",
+            message=str(cfg_err),
+            cause="Missing required config",
+            fix="Set all required environment variables",
+        )
+        return 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Logger", status="START")
+    # Logger is already initialized at the top of the file, so this is a logical step.
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Logger", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Redis", status="START")
+    # Redis client is imported, but not explicitly initialized here. Assuming it's initialized on first use or implicitly.
+    # For now, we'll just log it as a step.
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Redis", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Database", status="START")
+    components = await run_health_checks()
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Database", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+    Obs.startup_report(components)
+    if not components.get("Database", False):
+        logger.critical("Database unavailable — cannot start.")
+        return 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Telegram Manager", status="START")
+    tg = TelegramManager(
+        token=TELEGRAM_TOKEN,
+        post_init_callback=post_init,
+        error_handler=telegram_error_handler,
+    )
+    set_telegram_manager(tg)
+    Obs.startup_step(current_step, total_startup_steps, "Initialize Telegram Manager", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Start Keep Alive", status="START")
+    keep_alive()
+    Obs.startup_step(current_step, total_startup_steps, "Start Keep Alive", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Start Telegram Polling", status="START")
+    ok = await tg.start()
+    if not ok:
+        Obs.startup_step(current_step, total_startup_steps, "Start Telegram Polling", status="FAILED", elapsed_s=time.time() - start_time, detail="Telegram failed to start.")
+        logger.critical("[SYSTEM] Telegram failed to start.")
+        return 1
+    Obs.startup_step(current_step, total_startup_steps, "Start Telegram Polling", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Verify TradeMonitor Startup", status="START")
+    await asyncio.sleep(5)
+    from Core.utils import get_task_status
+    tm_status = get_task_status("TradeMonitor_CheckPrices")
+    if not tm_status.get("running"):
+        Obs.startup_step(current_step, total_startup_steps, "Verify TradeMonitor Startup", status="FAILED", elapsed_s=time.time() - start_time, detail="TradeMonitor failed to start within 5s!")
+        logger.critical("[SYSTEM] TradeMonitor failed to start within 5s!")
+    else:
+        Obs.startup_step(current_step, total_startup_steps, "Verify TradeMonitor Startup", status="SUCCESS", elapsed_s=time.time() - start_time)
+        logger.info("[SYSTEM] TradeMonitor confirmed running.")
+    current_step += 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Setup Signal Handlers", status="START")
+    loop = asyncio.get_running_loop()
+    setup_signal_handlers(tg, loop)
+    Obs.startup_step(current_step, total_startup_steps, "Setup Signal Handlers", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+
+    start_time = time.time()
+    Obs.startup_step(current_step, total_startup_steps, "Start Periodic Snapshot", status="START")
+    safe_create_task(periodic_snapshot(), name="PeriodicSnapshot")
+    Obs.startup_step(current_step, total_startup_steps, "Start Periodic Snapshot", status="SUCCESS", elapsed_s=time.time() - start_time)
+    current_step += 1
+
+    await _shutdown_event.wait()
+    await _graceful_shutdown(tg)
+    return 0
     try:
         validate_config()
         Obs.event_log("Config", "validate", "Passed", status="OK")
@@ -243,6 +344,7 @@ def main():
             "Main", "main", type(e).__name__, str(e),
             cause="Unexpected fatal error",
             fix="Check logs and restart",
+            traceback=traceback.format_exc()
         )
         exit_code = 1
     sys.exit(exit_code)

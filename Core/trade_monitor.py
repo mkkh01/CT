@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -16,7 +17,7 @@ from Core.redis_client import redis_client
 from Core.observability import Obs
 from Core.utils import safe_create_task
 
-logger = logging.getLogger("CT_TradeMonitor")
+logger = logging.getLogger("CT_System")
 logger_ws = logging.getLogger("CT_TradeMonitor_WS")
 
 
@@ -30,6 +31,7 @@ class TradeMonitor:
         self._last_price_summary = 0.0
         self._last_snapshot = 0.0
         self._last_ws_heartbeat = 0.0
+        self._loop_count = 0
 
     def _save_data(self):
         redis_client.set_data("live_prices", self.live_prices, ttl=3600)
@@ -62,7 +64,9 @@ class TradeMonitor:
         ai = AIEngine(bot=self.bot, chat_id=self.chat_id)
         self.is_running = True
         logger.info("[MONITOR] Starting institutional radar — WebSocket mode")
+        self._loop_count = 0
 
+        ws_reconnect_count = 0
         while self.is_running:
             try:
                 async with AsyncSessionLocal() as session:
@@ -82,11 +86,19 @@ class TradeMonitor:
                 uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
                 logger.info("[MONITOR] Connecting to Binance WS for %d symbols...", len(symbols))
 
-                last_periodic_scan = time.time()
+                ws_reconnect_count += 1
+                Obs.websocket_event("connect_attempt", uri=uri, attempt=ws_reconnect_count)
                 async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+                    Obs.websocket_event("connected", uri=uri)
                     logger.info("[MONITOR] Connected successfully — watching: %s", ", ".join(symbols))
 
+                    self._last_ws_heartbeat = time.time()
+                    self._last_price_summary = time.time()
+                    self._last_snapshot = time.time()
+                    last_periodic_scan = time.time()
+
                     while self.is_running:
+                        self._loop_count += 1
                         async with AsyncSessionLocal() as check_session:
                             current_symbols = [
                                 c.symbol
@@ -108,7 +120,28 @@ class TradeMonitor:
                             symbol = data["s"]
                             stream = payload.get("stream", "")
                         except asyncio.TimeoutError:
-                            await self._emit_heartbeat(symbols)
+                            self._last_ws_heartbeat = time.time()
+                            Obs.trademonitor_loop_log(
+                                loop_num=self._loop_count,
+                                current_symbol=symbol if 'symbol' in locals() else 'N/A',
+                                current_time=datetime.now().strftime("%H:%M:%S"),
+                                db_status="OK", # Placeholder
+                                redis_status="OK", # Placeholder
+                                exchange_status="OK", # Placeholder
+                                binance_status="OK", # Placeholder
+                                ws_status="OK", # Placeholder
+                                cache_status="OK", # Placeholder
+                                strategy_count=0, # Placeholder
+                                open_positions=0, # Placeholder
+                                pending_signals=0, # Placeholder
+                                current_candle="N/A", # Placeholder
+                                last_candle_time="N/A", # Placeholder
+                                current_price=self.live_prices.get(symbol, {}).get("price", 0) if 'symbol' in locals() else 0,
+                                spread=0, # Placeholder
+                                latency=0, # Placeholder
+                                memory_usage=0, # Placeholder
+                                cpu_usage=0 # Placeholder
+                            )
                             continue
 
                         if "miniTicker" in stream:
@@ -118,14 +151,20 @@ class TradeMonitor:
                                 "time": datetime.now().strftime("%H:%M:%S"),
                             }
 
-                            Obs.price_tick(
+                            Obs.live_price_tick_full(
+                                exchange="Binance",
                                 symbol=symbol,
-                                price=price,
-                                bid=float(data.get("b", 0)) if data.get("b") else None,
-                                ask=float(data.get("a", 0)) if data.get("a") else None,
-                                volume_24h=float(data.get("v", 0)) if data.get("v") else None,
-                                high_24h=float(data.get("h", 0)) if data.get("h") else None,
-                                low_24h=float(data.get("l", 0)) if data.get("l") else None,
+                                bid=float(data.get("b", 0)) if data.get("b") else 0.0,
+                                ask=float(data.get("a", 0)) if data.get("a") else 0.0,
+                                last_price=price,
+                                mark_price=price, # Assuming mark price is same as last price for miniTicker
+                                volume=float(data.get("v", 0)) if data.get("v") else 0.0,
+                                timestamp=time.time(),
+                                latency=(time.time() - payload.get("E", time.time() / 1000)) * 1000, # E is event time in ms
+                                redis_write_status="OK", # Placeholder
+                                cache_update_status="OK", # Placeholder
+                                database_update_status="N/A", # miniTicker doesn't update DB directly
+                                telegram_broadcast_status="N/A" # Not broadcasting every tick
                             )
 
                             if time.time() - self._last_price_summary >= 60:
@@ -163,6 +202,7 @@ class TradeMonitor:
                                 safe_create_task(
                                     ai.analyze_and_trade(symbol, source="WS_CANDLE"),
                                     name=f"AI_Analyze_{symbol}",
+                                    creator="TradeMonitor.check_prices"
                                 )
                                 self._save_data()
 
@@ -176,6 +216,7 @@ class TradeMonitor:
                                     safe_create_task(
                                         ai.analyze_and_trade(s, source="SCANNER"),
                                         name=f"AI_Scanner_{s}",
+                                        creator="TradeMonitor.periodic_scanner"
                                     )
                                     await asyncio.sleep(1.0)
                                 last_periodic_scan = now
@@ -188,7 +229,28 @@ class TradeMonitor:
                             self._save_data()
 
             except Exception as e:
+                tb = traceback.format_exc()
                 logger_ws.error("[MONITOR] Connection error: %s", e)
+                Obs.trademonitor_crash_report(
+                    death_time=time.time(),
+                    uptime=time.time() - Obs.get()._started_at,
+                    loop_number=self._loop_count,
+                    current_symbol=symbol if 'symbol' in locals() else 'N/A',
+                    last_price=price if 'price' in locals() else 0.0,
+                    last_function="TradeMonitor.check_prices",
+                    last_exception=str(e),
+                    stack_trace=tb,
+                    task_state={}, # TODO: Populate with actual task state
+                    redis_status="N/A",
+                    database_status="N/A",
+                    exchange_status="N/A",
+                    websocket_status="N/A",
+                    heartbeat_status={}, # TODO: Populate with actual heartbeat status
+                    memory=0, # TODO: Get actual memory usage
+                    cpu=0, # TODO: Get actual CPU usage
+                    restart_count=ws_reconnect_count,
+                    reason="WebSocket connection error"
+                )
                 await asyncio.sleep(5)
 
     async def _check_live_trades(self, symbol: str, price: float):

@@ -2,6 +2,8 @@ import asyncio
 import logging
 import time
 import json
+import traceback
+from Core.observability import Obs, _now_iso as obs_now_iso
 from datetime import datetime
 from decimal import Decimal
 import numpy as np
@@ -272,7 +274,7 @@ diag_logger = DiagnosticLogger()
 
 def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=0, **kwargs):
     status = "CACHE HIT" if from_cache else "CACHE MISS (REST)"
-    now = datetime.now().strftime('%H:%M:%S')
+    now = datetime.now().strftime("%H:%M:%S")
     print(f"📝 [{now}] {status} | {symbol} | {timeframe} | {source} | {execution_time:.3f}s")
 
 
@@ -282,31 +284,47 @@ def log_api_request(symbol, timeframe, source, from_cache=False, execution_time=
 
 _running_tasks: dict[str, asyncio.Task] = {}
 _task_restart_counts: dict[str, int] = {}
+_task_creation_times: dict[str, float] = {}
+_task_creators: dict[str, str] = {}
 
-
-def safe_create_task(coro, name=None, restart=True, restart_delay=5, max_restarts=10):
+def safe_create_task(coro, name=None, restart=True, restart_delay=5, max_restarts=10, creator: str = "Unknown"):
     """
     إنشاء Task مع:
     - تسجيل كامل للأخطاء + traceback
     - إعادة تشغيل تلقائية إذا ماتت (إذا restart=True)
     - حد أقصى لعدد مرات إعادة التشغيل
+    - تسجيل تفصيلي لحالة المهمة وحوادثها
     """
     task_name = name or coro.__name__ if hasattr(coro, '__name__') else str(coro)
 
     def _schedule():
         task = asyncio.create_task(coro, name=task_name)
         _running_tasks[task_name] = task
+        _task_creation_times[task_name] = time.time()
+        _task_creators[task_name] = creator
 
         def _on_done(t):
             _running_tasks.pop(task_name, None)
+            elapsed_time = time.time() - _task_creation_times.pop(task_name, time.time())
+            task_creator = _task_creators.pop(task_name, "Unknown")
 
             try:
                 t.result()
+                logger.info(f"✅ [TASK] {task_name} finished successfully in {elapsed_time:.2f}s.")
             except asyncio.CancelledError:
                 logger.info(f"[TASK] {task_name} cancelled (expected shutdown).")
-            except Exception:
+            except Exception as e:
                 tb = traceback.format_exc()
+                local_vars = t.get_coro().cr_frame.f_locals if hasattr(t.get_coro(), 'cr_frame') else {}
                 logger.error(f"❌ [TASK] {task_name} crashed:\n{tb}")
+                Obs.task_crash_report(
+                    task_name=task_name,
+                    why=str(e),
+                    where=f"{t.get_coro().__qualname__} in {t.get_coro().__code__.co_filename}:{t.get_coro().__code__.co_firstlineno}",
+                    traceback_str=tb,
+                    local_vars=local_vars,
+                    task_creator=task_creator
+                )
 
                 if restart:
                     count = _task_restart_counts.get(task_name, 0)
@@ -316,33 +334,110 @@ def safe_create_task(coro, name=None, restart=True, restart_delay=5, max_restart
                             f"🔄 [TASK] Restarting {task_name} in {restart_delay}s "
                             f"(attempt {count + 1}/{max_restarts})..."
                         )
+                        Obs.restart_event(
+                            why=f"Task {task_name} crashed: {e}",
+                            who="safe_create_task",
+                            task_state=get_task_status(task_name),
+                            old_task_id=str(id(t)),
+                            new_task_id="N/A", # Will be filled after restart
+                            duration=elapsed_time,
+                            result="RESTARTING"
+                        )
                         asyncio.get_event_loop().call_later(
                             restart_delay, 
-                            lambda: safe_create_task(coro, name=task_name, restart=True, restart_delay=restart_delay, max_restarts=max_restarts)
+                            lambda: safe_create_task(coro, name=task_name, restart=True, restart_delay=restart_delay, max_restarts=max_restarts, creator=task_creator)
                         )
                     else:
                         logger.critical(
-                            f"💀 [TASK] {task_name} exceeded max restarts ({max_restarts}). "
-                            f"Manual intervention required."
+                            f"💀 [TASK] {task_name} exceeded max restarts ({max_restarts}). Manual intervention required."
+                        )
+                        Obs.restart_event(
+                            why=f"Task {task_name} exceeded max restarts",
+                            who="safe_create_task",
+                            task_state=get_task_status(task_name),
+                            old_task_id=str(id(t)),
+                            new_task_id="N/A",
+                            duration=elapsed_time,
+                            result="FAILED_MAX_RESTARTS"
                         )
 
         task.add_done_callback(_on_done)
         logger.info(f"🚀 [TASK] {task_name} started (restart={restart}).")
+        Obs.task_status_report(
+            task_name=task_name,
+            status={
+                "Task ID": str(id(task)),
+                "Creation Time": obs_now_iso(),
+                "Current State": "Running",
+                "Alive": True,
+                "Cancelled": False,
+                "Finished": False,
+                "Exception": "N/A",
+                "Restart Count": _task_restart_counts.get(task_name, 0),
+                "Runtime": 0, # Will be updated dynamically or on completion
+                "CPU Time": "N/A", # Requires more advanced profiling
+                "Memory": "N/A", # Requires more advanced profiling
+                "Stack Trace": "N/A", # Only available on crash
+                "Creator": creator
+            }
+        )
         return task
 
     return _schedule()
 
-
 def get_task_status(task_name: str) -> dict:
     """الحصول على حالة مهمة حية"""
     task = _running_tasks.get(task_name)
-    return {
-        "running": task is not None and not task.done(),
-        "done": task.done() if task else None,
-        "cancelled": task.cancelled() if task else None,
-        "restarts": _task_restart_counts.get(task_name, 0),
-    }
+    if task:
+        current_state = "Running"
+        if task.done():
+            if task.cancelled():
+                current_state = "Cancelled"
+            elif task.exception():
+                current_state = "Failed"
+            else:
+                current_state = "Finished"
 
+        runtime = time.time() - _task_creation_times.get(task_name, time.time())
+
+        return {
+            "running": task is not None and not task.done(),
+            "done": task.done() if task else None,
+            "cancelled": task.cancelled() if task else None,
+            "restarts": _task_restart_counts.get(task_name, 0),
+            "Task ID": str(id(task)),
+            "Creation Time": datetime.fromtimestamp(_task_creation_times.get(task_name, 0)).strftime("%Y-%m-%d %H:%M:%S") if _task_creation_times.get(task_name) else "N/A",
+            "Current State": current_state,
+            "Alive": not task.done(),
+            "Cancelled": task.cancelled(),
+            "Finished": task.done() and not task.cancelled() and not task.exception(),
+            "Exception": str(task.exception()) if task.exception() else "N/A",
+            "Restart Count": _task_restart_counts.get(task_name, 0),
+            "Runtime": f"{runtime:.2f}s",
+            "CPU Time": "N/A",
+            "Memory": "N/A",
+            "Stack Trace": "N/A",
+            "Creator": _task_creators.get(task_name, "Unknown")
+        }
+    return {
+        "running": False,
+        "done": True,
+        "cancelled": False,
+        "restarts": _task_restart_counts.get(task_name, 0),
+        "Task ID": "N/A",
+        "Creation Time": "N/A",
+        "Current State": "Not Running",
+        "Alive": False,
+        "Cancelled": False,
+        "Finished": True,
+        "Exception": "N/A",
+        "Restart Count": _task_restart_counts.get(task_name, 0),
+        "Runtime": "0.00s",
+        "CPU Time": "N/A",
+        "Memory": "N/A",
+        "Stack Trace": "N/A",
+        "Creator": _task_creators.get(task_name, "Unknown")
+    }
 
 def get_all_task_statuses() -> dict[str, dict]:
     return {name: get_task_status(name) for name in list(_running_tasks.keys())}

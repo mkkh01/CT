@@ -1,3 +1,4 @@
+
 """
 ══════════════════════════════════════════════════════════════════════
 CT V4.0 — FULL TRANSPARENCY OBSERVABILITY SYSTEM
@@ -260,6 +261,8 @@ class _Obs:
             f"  {_kv('Python', platform.python_version(), indent=0)}",
             f"  {_kv('PID', str(os.getpid()), indent=0)}",
             f"  {_kv('Started', _now_iso(), indent=0)}",
+            f"  {_kv('Commit', os.environ.get('RENDER_GIT_COMMIT', 'N/A'), indent=0)}",
+            f"  {_kv('Branch', os.environ.get('RENDER_GIT_BRANCH', 'N/A'), indent=0)}",
             f"  {_kv('Obs Level', _current_level.name, indent=0)}",
             _SEP55,
         ])
@@ -267,6 +270,8 @@ class _Obs:
             "env": os.environ.get("RENDER", "local"),
             "python": platform.python_version(),
             "pid": os.getpid(),
+            "commit": os.environ.get("RENDER_GIT_COMMIT", "N/A"),
+            "branch": os.environ.get("RENDER_GIT_BRANCH", "N/A"),
             "level": _current_level.name,
         })
 
@@ -281,6 +286,334 @@ class _Obs:
         lines.append(f"  {'✅' if all_ok else '❌'} SYSTEM {'READY' if all_ok else 'HAS ISSUES'}")
         lines.append(_SEP55)
         info(lines)
+
+    def startup_step(self, step_num: int, total_steps: int, name: str, status: str = "START", elapsed_s: float = 0, detail: str = ""):
+        if status == "START":
+            _log(f"[STARTUP] [{step_num}/{total_steps}] {name}...")
+        elif status == "SUCCESS":
+            _log(f"[STARTUP] [{step_num}/{total_steps}] {name} SUCCESS ({elapsed_s:.3f}s)")
+        elif status == "FAILED":
+            _log(f"[STARTUP] [{step_num}/{total_steps}] {name} FAILED ({elapsed_s:.3f}s) {detail}")
+        _json_event("startup_step", {
+            "step": step_num, "total": total_steps, "name": name, "status": status, "elapsed": elapsed_s, "detail": detail
+        })
+
+    def constructor_log(self, class_name: str, method_name: str, message: str, level: str = "info"):
+        _log(f"[CONSTRUCTOR] {class_name}.{method_name}: {message}")
+        _json_event("constructor_log", {
+            "class": class_name, "method": method_name, "message": message, "level": level
+        })
+
+    def task_status_report(self, task_name: str, status: Dict[str, Any]):
+        if not is_debug():
+            return
+        lines = [_divider(f"ASYNC TASK STATUS — {task_name}")]
+        for k, v in status.items():
+            lines.append(_kv(k, str(v)))
+        lines.append(_SEP55)
+        info(lines)
+        _json_event("task_status", {
+            "task_name": task_name, "status": status
+        })
+
+    def task_crash_report(self, task_name: str, why: str, where: str, traceback_str: str, local_vars: Dict[str, Any], task_creator: str):
+        lines = [
+            _divider(f"{_ICON_FAIL} ASYNC TASK CRASH — {task_name}"),
+            _kv("WHY", why),
+            _kv("WHERE", where),
+            _kv("TASK CREATOR", task_creator),
+            _kv("LOCAL VARIABLES", json.dumps(local_vars, default=str)[:200] + "..."),
+            _divider("TRACEBACK"),
+        ]
+        for line in traceback_str.splitlines():
+            lines.append(f"  {line}")
+        lines.append(_SEP55)
+        info(lines)
+        _json_event("task_crash", {
+            "task_name": task_name, "why": why, "where": where, "local_vars": local_vars, "task_creator": task_creator, "traceback": traceback_str
+        })
+
+    def heartbeat_update(self, module: str, last_activity: float, current_state: str, last_exception: str = "", restart_count: int = 0, last_symbol: str = "", current_symbol: str = "", loop_count: int = 0, iteration: int = 0, execution_time: float = 0, current_stage: str = ""):
+        if not is_debug():
+            return
+        info([
+            _divider(f"HEARTBEAT — {module}"),
+            _kv("Last Activity", _fmt_ts(last_activity)),
+            _kv("Current State", current_state),
+            _kv("Last Exception", last_exception if last_exception else "N/A"),
+            _kv("Restart Count", restart_count),
+            _kv("Last Symbol", last_symbol if last_symbol else "N/A"),
+            _kv("Current Symbol", current_symbol if current_symbol else "N/A"),
+            _kv("Loop Count", loop_count),
+            _kv("Iteration", iteration),
+            _kv("Execution Time", f"{execution_time:.3f}s"),
+            _kv("Current Stage", current_stage if current_stage else "N/A"),
+            _SEP55,
+        ])
+        _json_event("heartbeat_update", {
+            "module": module, "last_activity": last_activity, "current_state": current_state, "last_exception": last_exception,
+            "restart_count": restart_count, "last_symbol": last_symbol, "current_symbol": current_symbol, "loop_count": loop_count,
+            "iteration": iteration, "execution_time": execution_time, "current_stage": current_stage
+        })
+
+    def trademonitor_loop_log(self, loop_num: int, current_symbol: str, current_time: str, db_status: str, redis_status: str, exchange_status: str, binance_status: str, ws_status: str, cache_status: str, strategy_count: int, open_positions: int, pending_signals: int, current_candle: str, last_candle_time: str, current_price: float, spread: float, latency: float, memory_usage: float, cpu_usage: float):
+        if not is_debug():
+            return
+        info([
+            _divider(f"TRADEMONITOR LOOP #{loop_num}"),
+            _kv("Current Symbol", current_symbol),
+            _kv("Current Time", current_time),
+            _kv("Database Status", db_status),
+            _kv("Redis Status", redis_status),
+            _kv("Exchange Status", exchange_status),
+            _kv("Binance Status", binance_status),
+            _kv("WebSocket Status", ws_status),
+            _kv("Cache Status", cache_status),
+            _kv("Strategy Count", strategy_count),
+            _kv("Open Positions", open_positions),
+            _kv("Pending Signals", pending_signals),
+            _kv("Current Candle", current_candle),
+            _kv("Last Candle Time", last_candle_time),
+            _kv("Current Price", _fmt_price(current_price)),
+            _kv("Spread", f"{spread:.8f}"),
+            _kv("Latency", f"{latency:.2f}ms"),
+            _kv("Memory Usage", f"{memory_usage:.2f}MB"),
+            _kv("CPU Usage", f"{cpu_usage:.2f}%"),
+            _SEP55,
+        ])
+        _json_event("trademonitor_loop", {
+            "loop_num": loop_num, "current_symbol": current_symbol, "current_time": current_time, "db_status": db_status,
+            "redis_status": redis_status, "exchange_status": exchange_status, "binance_status": binance_status, "ws_status": ws_status,
+            "cache_status": cache_status, "strategy_count": strategy_count, "open_positions": open_positions,
+            "pending_signals": pending_signals, "current_candle": current_candle, "last_candle_time": last_candle_time,
+            "current_price": current_price, "spread": spread, "latency": latency, "memory_usage": memory_usage, "cpu_usage": cpu_usage
+        })
+
+    def websocket_event(self, event_type: str, **kwargs):
+        if not is_trace():
+            return
+        info([
+            _divider(f"WEBSOCKET — {event_type}"),
+            *[_kv(k, str(v)) for k, v in kwargs.items()],
+            _SEP55,
+        ])
+        _json_event("websocket_event", {
+            "event_type": event_type, **kwargs
+        })
+
+    def live_price_tick_full(self, exchange: str, symbol: str, bid: float, ask: float, last_price: float, mark_price: float, volume: float, timestamp: float, latency: float, redis_write_status: str, cache_update_status: str, database_update_status: str, telegram_broadcast_status: str):
+        if not is_trace():
+            return
+        info([
+            _divider(f"LIVE PRICE TICK — {symbol}"),
+            _kv("Exchange", exchange),
+            _kv("Symbol", symbol),
+            _kv("Bid", _fmt_price(bid)),
+            _kv("Ask", _fmt_price(ask)),
+            _kv("Last Price", _fmt_price(last_price)),
+            _kv("Mark Price", _fmt_price(mark_price)),
+            _kv("Volume", f"{volume:.2f}"),
+            _kv("Time", _fmt_ts(timestamp)),
+            _kv("Latency", f"{latency:.2f}ms"),
+            _kv("Redis Write Status", redis_write_status),
+            _kv("Cache Update Status", cache_update_status),
+            _kv("Database Update Status", database_update_status),
+            _kv("Telegram Broadcast Status", telegram_broadcast_status),
+            _SEP55,
+        ])
+        _json_event("live_price_tick_full", {
+            "exchange": exchange, "symbol": symbol, "bid": bid, "ask": ask, "last_price": last_price, "mark_price": mark_price,
+            "volume": volume, "timestamp": timestamp, "latency": latency, "redis_write_status": redis_write_status,
+            "cache_update_status": cache_update_status, "database_update_status": database_update_status, "telegram_broadcast_status": telegram_broadcast_status
+        })
+
+    def db_query_full(self, sql: str, execution_time: float, rows: int, connection_id: str, pool_status: str, retry_count: int, errors: str = ""):
+        if not is_trace():
+            return
+        info([
+            _divider("DATABASE QUERY"),
+            _kv("SQL", sql[:100] + "..."),
+            _kv("Execution Time", f"{execution_time:.3f}s"),
+            _kv("Rows", rows),
+            _kv("Connection ID", connection_id),
+            _kv("Pool Status", pool_status),
+            _kv("Retry Count", retry_count),
+            _kv("Errors", errors if errors else "N/A"),
+            _SEP55,
+        ])
+        _json_event("db_query_full", {
+            "sql": sql, "execution_time": execution_time, "rows": rows, "connection_id": connection_id,
+            "pool_status": pool_status, "retry_count": retry_count, "errors": errors
+        })
+
+    def db_tracked_coins_load(self, coins_found: int, coins_ignored: int, reason: str, user_ids: List[int], capital: float, risk: float, timeframe: str):
+        if not is_debug():
+            return
+        info([
+            _divider("DATABASE TRACKED COINS LOAD"),
+            _kv("Coins Found", coins_found),
+            _kv("Coins Ignored", coins_ignored),
+            _kv("Reason", reason),
+            _kv("User IDs", str(user_ids)),
+            _kv("Capital", f"{capital:.2f}"),
+            _kv("Risk", f"{risk:.2f}"),
+            _kv("Timeframe", timeframe),
+            _SEP55,
+        ])
+        _json_event("db_tracked_coins_load", {
+            "coins_found": coins_found, "coins_ignored": coins_ignored, "reason": reason, "user_ids": user_ids,
+            "capital": capital, "risk": risk, "timeframe": timeframe
+        })
+
+    def strategy_execution(self, strategy_name: str, started_at: float, finished_at: float, execution_time: float, signal: str, confidence: float, reasons: List[str], internal_indicators: Dict[str, Any]):
+        if not is_debug():
+            return
+        info([
+            _divider(f"STRATEGY EXECUTION — {strategy_name}"),
+            _kv("Started At", _fmt_ts(started_at)),
+            _kv("Finished At", _fmt_ts(finished_at)),
+            _kv("Execution Time", f"{execution_time:.3f}s"),
+            _kv("Signal", signal),
+            _kv("Confidence", f"{confidence:.2f}%"),
+            _kv("Reasons", ", ".join(reasons)),
+            _kv("Internal Indicators", json.dumps(internal_indicators, default=str)[:200] + "..."),
+            _SEP55,
+        ])
+        _json_event("strategy_execution", {
+            "strategy_name": strategy_name, "started_at": started_at, "finished_at": finished_at, "execution_time": execution_time,
+            "signal": signal, "confidence": confidence, "reasons": reasons, "internal_indicators": internal_indicators
+        })
+
+    def indicator_calculation(self, indicator_name: str, values: Dict[str, Any]):
+        if not is_trace():
+            return
+        info([
+            _divider(f"INDICATOR CALCULATION — {indicator_name}"),
+            *[_kv(k, str(v)) for k, v in values.items()],
+            _SEP55,
+        ])
+        _json_event("indicator_calculation", {
+            "indicator_name": indicator_name, "values": values
+        })
+
+    def decision_rule_evaluation(self, rule_name: str, status: str, reason: str = ""):
+        if not is_debug():
+            return
+        info([
+            _kv(f"DECISION RULE — {rule_name}", f"{status} {reason}")
+        ])
+        _json_event("decision_rule_evaluation", {
+            "rule_name": rule_name, "status": status, "reason": reason
+        })
+
+    def trademonitor_crash_report(self, death_time: float, uptime: float, loop_number: int, current_symbol: str, last_price: float, last_function: str, last_exception: str, stack_trace: str, task_state: Dict[str, Any], redis_status: str, database_status: str, exchange_status: str, websocket_status: str, heartbeat_status: Dict[str, Any], memory: float, cpu: float, restart_count: int, reason: str):
+        lines = [
+            "",
+            "╔" + "═" * 53 + "╗",
+            "║  ========== TRADE MONITOR CRASH REPORT ==========".ljust(54) + "║",
+            "╠" + "═" * 53 + "╣",
+            _kv("Death Time", _fmt_ts(death_time)),
+            _kv("Uptime", f"{uptime:.0f}s"),
+            _kv("Loop Number", loop_number),
+            _kv("Current Symbol", current_symbol),
+            _kv("Last Price", _fmt_price(last_price)),
+            _kv("Last Function", last_function),
+            _kv("Last Exception", last_exception),
+            _kv("Task State", json.dumps(task_state, default=str)[:200] + "..."),
+            _kv("Redis Status", redis_status),
+            _kv("Database Status", database_status),
+            _kv("Exchange Status", exchange_status),
+            _kv("WebSocket Status", websocket_status),
+            _kv("Heartbeat Status", json.dumps(heartbeat_status, default=str)[:200] + "..."),
+            _kv("Memory", f"{memory:.2f}MB"),
+            _kv("CPU", f"{cpu:.2f}%"),
+            _kv("Restart Count", restart_count),
+            _kv("Reason", reason),
+            _divider("STACK TRACE"),
+        ]
+        for line in stack_trace.splitlines():
+            lines.append(f"  {line}")
+        lines.append("╚" + "═" * 53 + "╝")
+        info(lines)
+        _json_event("trademonitor_crash_report", {
+            "death_time": death_time, "uptime": uptime, "loop_number": loop_number, "current_symbol": current_symbol,
+            "last_price": last_price, "last_function": last_function, "last_exception": last_exception, "stack_trace": stack_trace,
+            "task_state": task_state, "redis_status": redis_status, "database_status": database_status, "exchange_status": exchange_status,
+            "websocket_status": websocket_status, "heartbeat_status": heartbeat_status, "memory": memory, "cpu": cpu,
+            "restart_count": restart_count, "reason": reason
+        })
+
+    def restart_event(self, why: str, who: str, task_state: Dict[str, Any], old_task_id: str, new_task_id: str, duration: float, result: str):
+        info([
+            _divider(f"RESTART EVENT"),
+            _kv("Why Restart", why),
+            _kv("Who Requested", who),
+            _kv("Task State", json.dumps(task_state, default=str)[:200] + "..."),
+            _kv("Old Task ID", old_task_id),
+            _kv("New Task ID", new_task_id),
+            _kv("Duration", f"{duration:.3f}s"),
+            _kv("Result", result),
+            _SEP55,
+        ])
+        _json_event("restart_event", {
+            "why": why, "who": who, "task_state": task_state, "old_task_id": old_task_id,
+            "new_task_id": new_task_id, "duration": duration, "result": result
+        })
+
+    def system_dashboard_update(self, trademonitor_status: str, ai_engine_status: str, decision_engine_status: str, risk_engine_status: str, database_status: str, redis_status: str, telegram_status: str, exchange_status: str, websocket_status: str, live_prices_status: str, tracked_symbols_count: int, open_trades_count: int, cpu_usage: float, ram_usage: float, heartbeat_status: str, last_tick_time: float, last_candle_time: float, reconnect_count: int, restart_count: int):
+        info([
+            "",
+            "╔" + "═" * 53 + "╗",
+            "║  ========== SYSTEM STATUS DASHBOARD ==========".ljust(54) + "║",
+            "╠" + "═" * 53 + "╣",
+            _kv("TradeMonitor", trademonitor_status),
+            _kv("AI Engine", ai_engine_status),
+            _kv("Decision Engine", decision_engine_status),
+            _kv("Risk Engine", risk_engine_status),
+            _kv("Database", database_status),
+            _kv("Redis", redis_status),
+            _kv("Telegram", telegram_status),
+            _kv("Exchange", exchange_status),
+            _kv("WebSocket", websocket_status),
+            _kv("Live Prices", live_prices_status),
+            _kv("Tracked Symbols", tracked_symbols_count),
+            _kv("Open Trades", open_trades_count),
+            _kv("CPU Usage", f"{cpu_usage:.2f}%"),
+            _kv("RAM Usage", f"{ram_usage:.2f}MB"),
+            _kv("Heartbeat", heartbeat_status),
+            _kv("Last Tick", _fmt_ts(last_tick_time)),
+            _kv("Last Candle", _fmt_ts(last_candle_time)),
+            _kv("Reconnect Count", reconnect_count),
+            _kv("Restart Count", restart_count),
+            "╚" + "═" * 53 + "╝",
+        ])
+        _json_event("system_dashboard_update", {
+            "trademonitor_status": trademonitor_status, "ai_engine_status": ai_engine_status, "decision_engine_status": decision_engine_status,
+            "risk_engine_status": risk_engine_status, "database_status": database_status, "redis_status": redis_status,
+            "telegram_status": telegram_status, "exchange_status": exchange_status, "websocket_status": websocket_status,
+            "live_prices_status": live_prices_status, "tracked_symbols_count": tracked_symbols_count,
+            "open_trades_count": open_trades_count, "cpu_usage": cpu_usage, "ram_usage": ram_usage,
+            "heartbeat_status": heartbeat_status, "last_tick_time": last_tick_time, "last_candle_time": last_candle_time,
+            "reconnect_count": reconnect_count, "restart_count": restart_count
+        })
+
+    def final_validation_report(self, results: Dict[str, bool]):
+        all_ok = all(results.values())
+        lines = [
+            "",
+            "╔" + "═" * 53 + "╗",
+            "║  ========== FINAL VALIDATION REPORT ==========".ljust(54) + "║",
+            "╠" + "═" * 53 + "╣",
+        ]
+        for check, status in results.items():
+            lines.append(f"║  {_icon(status)} {check}".ljust(54) + "║")
+        lines.append("╠" + "═" * 53 + "╣")
+        lines.append(f"║  SYSTEM STATUS: {"ALL CHECKS PASSED" if all_ok else "FAILED CHECKS"}".ljust(54) + "║")
+        lines.append("╚" + "═" * 53 + "╝")
+        info(lines)
+        _json_event("final_validation_report", {
+            "results": results, "all_ok": all_ok
+        })
 
     def config_dump(self, config_module):
         """Dump non-secret config values."""
@@ -379,126 +712,77 @@ class _Obs:
 
     def candle_received(self, symbol: str, timeframe: str, open_p: float,
                         high: float, low: float, close_p: float, volume: float,
-                        timestamp, source: str = "WebSocket", latency_ms: float = 0,
-                        cache_valid: bool = True):
+                        timestamp, source: str = "", latency_ms: float = 0):
         if not is_debug():
             return
         info([
-            _divider(f"CANDLE RECEIVED — {symbol} {timeframe}"),
-            f"  Open:      {_fmt_price(open_p, 8)}",
-            f"  High:      {_fmt_price(high, 8)}",
-            f"  Low:       {_fmt_price(low, 8)}",
-            f"  Close:     {_fmt_price(close_p, 8)}",
-            f"  Volume:    {volume:.0f}",
-            f"  Time:      {_fmt_ts(timestamp)}",
-            f"  Source:    {source}",
-            f"  Cache:     {'VALID' if cache_valid else 'STALE'}  {_icon(cache_valid)}",
-            f"  Latency:   {latency_ms:.0f}ms",
+            _divider(f"CANDLE {symbol} {timeframe}"),
+            f"  Open:     {_fmt_price(open_p)}",
+            f"  High:     {_fmt_price(high)}",
+            f"  Low:      {_fmt_price(low)}",
+            f"  Close:    {_fmt_price(close_p)}",
+            f"  Volume:   {volume:.2f}",
+            f"  Time:     {_fmt_ts(timestamp)}",
+            f"  Source:   {source}",
+            f"  Latency:  {latency_ms:.1f}ms",
             _SEP55,
         ])
-
-    def market_data_loaded(self, symbol: str, df, df_htf, elapsed: float):
-        """Log OHLCV data fetch details."""
-        if not is_debug():
-            return
-        ltf_n = len(df) if hasattr(df, '__len__') else 0
-        htf_n = len(df_htf) if hasattr(df_htf, '__len__') else 0
-        last_idx = str(df.index[-1]) if hasattr(df, 'index') and len(df) > 0 else "N/A"
-        nans = df.isnull().sum().sum() if hasattr(df, 'isnull') else '?'
-        info([
-            _divider("MARKET DATA LOADED"),
-            f"  Symbol:        {symbol}",
-            f"  LTF candles:   {ltf_n}  ({last_idx})",
-            f"  HTF candles:   {htf_n}",
-            f"  Missing:       {nans} NaNs",
-            f"  Fetch time:    {elapsed:.4f}s",
-            _SEP55,
-        ])
+        _json_event("candle_received", {
+            "s": symbol, "tf": timeframe, "o": open_p, "h": high, "l": low,
+            "c": close_p, "v": volume, "ts": timestamp, "src": source,
+            "lat": latency_ms,
+        })
 
     # ══════════════════════════════════════════════════════════════
-    # 4. STRATEGY ENGINE TRANSPARENCY (DEBUG)
-    # ══════════════════════════════════════════════════════════════
-
-    def strategy_check(self, name: str, checks: List[Dict[str, Any]],
-                       score: float, passed: bool, reason: str = ""):
-        """Log per-strategy condition check results."""
-        if not is_debug():
-            return
-        lines = [
-            _divider(f"STRATEGY: {name}"),
-            f"  Checking:",
-        ]
-        for c in checks:
-            s = _icon(c.get("status", False))
-            lines.append(f"    {s} {c.get('name', '?'):20s} | "
-                        f"Current={c.get('current','?')} | Required={c.get('required','?')}")
-        lines.append(f"  Score:   {score:.1f}%")
-        lines.append(f"  Result:  {'PASSED' if passed else 'FAILED'}  {_icon(passed)}")
-        if reason:
-            lines.append(f"  Reason:  {reason}")
-        lines.append(_SEP55)
-        info(lines)
-
-    # ══════════════════════════════════════════════════════════════
-    # 5. DECISION ENGINE — FULL TRANSPARENCY (NORMAL/DEBUG)
+    # 4. STRATEGY & DECISION (DEBUG)
     # ══════════════════════════════════════════════════════════════
 
     def decision_report(self, symbol: str, verdict: str, confidence: float,
                         probability: float, quality: float, risk_pct: float,
                         rr: float, conditions: List[Dict[str, Any]],
                         reasons: str = ""):
-        """
-        Print the COMPLETE decision report. NEVER just "SKIP".
-
-        conditions: [{name, current, required, passed, module}, ...]
-        """
-        all_passed = all(c.get("passed", False) for c in conditions)
-        emoji = {"BUY": "🚀", "SELL": "🔻"}.get(verdict, "🛑")
-
+        if not is_debug():
+            return
         lines = [
-            "",
-            "╔" + "═" * 53 + "╗",
-            f"║  DECISION REPORT — {symbol}".ljust(54) + "║",
-            "╠" + "═" * 53 + "╣",
-            f"║  Final Decision:  {verdict:6s}  {emoji}".ljust(54) + "║",
-            f"║  Confidence:      {confidence:.1f}%".ljust(54) + "║",
-            f"║  Probability:     {probability:.1f}%".ljust(54) + "║",
-            f"║  Quality:         {quality:.1f}/100".ljust(54) + "║",
-            f"║  Risk:            {risk_pct:.2f}%".ljust(54) + "║",
-            f"║  Reward Ratio:    1:{rr:.1f}".ljust(54) + "║",
-            "╠" + "═" * 53 + "╣",
-            "║  ALL CONDITIONS:".ljust(54) + "║",
+            _divider(f"DECISION REPORT — {symbol}"),
+            f"  Verdict:     {verdict}",
+            f"  Confidence:  {confidence:.2f}%",
+            f"  Probability: {probability:.2f}%",
+            f"  Quality:     {quality:.2f}%",
+            f"  Risk:        {risk_pct:.2f}%",
+            f"  RR:          {rr:.2f}",
+            _divider("CONDITIONS"),
         ]
-        for c in conditions:
-            s = "PASS" if c["passed"] else "FAIL"
-            lines.append(
-                f"║    {_icon(c['passed'])} {c['name'][:38]:38s} {s:4s}".ljust(54) + "║"
-            )
-        lines.append("╠" + "═" * 53 + "╣")
-
-        # Explain exactly why
-        if all_passed:
-            lines.append(f"║  REASON: All conditions passed.".ljust(54) + "║")
-        else:
-            lines.append(f"║  REASON: Trade rejected because:".ljust(54) + "║")
-            for c in conditions:
-                if not c["passed"]:
-                    lines.append(
-                        f"║    • {c['name']}: {c['current']} vs {c['required']}".ljust(54) + "║"
-                    )
-            if reasons:
-                lines.append(f"║    {reasons}".ljust(54) + "║")
-        lines.append("╚" + "═" * 53 + "╝")
-
+        for cond in conditions:
+            passed = cond.get("passed", False)
+            lines.append(f"  {_icon(passed)} {cond.get('name')}: {cond.get('reason', '')}")
+        if reasons:
+            lines.append(_divider("REASONS"))
+            lines.append(f"  {reasons}")
+        lines.append(_SEP55)
         info(lines)
         _json_event("decision", {
             "s": symbol, "verdict": verdict, "confidence": confidence,
             "probability": probability, "quality": quality, "risk": risk_pct,
             "rr": rr, "conditions": {c["name"]: c["passed"] for c in conditions},
+            "reasons": reasons,
         })
 
+    def signal_report(self, symbol: str, signal_type: str, price: float,
+                      reason: str, passed: bool):
+        if not is_debug():
+            return
+        info([
+            _divider(f"SIGNAL — {symbol}"),
+            f"  Type:    {signal_type}",
+            f"  Price:   {_fmt_price(price)}",
+            f"  Result:  {'PASSED' if passed else 'FAILED'}  {_icon(passed)}",
+            f"  Reason:  {reason}",
+            _SEP55,
+        ])
+
     # ══════════════════════════════════════════════════════════════
-    # 6. TRADE LIFECYCLE (NORMAL)
+    # 5. TRADE LIFECYCLE (NORMAL)
     # ══════════════════════════════════════════════════════════════
 
     def trade_opened(self, trade_id: int, symbol: str, direction: str,
@@ -823,27 +1107,24 @@ class Obs:
         Obs.get().trade_opened(*args, **kwargs)
 
     @staticmethod
+    def trade_monitor(*args, **kwargs):
+        Obs.get().trade_monitor(*args, **kwargs)
+
+    @staticmethod
     def trade_closed(*args, **kwargs):
         Obs.get().trade_closed(*args, **kwargs)
 
     @staticmethod
-    def error_full(component: str, function: str, error_type: str,
-                   message: str, **kwargs):
-        Obs.get().error_full(component, function, error_type, message, **kwargs)
-
-    @staticmethod
-    def error(component: str, function: str, exc: Exception, **kwargs):
-        Obs.get().error_full(
-            component, function, type(exc).__name__, str(exc), **kwargs
-        )
+    def error_full(*args, **kwargs):
+        Obs.get().error_full(*args, **kwargs)
 
     @staticmethod
     def binance_ws_status(*args, **kwargs):
         Obs.get().binance_ws_status(*args, **kwargs)
 
     @staticmethod
-    def ws_reconnect(attempt: int, reason: str = ""):
-        Obs.get().ws_reconnect(attempt, reason)
+    def ws_reconnect(*args, **kwargs):
+        Obs.get().ws_reconnect(*args, **kwargs)
 
     @staticmethod
     def db_query(*args, **kwargs):
@@ -858,52 +1139,101 @@ class Obs:
         Obs.get().api_rest_call(*args, **kwargs)
 
     @staticmethod
-    def perf_summary(measurements: Dict[str, float]):
-        Obs.get().perf_summary(measurements)
+    def perf_summary(*args, **kwargs):
+        Obs.get().perf_summary(*args, **kwargs)
 
     @staticmethod
-    def system_snapshot(**kwargs):
-        Obs.get().system_snapshot(**kwargs)
+    def system_snapshot(*args, **kwargs):
+        Obs.get().system_snapshot(*args, **kwargs)
 
     @staticmethod
-    def event_log(module: str, function: str, detail: str = "", **kwargs):
-        Obs.get().event_log(module, function, detail=detail, **kwargs)
+    def event_log(*args, **kwargs):
+        Obs.get().event_log(*args, **kwargs)
 
     @staticmethod
     def timer(label: str) -> PerfTimer:
         return Obs.get().timer(label)
 
     @staticmethod
-    def strategy_check(name: str, checks: List[Dict[str, Any]],
-                       score: float, passed: bool, reason: str = ""):
-        Obs.get().strategy_check(name, checks, score, passed, reason)
-
-    @staticmethod
-    def trade_monitor(trade_id: int, symbol: str, current_price: float,
-                      entry: float, sl: float, tp: float, unrealized_pnl: float):
-        Obs.get().trade_monitor(trade_id, symbol, current_price, entry,
-                                sl, tp, unrealized_pnl)
-
-    @staticmethod
-    def market_data_loaded(symbol: str, df, df_htf, elapsed: float):
-        Obs.get().market_data_loaded(symbol, df, df_htf, elapsed)
-
-    @staticmethod
-    def config_dump(config_module):
-        Obs.get().config_dump(config_module)
-
-    @staticmethod
-    def price_summary(symbol: str, price: float):
-        Obs.get().price_summary(symbol, price)
-
-    @property
-    def api_rest_count(self):
-        return Obs.get().api_rest_count
-
-    @property
-    def ws_reconnects(self):
-        return Obs.get().ws_reconnects
-
-    @staticmethod
     def inc_ws_reconnects():
         Obs.get().inc_ws_reconnects()
+
+    @property
+    def api_rest_count(self) -> int:
+        return self._api_rest_count
+
+    @property
+    def ws_reconnects(self) -> int:
+        return self._ws_reconnects
+
+    @staticmethod
+    def signal_report(*args, **kwargs):
+        Obs.get().signal_report(*args, **kwargs)
+
+    @staticmethod
+    def startup_step(*args, **kwargs):
+        Obs.get().startup_step(*args, **kwargs)
+
+    @staticmethod
+    def constructor_log(*args, **kwargs):
+        Obs.get().constructor_log(*args, **kwargs)
+
+    @staticmethod
+    def task_status_report(*args, **kwargs):
+        Obs.get().task_status_report(*args, **kwargs)
+
+    @staticmethod
+    def task_crash_report(*args, **kwargs):
+        Obs.get().task_crash_report(*args, **kwargs)
+
+    @staticmethod
+    def heartbeat_update(*args, **kwargs):
+        Obs.get().heartbeat_update(*args, **kwargs)
+
+    @staticmethod
+    def trademonitor_loop_log(*args, **kwargs):
+        Obs.get().trademonitor_loop_log(*args, **kwargs)
+
+    @staticmethod
+    def websocket_event(*args, **kwargs):
+        Obs.get().websocket_event(*args, **kwargs)
+
+    @staticmethod
+    def live_price_tick_full(*args, **kwargs):
+        Obs.get().live_price_tick_full(*args, **kwargs)
+
+    @staticmethod
+    def db_query_full(*args, **kwargs):
+        Obs.get().db_query_full(*args, **kwargs)
+
+    @staticmethod
+    def db_tracked_coins_load(*args, **kwargs):
+        Obs.get().db_tracked_coins_load(*args, **kwargs)
+
+    @staticmethod
+    def strategy_execution(*args, **kwargs):
+        Obs.get().strategy_execution(*args, **kwargs)
+
+    @staticmethod
+    def indicator_calculation(*args, **kwargs):
+        Obs.get().indicator_calculation(*args, **kwargs)
+
+    @staticmethod
+    def decision_rule_evaluation(*args, **kwargs):
+        Obs.get().decision_rule_evaluation(*args, **kwargs)
+
+    @staticmethod
+    def trademonitor_crash_report(*args, **kwargs):
+        Obs.get().trademonitor_crash_report(*args, **kwargs)
+
+    @staticmethod
+    def restart_event(*args, **kwargs):
+        Obs.get().restart_event(*args, **kwargs)
+
+    @staticmethod
+    def system_dashboard_update(*args, **kwargs):
+        Obs.get().system_dashboard_update(*args, **kwargs)
+
+    @staticmethod
+    def final_validation_report(*args, **kwargs):
+        Obs.get().final_validation_report(*args, **kwargs)
