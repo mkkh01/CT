@@ -227,10 +227,21 @@ async def async_main():
     async def periodic_snapshot():
         while not _shutdown_event.is_set():
             await asyncio.sleep(300)
-            Obs.system_snapshot(
-                uptime=time.time() - _started_at,
-                api_calls=Obs.get().api_rest_count,
-            )
+            # Pull live prices from Redis for the snapshot
+            from Core.redis_client import redis_client
+            prices = redis_client.get_data("live_prices") or {}
+            top_symbols = list(prices.keys())[:3]
+            snapshot_kwargs = {
+                "uptime": time.time() - _started_at,
+                "api_calls": Obs.get().api_rest_count,
+                "open_trades": len(redis_client.get_data("live_klines") or {}),
+            }
+            if top_symbols:
+                snapshot_kwargs["symbol"] = ", ".join(top_symbols)
+                snapshot_kwargs["price"] = ", ".join(
+                    str(prices[s].get("price", "?")) for s in top_symbols
+                )
+            Obs.system_snapshot(**snapshot_kwargs)
 
     safe_create_task(periodic_snapshot(), name="PeriodicSnapshot")
 

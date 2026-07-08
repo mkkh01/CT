@@ -22,17 +22,16 @@ async def check_admin(update: Update) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin(update): return
     user_id = update.effective_user.id
-    try:
-        async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:
+        try:
             async with session.begin():
                 res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == user_id))
                 if not res.scalars().first():
                     new_user = UserConfig(telegram_id=user_id)
                     session.add(new_user)
-                    await session.commit()
-    except Exception as e:
-        logger.error(f"Error in start command: {e}")
-        await session.rollback()
+        except Exception as e:
+            logger.error(f"Error in start command: {e}")
+            await session.rollback()
     
     await update.message.reply_text(
         "👋 أهلاً بك في نظام التداول المؤسسي CT V4.0\nتم تصميم هذا النظام لحماية رأس مالك وتحقيق نمو مستقر.",
@@ -92,37 +91,35 @@ async def process_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = update.message.text.strip().upper()
 
     if action == 'delete_coin':
-        try:
-            async with AsyncSessionLocal() as session:
+        async with AsyncSessionLocal() as session:
+            try:
                 async with session.begin():
                     await session.execute(delete(TrackedCoin).where(TrackedCoin.symbol == text))
-                    await session.commit()
-            await update.message.reply_text(f"✅ تم حذف {text} بنجاح.")
-        except Exception as e:
-            logger.error(f"Error deleting coin: {e}")
-            await session.rollback()
+                await update.message.reply_text(f"✅ تم حذف {text} بنجاح.")
+            except Exception as e:
+                logger.error(f"Error deleting coin: {e}")
+                await session.rollback()
         context.user_data.pop('action', None)
     elif action == 'edit_coin_start':
         context.user_data['edit_target'] = text
         await update.message.reply_text(f"💰 أدخل رأس المال الجديد لـ {text}:")
         context.user_data['action'] = 'edit_coin_capital'
     elif action == 'edit_coin_capital':
-        try:
-            cap = float(text)
-            symbol = context.user_data['edit_target']
-            async with AsyncSessionLocal() as session:
+        async with AsyncSessionLocal() as session:
+            try:
+                cap = float(text)
+                symbol = context.user_data['edit_target']
                 async with session.begin():
                     res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == symbol))
                     coin = res.scalars().first()
                     if coin:
                         coin.capital = cap
-                        await session.commit()
-            await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
-        except ValueError:
-            await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة.")
-        except Exception as e:
-            logger.error(f"Error editing coin capital: {e}")
-            await session.rollback()
+                await update.message.reply_text(f"✅ تم تحديث رأس مال {symbol} إلى {cap}.")
+            except ValueError:
+                await update.message.reply_text("❌ خطأ: يرجى إدخال قيمة عددية صحيحة.")
+            except Exception as e:
+                logger.error(f"Error editing coin capital: {e}")
+                await session.rollback()
         context.user_data.clear()
 
 async def show_live_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -157,32 +154,30 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in show_statistics: {e}")
 
 async def emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:
+        try:
             async with session.begin():
                 cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
                 if cfg:
                     cfg.emergency_stop = True
                     cfg.is_active = False
-                    await session.commit()
-        await update.message.reply_text("🛑 *EMERGENCY STOP ACTIVATED!*", parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Error in emergency_stop: {e}")
-        await session.rollback()
+            await update.message.reply_text("🛑 *EMERGENCY STOP ACTIVATED!*", parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error in emergency_stop: {e}")
+            await session.rollback()
 
 async def toggle_trading(update: Update, context: ContextTypes.DEFAULT_TYPE, status: bool):
-    try:
-        async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:
+        try:
             async with session.begin():
                 cfg = (await session.execute(select(UserConfig).where(UserConfig.telegram_id == ADMIN_ID))).scalars().first()
                 if cfg:
                     cfg.is_active = status
                     cfg.emergency_stop = False
-                    await session.commit()
-        await update.message.reply_text("▶️ نظام التداول يعمل" if status else "⏸ نظام التداول متوقف")
-    except Exception as e:
-        logger.error(f"Error in toggle_trading: {e}")
-        await session.rollback()
+            await update.message.reply_text("▶️ نظام التداول يعمل" if status else "⏸ نظام التداول متوقف")
+        except Exception as e:
+            logger.error(f"Error in toggle_trading: {e}")
+            await session.rollback()
 
 async def show_ai_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -264,8 +259,8 @@ async def process_add_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     tf = query.data.replace("tf_", "")
-    try:
-        async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:
+        try:
             async with session.begin():
                 # التحقق من وجود العملة مسبقاً
                 res = await session.execute(select(TrackedCoin).where(TrackedCoin.symbol == context.user_data['new_coin_symbol']))
@@ -280,10 +275,9 @@ async def process_add_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     timeframe=tf
                 )
                 session.add(new_coin)
-                await session.commit()
-        await query.edit_message_text(f"✅ تمت إضافة {context.user_data['new_coin_symbol']} بنجاح!")
-    except Exception as e:
-        logger.error(f"Error adding new coin: {e}")
-        await session.rollback()
-        await query.edit_message_text("❌ حدث خطأ أثناء إضافة العملة.")
+            await query.edit_message_text(f"✅ تمت إضافة {context.user_data['new_coin_symbol']} بنجاح!")
+        except Exception as e:
+            logger.error(f"Error adding new coin: {e}")
+            await session.rollback()
+            await query.edit_message_text("❌ حدث خطأ أثناء إضافة العملة.")
     return ConversationHandler.END

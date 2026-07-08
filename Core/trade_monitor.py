@@ -140,6 +140,8 @@ class TradeMonitor:
                                     high_24h=float(data.get("h", 0)) if data.get("h") else None,
                                     low_24h=float(data.get("l", 0)) if data.get("l") else None,
                                 )
+                                # Also emit periodic price summary at NORMAL level
+                                Obs.price_summary(symbol, price)
 
                                 await self._check_live_trades(symbol, price)
 
