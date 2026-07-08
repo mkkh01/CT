@@ -845,8 +845,8 @@ class Obs:
         Obs.get().system_snapshot(**kwargs)
 
     @staticmethod
-    def event_log(module: str, function: str, **kwargs):
-        Obs.get().event_log(module, function, **kwargs)
+    def event_log(module: str, function: str, detail: str = "", **kwargs):
+        Obs.get().event_log(module, function, detail=detail, **kwargs)
 
     @staticmethod
     def timer(label: str) -> PerfTimer:
