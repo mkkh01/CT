@@ -608,7 +608,7 @@ class _Obs:
         for check, status in results.items():
             lines.append(f"║  {_icon(status)} {check}".ljust(54) + "║")
         lines.append("╠" + "═" * 53 + "╣")
-        lines.append(f"║  SYSTEM STATUS: {"ALL CHECKS PASSED" if all_ok else "FAILED CHECKS"}".ljust(54) + "║")
+        lines.append(f"║  SYSTEM STATUS: {'ALL CHECKS PASSED' if all_ok else 'FAILED CHECKS'}".ljust(54) + "║")
         lines.append("╚" + "═" * 53 + "╝")
         info(lines)
         _json_event("final_validation_report", {
