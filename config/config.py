@@ -1,21 +1,21 @@
-import sys
-from pathlib import Path
-
-# إضافة المسار الرئيسي للبحث عن config.py
-sys.path.append(str(Path(__file__).parent.parent))
-
-try:
-    import config as main_config
-except ImportError:
-    import config as main_config
+# config/config.py
+from . import main_config
 
 class ConfigManager:
     def __init__(self):
         self.settings = main_config
-        self.constants = None # سيتم تحميله عند الحاجة
-        self.env = None # تم إزالته
+        self.constants = None
+        self.env = None
 
     def validate(self):
-        return main_config.validate_config()
+        if self.settings and hasattr(self.settings, 'validate_config'):
+            return self.settings.validate_config()
+        return True
+
+    def __getattr__(self, name):
+        # Proxy to main_config if not found here
+        if self.settings and hasattr(self.settings, name):
+            return getattr(self.settings, name)
+        raise AttributeError(f"'ConfigManager' object has no attribute '{name}'")
 
 config = ConfigManager()
