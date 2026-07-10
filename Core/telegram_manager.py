@@ -190,51 +190,11 @@ class TelegramManager:
         Imported here (not at module top) to avoid circular imports
         with bot.handlers which imports database, config, etc.
         """
-        from bot.handlers import (
-            start,
-            handle_message,
-            process_add_symbol,
-            process_add_capital,
-            process_add_risk,
-            process_add_tf,
-            ADD_SYMBOL,
-            ADD_CAPITAL,
-            ADD_RISK,
-            ADD_TF,
-        )
-
-        conv_handler = ConversationHandler(
-            entry_points=[
-                MessageHandler(filters.Regex(r"^➕ إضافة عملة$"), handle_message),
-            ],
-            states={
-                ADD_SYMBOL: [
-                    MessageHandler(
-                        filters.TEXT & ~filters.COMMAND, process_add_symbol
-                    )
-                ],
-                ADD_CAPITAL: [
-                    MessageHandler(
-                        filters.TEXT & ~filters.COMMAND, process_add_capital
-                    )
-                ],
-                ADD_RISK: [
-                    MessageHandler(
-                        filters.TEXT & ~filters.COMMAND, process_add_risk
-                    )
-                ],
-                ADD_TF: [
-                    CallbackQueryHandler(process_add_tf, pattern=r"^tf_"),
-                ],
-            },
-            fallbacks=[CommandHandler("start", start)],
-            per_message=False,
-        )
+        from bot.handlers import start, handle_buttons
 
         self._app.add_handler(CommandHandler("start", start))
-        self._app.add_handler(conv_handler)
         self._app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons)
         )
         logger.info("[TELEGRAM] ✅ Handlers registered")
 
