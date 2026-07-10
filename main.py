@@ -41,8 +41,11 @@ async def main():
     tm = get_telegram_manager()
     if tm.app:
         setup_handlers(tm.app)
-        await tm.start_polling()
-        await tm.send_admin("🚀 CT Bot is now online and monitoring markets.")
+        # استخدام Webhook بدلاً من Polling كما طلب المستخدم
+        import config
+        print(f"Starting Webserver on port {getattr(config, 'PORT', 10000)}...")
+        await tm.start_webhook()
+        await tm.send_admin("🚀 CT Bot is now online (Webhook Mode) and monitoring markets.")
     
     # 4. Load AI and Trading Engines (Simulated integration)
     logger.info("Loading AI Models and Trading Engine...")

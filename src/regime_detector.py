@@ -102,7 +102,13 @@ class MarketRegimeDetector:
         self.min_covar = min_covar
         self.n_fit_attempts = n_fit_attempts
         self.smoothing_min_duration = smoothing_min_duration
-        self.smoothing_enabled = os.getenv("HMM_SMOOTHING_ENABLED", "1") in ("1", "true", "yes")
+        try:
+            import config
+            self.smoothing_enabled = getattr(config, "HMM_SMOOTHING_ENABLED", True)
+            if not isinstance(self.smoothing_enabled, bool):
+                self.smoothing_enabled = str(self.smoothing_enabled).lower() in ("1", "true", "yes")
+        except ImportError:
+            self.smoothing_enabled = True
 
         self.model: Optional[GaussianHMM] = None
         self.scaler: Optional["StandardScaler"] = StandardScaler() if StandardScaler else None

@@ -1,55 +1,46 @@
+import sys
 import os
-import logging
+from pathlib import Path
 
-# --- System Settings ---
-DEBUG_MODE = False
+# إضافة المسار الرئيسي للبحث عن config.py
+sys.path.append(str(Path(__file__).parent.parent))
+
+try:
+    import config
+except ImportError:
+    # في حالة فشل الاستيراد، نحاول استيراده كملف محلي
+    import config as config
+
+# نسخ الإعدادات من config.py إلى settings.py للحفاظ على التوافق مع بقية المشروع
+DEBUG_MODE = config.DEBUG_MODE
+TELEGRAM_TOKEN = config.TELEGRAM_TOKEN
+ADMIN_ID = config.ADMIN_ID
+RAW_DATABASE_URL = config.RAW_DATABASE_URL
+DATABASE_URL = config.DATABASE_URL
+REDIS_HOST = config.REDIS_HOST
+REDIS_PORT = config.REDIS_PORT
+REDIS_PASSWORD = config.REDIS_PASSWORD
+
+# إعدادات إضافية قد تكون مطلوبة من قبل أجزاء أخرى من النظام
+PORT = config.PORT
+WEBHOOK_URL = config.WEBHOOK_URL
+BINANCE_API_KEY = config.BINANCE_API_KEY
+BINANCE_API_SECRET = config.BINANCE_API_SECRET
+BINANCE_WS_URL = config.BINANCE_WS_URL
+DEFAULT_CAPITAL = config.DEFAULT_CAPITAL
+TRADE_FEE = config.TRADE_FEE
+HTF_MODE = config.HTF_MODE
+
+# الحفاظ على المتغيرات القديمة التي قد تستخدمها أجزاء أخرى
+REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
 LOG_LEVEL = "INFO"
-
-# --- Operating Modes ---
 SIGNAL_MODE = True
 LIVE_MODE = False
 SIMULATION_MODE = False
-
-# --- Telegram Settings ---
-TELEGRAM_TOKEN = "8129443153:AAEPrpxbplE_Tf7fkR4eCueljc0DVLQcYxQ"
-ADMIN_ID = 1503808643
-
-# --- Database & Cache Settings ---
-SUPABASE_URL = ""
-SUPABASE_KEY = ""
-RAW_DATABASE_URL = "postgresql://postgres.licqbfixgyzrahuscwnh:Mk_03065750@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
-DATABASE_URL = RAW_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-if "?ssl=require" not in DATABASE_URL:
-    DATABASE_URL += "?ssl=require"
-
-# Updated Redis Configuration to match the working one from logs/settings
-REDIS_URL = "redis://:m4SWGkLu0SogNfODh1sIaHSJvpAICVVM@deft-wonderful-receipt-35081.db.redis.io:18244"
-REDIS_HOST = "deft-wonderful-receipt-35081.db.redis.io"
-REDIS_PORT = 18244
-REDIS_PASSWORD = "m4SWGkLu0SogNfODh1sIaHSJvpAICVVM"
-
-# --- Trading Credentials ---
-MT5_LOGIN = 0
-MT5_PASSWORD = ""
-MT5_SERVER = ""
-MT5_PATH = None
-
-# --- Trading Parameters ---
 SYMBOL = "XAUUSD"
-CAPITAL = 5000.0
+CAPITAL = DEFAULT_CAPITAL
 RISK_PER_TRADE = 1.0
 TIMEFRAME = "M15"
 
 def validate_config():
-    errors = []
-    if not TELEGRAM_TOKEN: errors.append("TELEGRAM_TOKEN is missing")
-    if not RAW_DATABASE_URL: errors.append("DATABASE_URL is missing")
-    
-    if LIVE_MODE:
-        if MT5_LOGIN == 0: errors.append("MT5_LOGIN is missing for LIVE_MODE")
-        if not MT5_PASSWORD: errors.append("MT5_PASSWORD is missing for LIVE_MODE")
-        if not MT5_SERVER: errors.append("MT5_SERVER is missing for LIVE_MODE")
-    
-    if errors:
-        raise RuntimeError(f"Config validation failed: {', '.join(errors)}")
-    return True
+    return config.validate_config()

@@ -57,9 +57,20 @@ class VersionManager:
         features['hmm_regime'] = True
 
         # Advanced exit features (from environment flags)
-        features['kalman_filter'] = os.environ.get("KALMAN_ENABLED", "1") == "1"
-        features['advanced_exits'] = os.environ.get("ADVANCED_EXITS_ENABLED", "1") == "1"
-        features['predictive_intelligence'] = os.environ.get("PREDICTIVE_ENABLED", "1") == "1"
+        try:
+            import config
+            features['kalman_filter'] = getattr(config, "KALMAN_ENABLED", True)
+            if not isinstance(features['kalman_filter'], bool): features['kalman_filter'] = str(features['kalman_filter']) == "1"
+            
+            features['advanced_exits'] = getattr(config, "ADVANCED_EXITS_ENABLED", True)
+            if not isinstance(features['advanced_exits'], bool): features['advanced_exits'] = str(features['advanced_exits']) == "1"
+            
+            features['predictive_intelligence'] = getattr(config, "PREDICTIVE_ENABLED", True)
+            if not isinstance(features['predictive_intelligence'], bool): features['predictive_intelligence'] = str(features['predictive_intelligence']) == "1"
+        except ImportError:
+            features['kalman_filter'] = True
+            features['advanced_exits'] = True
+            features['predictive_intelligence'] = True
 
         # Component detection
         try:

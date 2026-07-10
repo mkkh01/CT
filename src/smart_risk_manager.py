@@ -26,9 +26,20 @@ import polars as pl
 WIB = ZoneInfo("Asia/Jakarta")
 
 # Feature flags
-_KALMAN_ENABLED = os.environ.get("KALMAN_ENABLED", "1") == "1"
-_ADVANCED_EXITS_ENABLED = os.environ.get("ADVANCED_EXITS_ENABLED", "1") == "1"
-_PREDICTIVE_ENABLED = os.environ.get("PREDICTIVE_ENABLED", "1") == "1"  # v6.3 Predictive features
+try:
+    import config
+    _KALMAN_ENABLED = getattr(config, "KALMAN_ENABLED", True)
+    if not isinstance(_KALMAN_ENABLED, bool): _KALMAN_ENABLED = str(_KALMAN_ENABLED) == "1"
+    
+    _ADVANCED_EXITS_ENABLED = getattr(config, "ADVANCED_EXITS_ENABLED", True)
+    if not isinstance(_ADVANCED_EXITS_ENABLED, bool): _ADVANCED_EXITS_ENABLED = str(_ADVANCED_EXITS_ENABLED) == "1"
+    
+    _PREDICTIVE_ENABLED = getattr(config, "PREDICTIVE_ENABLED", True)
+    if not isinstance(_PREDICTIVE_ENABLED, bool): _PREDICTIVE_ENABLED = str(_PREDICTIVE_ENABLED) == "1"
+except ImportError:
+    _KALMAN_ENABLED = True
+    _ADVANCED_EXITS_ENABLED = True
+    _PREDICTIVE_ENABLED = True
 
 
 class TradingMode(Enum):

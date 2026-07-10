@@ -36,7 +36,11 @@ class MacroDataConnector:
     def __init__(self):
         """Initialize macro data connector."""
         # FRED API key (optional, has free tier)
-        self.fred_api_key = os.getenv("FRED_API_KEY", "")
+        try:
+            import config
+            self.fred_api_key = getattr(config, "FRED_API_KEY", "")
+        except ImportError:
+            self.fred_api_key = ""
 
         # Cache macro data (update every 4 hours)
         self.cache = {}

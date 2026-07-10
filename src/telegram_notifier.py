@@ -1331,8 +1331,13 @@ def create_telegram_notifier() -> TelegramNotifier:
     from dotenv import load_dotenv
     load_dotenv()
 
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    try:
+        import config
+        bot_token = getattr(config, "TELEGRAM_TOKEN", "")
+        chat_id = str(getattr(config, "ADMIN_ID", ""))
+    except ImportError:
+        bot_token = ""
+        chat_id = ""
     enabled = bool(bot_token and chat_id)
 
     if not enabled:

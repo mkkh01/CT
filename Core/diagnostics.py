@@ -35,9 +35,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("CT_Diagnostics")
 
 # ── Global debug toggle ─────────────────────────────────────────────
-_DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").strip().lower() in (
-    "true", "1", "yes", "on"
-)
+try:
+    import config
+    _DEBUG_MODE = getattr(config, "DEBUG_MODE", False)
+except ImportError:
+    _DEBUG_MODE = False
 
 
 def set_debug_mode(enabled: bool):
@@ -81,7 +83,7 @@ class Diagnostics:
         logger.info("=" * 55)
         logger.info("   CT INSTITUTIONAL TRADING SYSTEM  V4.0")
         logger.info("=" * 55)
-        logger.info("  Environment : %s", os.environ.get("RENDER", "local"))
+        logger.info("  Environment : %s", "Render" if os.environ.get("RENDER") else "local")
         logger.info("  Python      : %s", platform.python_version())
         logger.info("  Process ID  : %d", os.getpid())
         logger.info("  Started at  : %s", _fmt_ts(self.started_at))
