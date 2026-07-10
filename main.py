@@ -42,8 +42,8 @@ async def main():
     if tm.app:
         setup_handlers(tm.app)
         # استخدام Webhook بدلاً من Polling كما طلب المستخدم
-        import config
-        print(f"Starting Webserver on port {getattr(config, 'PORT', 10000)}...")
+        from config import PORT
+        print(f"Starting Webserver on port {PORT}...")
         await tm.start_webhook()
         await tm.send_admin("🚀 CT Bot is now online (Webhook Mode) and monitoring markets.")
     
