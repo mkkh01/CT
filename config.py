@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 # --- إعدادات خادم الويب (Render Webserver) ---
 PORT = 10000
 # ضع هنا الرابط الفعلي لمشروعك على منصة Render
-WEBHOOK_URL = "https://ct-bot-x.onrender.com" 
+WEBHOOK_URL = "https://crypto-trading-ru2v.onrender.com" 
 
 # --- إعدادات التشغيل ---
 DEBUG_MODE = False
