@@ -18,3 +18,4 @@ This bundle isolates the root causes behind the missing logs / missing live pric
 - add periodic system snapshots with current live prices
 - move the 30-minute scanner onto its own timer so candle activity cannot suppress it
 - emit live price summaries and WebSocket heartbeats regularly
+\n- Fixed ModuleNotFoundError for 'config.settings' by converting config.py to a package with __init__.py

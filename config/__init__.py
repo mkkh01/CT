@@ -1,5 +1,5 @@
-# config.py (Backward Compatibility)
-from config.settings import *
+# Backward Compatibility and Package Init
+from .settings import *
 
 # Mapping for CT Core components
 RAW_DATABASE_URL = RAW_DATABASE_URL
@@ -12,5 +12,5 @@ REDIS_PASSWORD = REDIS_PASSWORD
 DEBUG_MODE = DEBUG_MODE
 
 def validate_config():
-    from config.settings import validate_config as vc
+    from .settings import validate_config as vc
     return vc()
