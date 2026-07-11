@@ -1,46 +1,62 @@
-import redis
 import json
-from loguru import logger
-from config.settings import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_URL
+import redis
+import asyncio
+from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
 
-class RedisManager:
+class RedisClient:
     def __init__(self):
-        try:
-            if REDIS_URL:
-                self.client = redis.from_url(REDIS_URL, decode_responses=True)
-            else:
-                self.client = redis.Redis(
-                    host=REDIS_HOST,
-                    port=REDIS_PORT,
-                    password=REDIS_PASSWORD,
-                    decode_responses=True
-                )
-            self.client.ping()
-            logger.info("Redis connected successfully.")
-        except Exception as e:
-            logger.error(f"Redis connection failed: {e}")
-            self.client = None
+        # التحديث لاستخدام Redis Cloud الجديد
+        # ملاحظة: تم تعطيل SSL لأن بعض خطط Redis Cloud المجانية لا تدعمه أو قد يسبب تعارضاً في النسخ
+        self.redis = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            password=REDIS_PASSWORD,
+            ssl=False,
+            decode_responses=True,
+            socket_timeout=5
+        )
+        self._locks = {}
+        self._global_lock = asyncio.Lock()
 
-    def set_cache(self, key, value, ex=None):
-        if not self.client: return False
-        try:
-            if isinstance(value, (dict, list)):
-                value = json.dumps(value)
-            return self.client.set(key, value, ex=ex)
-        except Exception as e:
-            logger.error(f"Redis set error: {e}")
-            return False
+    async def get_lock(self, key):
+        async with self._global_lock:
+            if key not in self._locks:
+                self._locks[key] = asyncio.Lock()
+            return self._locks[key]
 
-    def get_cache(self, key):
-        if not self.client: return None
+    def set_data(self, key, data, ttl=None):
         try:
-            val = self.client.get(key)
+            value = json.dumps(data)
+            self.redis.set(key, value, ex=ttl)
+        except Exception as e:
+            print(f"❌ [REDIS] Set Error for {key}: {e}")
+            # Fallback to local file if Redis fails
             try:
-                return json.loads(val)
-            except:
-                return val
-        except Exception as e:
-            logger.error(f"Redis get error: {e}")
-            return None
+                with open(f"/tmp/local_{key}.json", "w") as f:
+                    json.dump(data, f)
+            except: pass
 
-redis_client = RedisManager()
+    def get_data(self, key):
+        try:
+            data = self.redis.get(key)
+            if data: return json.loads(data)
+        except Exception as e:
+            print(f"❌ [REDIS] Get Error for {key}: {e}")
+        
+        # Fallback to local file
+        try:
+            with open(f"/tmp/local_{key}.json", "r") as f:
+                return json.load(f)
+        except: return None
+
+    def delete_data(self, key):
+        try:
+            self.redis.delete(key)
+        except Exception as e:
+            print(f"❌ [REDIS] Delete Error for {key}: {e}")
+
+    def get_api_usage(self):
+        """إرجاع عدد طلبات API الحالية"""
+        return self.get_data("binance_api_calls") or 0
+
+redis_client = RedisClient()

@@ -1,266 +1,112 @@
 import asyncio
 import json
-import logging
-import os
-import time
-import traceback
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-import pandas as pd
 import websockets
+import os
+from datetime import datetime
 from sqlalchemy import select
-
-from config import ADMIN_ID
 from database import AsyncSessionLocal, LiveTrade, TrackedCoin, UserConfig
+from config import ADMIN_ID
 from Core.redis_client import redis_client
-from Core.observability import Obs
-from Core.utils import safe_create_task
-
-logger = logging.getLogger("CT_System")
-logger_ws = logging.getLogger("CT_TradeMonitor_WS")
-
 
 class TradeMonitor:
     def __init__(self, bot=None):
         self.bot = bot
         self.chat_id = ADMIN_ID
         self.is_running = False
-        self.live_prices: Dict[str, Dict[str, Any]] = redis_client.get_data("live_prices") or {}
-        self.live_klines: Dict[str, Dict[str, Any]] = redis_client.get_data("live_klines") or {}
-        self._last_price_summary = 0.0
-        self._last_snapshot = 0.0
-        self._last_ws_heartbeat = 0.0
-        self._loop_count = 0
+        self.live_prices = redis_client.get_data("live_prices") or {}
+        self.live_klines = redis_client.get_data("live_klines") or {}
 
     def _save_data(self):
         redis_client.set_data("live_prices", self.live_prices, ttl=3600)
         redis_client.set_data("live_klines", self.live_klines, ttl=3600)
 
-    async def _emit_heartbeat(self, symbols: List[str]):
-        now = time.time()
-        if now - self._last_ws_heartbeat < 30:
-            return
-        self._last_ws_heartbeat = now
-        try:
-            top = ", ".join(symbols[:5])
-            Obs.system_snapshot(
-                symbol=top,
-                price=", ".join(
-                    str(self.live_prices[s]["price"])
-                    for s in symbols[:5]
-                    if s in self.live_prices and "price" in self.live_prices[s]
-                ),
-                open_trades=len(redis_client.get_data("live_klines") or {}),
-                api_calls=Obs.get().api_rest_count,
-                uptime=now,
-            )
-        except Exception as exc:
-            logger_ws.debug("heartbeat failed: %s", exc)
-
     async def check_prices(self):
         from Core.ai_engine import AIEngine
-
         ai = AIEngine(bot=self.bot, chat_id=self.chat_id)
         self.is_running = True
-        logger.info("[MONITOR] Starting institutional radar — WebSocket mode")
-        self._loop_count = 0
-
-        ws_reconnect_count = 0
+        print("📡 [MONITOR] انطلاق الرادار المؤسسي V4.0 - WebSocket Mode")
+        
         while self.is_running:
             try:
                 async with AsyncSessionLocal() as session:
                     coins_res = await session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))
                     coins = coins_res.scalars().all()
                     symbols = [c.symbol for c in coins]
+                    
+                    if not symbols:
+                        print("ℹ️ [MONITOR] لا توجد عملات مفعلة للمراقبة حالياً. جاري البحث...")
+                        await asyncio.sleep(15)
+                        continue
+                    
+                    # إنشاء قائمة الستريمات بناءً على الفريمات المحددة لكل عملة لتقليل طلبات fetch_ohlcv
+                    streams = [f"{s.lower()}@miniTicker" for s in symbols]
+                    for c in coins:
+                        tf = c.timeframe.replace('m', 'm').replace('h', 'h').replace('d', 'd')
+                        streams.append(f"{c.symbol.lower()}@kline_{tf}")
+                    
+                    print(f"🔗 [MONITOR] جاري الاتصال بـ Binance WebSocket لـ {len(symbols)} عملة...")
+                    uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
+                    
+                    async with websockets.connect(uri) as ws:
+                        print(f"✅ [MONITOR] تم الاتصال بنجاح. مراقبة: {', '.join(symbols)}")
+                        last_analysis_time = datetime.now()
+                        while self.is_running:
+                            # التحقق من وجود عملات جديدة تمت إضافتها لإعادة الاتصال
+                            async with AsyncSessionLocal() as check_session:
+                                current_symbols = [c.symbol for c in (await check_session.execute(select(TrackedCoin).where(TrackedCoin.enabled == True))).scalars().all()]
+                                if set(current_symbols) != set(symbols):
+                                    print(f"🔄 [MONITOR] تم اكتشاف تغيير في العملات ({len(symbols)} -> {len(current_symbols)})، إعادة تشغيل البث...")
+                                    break
 
-                if not symbols:
-                    logger.info("[MONITOR] No enabled symbols yet; waiting for configuration...")
-                    await asyncio.sleep(15)
-                    continue
-
-                streams = [f"{s.lower()}@miniTicker" for s in symbols]
-                for c in coins:
-                    streams.append(f"{c.symbol.lower()}@kline_{c.timeframe}")
-
-                uri = f"wss://stream.binance.com:9443/stream?streams={'/'.join(streams)}"
-                logger.info("[MONITOR] Connecting to Binance WS for %d symbols...", len(symbols))
-
-                ws_reconnect_count += 1
-                Obs.websocket_event("connect_attempt", uri=uri, attempt=ws_reconnect_count)
-                async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
-                    Obs.websocket_event("connected", uri=uri)
-                    logger.info("[MONITOR] Connected successfully — watching: %s", ", ".join(symbols))
-
-                    self._last_ws_heartbeat = time.time()
-                    self._last_price_summary = time.time()
-                    self._last_snapshot = time.time()
-                    last_periodic_scan = time.time()
-
-                    while self.is_running:
-                        self._loop_count += 1
-                        async with AsyncSessionLocal() as check_session:
-                            current_symbols = [
-                                c.symbol
-                                for c in (await check_session.execute(
-                                    select(TrackedCoin).where(TrackedCoin.enabled == True)
-                                )).scalars().all()
-                            ]
-                        if set(current_symbols) != set(symbols):
-                            logger.info(
-                                "[MONITOR] Symbol list changed (%d -> %d), reconnecting...",
-                                len(symbols), len(current_symbols)
-                            )
-                            break
-
-                        try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=5)
-                            payload = json.loads(msg)
-                            data = payload["data"]
-                            symbol = data["s"]
-                            stream = payload.get("stream", "")
-                        except asyncio.TimeoutError:
-                            self._last_ws_heartbeat = time.time()
-                            Obs.trademonitor_loop_log(
-                                loop_num=self._loop_count,
-                                current_symbol=symbol if 'symbol' in locals() else 'N/A',
-                                current_time=datetime.now().strftime("%H:%M:%S"),
-                                db_status="OK", # Placeholder
-                                redis_status="OK", # Placeholder
-                                exchange_status="OK", # Placeholder
-                                binance_status="OK", # Placeholder
-                                ws_status="OK", # Placeholder
-                                cache_status="OK", # Placeholder
-                                strategy_count=0, # Placeholder
-                                open_positions=0, # Placeholder
-                                pending_signals=0, # Placeholder
-                                current_candle="N/A", # Placeholder
-                                last_candle_time="N/A", # Placeholder
-                                current_price=self.live_prices.get(symbol, {}).get("price", 0) if 'symbol' in locals() else 0,
-                                spread=0, # Placeholder
-                                latency=0, # Placeholder
-                                memory_usage=0, # Placeholder
-                                cpu_usage=0 # Placeholder
-                            )
-                            continue
-
-                        if "miniTicker" in stream:
-                            price = float(data["c"])
-                            self.live_prices[symbol] = {
-                                "price": price,
-                                "time": datetime.now().strftime("%H:%M:%S"),
-                            }
-
-                            Obs.live_price_tick_full(
-                                exchange="Binance",
-                                symbol=symbol,
-                                bid=float(data.get("b", 0)) if data.get("b") else 0.0,
-                                ask=float(data.get("a", 0)) if data.get("a") else 0.0,
-                                last_price=price,
-                                mark_price=price, # Assuming mark price is same as last price for miniTicker
-                                volume=float(data.get("v", 0)) if data.get("v") else 0.0,
-                                timestamp=time.time(),
-                                latency=(time.time() - payload.get("E", time.time() / 1000)) * 1000, # E is event time in ms
-                                redis_write_status="OK", # Placeholder
-                                cache_update_status="OK", # Placeholder
-                                database_update_status="N/A", # miniTicker doesn't update DB directly
-                                telegram_broadcast_status="N/A" # Not broadcasting every tick
-                            )
-
-                            if time.time() - self._last_price_summary >= 60:
-                                self._last_price_summary = time.time()
-                                Obs.price_summary(symbol=symbol, price=price)
-
-                            await self._check_live_trades(symbol, price)
-
-                        elif "kline" in stream:
-                            k = data["k"]
-                            self.live_klines[symbol] = {
-                                "t": k["t"],
-                                "o": float(k["o"]),
-                                "h": float(k["h"]),
-                                "l": float(k["l"]),
-                                "c": float(k["c"]),
-                                "v": float(k["v"]),
-                                "x": k["x"],
-                            }
-
-                            if k["x"]:
-                                Obs.candle_received(
-                                    symbol=symbol,
-                                    timeframe=k["i"],
-                                    open_p=float(k["o"]),
-                                    high=float(k["h"]),
-                                    low=float(k["l"]),
-                                    close_p=float(k["c"]),
-                                    volume=float(k["v"]),
-                                    timestamp=k["t"],
-                                    source="WebSocket",
-                                    latency_ms=0,
-                                )
-                                logger.info("[MONITOR] %s candle closed @ %s", symbol, k["c"])
-                                safe_create_task(
-                                    ai.analyze_and_trade(symbol, source="WS_CANDLE"),
-                                    name=f"AI_Analyze_{symbol}",
-                                    creator="TradeMonitor.check_prices"
-                                )
+                            try:
+                                msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                                payload = json.loads(msg)
+                                data = payload['data']
+                                symbol = data['s']
+                            except asyncio.TimeoutError:
+                                continue
+                            
+                            if 'miniTicker' in payload['stream']:
+                                price = float(data['c'])
+                                self.live_prices[symbol] = {'price': price, 'time': datetime.now().strftime('%H:%M:%S')}
+                                await self._check_live_trades(symbol, price)
+                            elif 'kline' in payload['stream']:
+                                k = data['k']
+                                # تخزين بيانات الشمعة الحية والمغلقة مع التوقيت لضمان الدقة
+                                self.live_klines[symbol] = {
+                                    't': k['t'], 'o': float(k['o']), 'h': float(k['h']), 
+                                    'l': float(k['l']), 'c': float(k['c']), 'v': float(k['v']), 
+                                    'x': k['x']
+                                }
+                                if k['x']:
+                                    print(f"📊 [MONITOR] شمعة {k['i']} مغلقة لـ {symbol} | السعر: {k['c']}")
+                                    # تحليل فوري عند إغلاق الشمعة لتقليل التأخير
+                                    asyncio.create_task(ai.analyze_and_trade(symbol))
+                                    # تحديث وقت التحليل الأخير لتأجيل الفحص الشامل
+                                    last_analysis_time = datetime.now()
+                            
+                            # تقليل معدل الحفظ في Redis لتوفير الأداء
+                            if 'miniTicker' in payload['stream'] or k['x']:
                                 self._save_data()
 
-                        # Run a real periodic scanner independently of candle events.
-                        now = time.time()
-                        if now - last_periodic_scan >= 1800:
-                            try:
+                            # جولة تحليل شاملة كل 30 دقيقة بدلاً من 10 دقائق لتقليل ضغط API
+                            if (datetime.now() - last_analysis_time).seconds >= 1800:
                                 api_calls = redis_client.get_data("binance_api_calls") or 0
-                                logger_ws.info("[SCAN] Scanning %d symbols | API calls=%d", len(symbols), api_calls)
+                                print(f"🔍 [SCANNER] فحص شامل دوري ({len(symbols)}) | API Calls: {api_calls}")
                                 for s in symbols:
-                                    safe_create_task(
-                                        ai.analyze_and_trade(s, source="SCANNER"),
-                                        name=f"AI_Scanner_{s}",
-                                        creator="TradeMonitor.periodic_scanner"
-                                    )
-                                    await asyncio.sleep(1.0)
-                                last_periodic_scan = now
-                                logger_ws.info("[SCAN] Periodic scan complete.")
-                            except Exception as scan_err:
-                                logger_ws.error("[SCAN] Periodic scan failed: %s", scan_err)
-
-                        if time.time() - self._last_snapshot >= 60:
-                            self._last_snapshot = time.time()
-                            self._save_data()
+                                    asyncio.create_task(ai.analyze_and_trade(s, source='SCANNER'))
+                                    await asyncio.sleep(1.0) # زيادة التأخير قليلاً لتخفيف الضغط المتزامن
+                                last_analysis_time = datetime.now()
+                                print("✨ [SCANNER] اكتمل الفحص الدوري.")
 
             except Exception as e:
-                tb = traceback.format_exc()
-                logger_ws.error("[MONITOR] Connection error: %s", e)
-                Obs.trademonitor_crash_report(
-                    death_time=time.time(),
-                    uptime=time.time() - Obs.get()._started_at,
-                    loop_number=self._loop_count,
-                    current_symbol=symbol if 'symbol' in locals() else 'N/A',
-                    last_price=price if 'price' in locals() else 0.0,
-                    last_function="TradeMonitor.check_prices",
-                    last_exception=str(e),
-                    stack_trace=tb,
-                    task_state={}, # TODO: Populate with actual task state
-                    redis_status="N/A",
-                    database_status="N/A",
-                    exchange_status="N/A",
-                    websocket_status="N/A",
-                    heartbeat_status={}, # TODO: Populate with actual heartbeat status
-                    memory=0, # TODO: Get actual memory usage
-                    cpu=0, # TODO: Get actual CPU usage
-                    restart_count=ws_reconnect_count,
-                    reason="WebSocket connection error"
-                )
+                print(f"⚠️ [MONITOR] Connection Error: {e}")
                 await asyncio.sleep(5)
 
-    async def _check_live_trades(self, symbol: str, price: float):
+    async def _check_live_trades(self, symbol, price):
+        """مراقبة الصفقات الحقيقية (Phase 4)"""
         async with AsyncSessionLocal() as session:
-            res = await session.execute(
-                select(LiveTrade).where(
-                    (LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")
-                )
-            )
-
+            res = await session.execute(select(LiveTrade).where((LiveTrade.symbol == symbol) & (LiveTrade.status == "OPEN")))
             for trade in res.scalars().all():
                 closed = False
                 if trade.type == "BUY":
@@ -270,37 +116,28 @@ class TradeMonitor:
                     elif price <= trade.stop_loss:
                         trade.status, closed = "LOST", True
                         trade.exit_reason = "Stop Loss Hit"
-
+                
                 if closed:
                     trade.exit_price = price
                     trade.closed_at = datetime.utcnow()
                     trade.duration = (trade.closed_at - trade.timestamp).seconds
                     pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
                     trade.pnl = (trade.amount * pnl_pct) / 100
-
-                    cfg_res = await session.execute(
-                        select(UserConfig).where(UserConfig.telegram_id == self.chat_id)
-                    )
-                    cfg = cfg_res.scalars().first()
-                    if cfg:
-                        if trade.status == "LOST":
-                            cfg.consecutive_losses += 1
-                            if cfg.consecutive_losses >= 5:
-                                cfg.emergency_stop = True
-                                if self.bot:
-                                    await self.bot.send_message(
-                                        self.chat_id,
-                                        "*EMERGENCY STOP*: 5 consecutive losses detected!",
-                                        parse_mode="Markdown",
-                                    )
-                        else:
-                            cfg.consecutive_losses = 0
+                    
+                    # Capital Protection Engine (Phase 4)
+                    if trade.status == "LOST":
+                        cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
+                        cfg = cfg_res.scalars().first()
+                        cfg.consecutive_losses += 1
+                        if cfg.consecutive_losses >= 5:
+                            cfg.emergency_stop = True
+                            if self.bot: await self.bot.send_message(self.chat_id, "🚨 *EMERGENCY STOP*: 5 consecutive losses detected!")
+                    else:
+                        cfg_res = await session.execute(select(UserConfig).where(UserConfig.telegram_id == self.chat_id))
+                        cfg = cfg_res.scalars().first()
+                        cfg.consecutive_losses = 0
 
                     await session.commit()
                     if self.bot:
                         icon = "✅" if trade.status == "WON" else "❌"
-                        await self.bot.send_message(
-                            self.chat_id,
-                            f"{icon} *صفقة مغلقة*\n{symbol}: {trade.pnl:.2f} USDT",
-                            parse_mode="Markdown",
-                        )
+                        await self.bot.send_message(self.chat_id, f"{icon} *صفقة مغلقة*\n{symbol}: {trade.pnl:.2f} USDT")

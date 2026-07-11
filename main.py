@@ -1,73 +1,98 @@
-import asyncio
+import os
 import sys
-import signal
-from loguru import logger
+import asyncio
+import logging
+import traceback
+from keep_alive import keep_alive
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+from telegram.request import HTTPXRequest
+from config import TELEGRAM_TOKEN, ADMIN_ID
+from database import init_db, AsyncSessionLocal, UserConfig
 
-from config.config import config
-from Core.observability import setup_logging
-from Core.redis_client import redis_client
-from Core.telegram_manager import get_telegram_manager, set_telegram_manager
-from bot.handlers import setup_handlers
-from src.db.supabase_client import supabase_manager
+# إعداد الـ Logging العام
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+from bot.handlers import (
+    start, handle_message, process_add_symbol, process_add_capital, 
+    process_add_risk, process_add_tf,
+    ADD_SYMBOL, ADD_CAPITAL, ADD_RISK, ADD_TF
+)
+from Core.trade_monitor import TradeMonitor
 
-async def shutdown(loop, signal=None):
-    if signal:
-        logger.info(f"Received exit signal {signal.name}...")
-    logger.info("Shutting down...")
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    [task.cancel() for task in tasks]
-    await asyncio.gather(*tasks, return_exceptions=True)
-    loop.stop()
+# تشغيل خادم Keep-Alive
+keep_alive()
 
-def handle_exception(loop, context):
-    msg = context.get("exception", context["message"])
-    logger.error(f"Caught exception: {msg}")
-    asyncio.create_task(shutdown(loop))
+async def start_background_tasks(app):
+    """تشغيل الرادار المؤسسي والمراقبة"""
+    print("📡 [SYSTEM] جاري إطلاق الرادار المؤسسي والمراقبة اللحظية...")
+    await asyncio.sleep(2)
+    monitor = TradeMonitor(bot=app.bot)
+    asyncio.create_task(monitor.check_prices())
+    print("✅ [SYSTEM] تم إطلاق الرادار المؤسسي بنجاح.")
 
-async def main():
-    # 1. Setup Logging
-    setup_logging()
-    logger.info("Starting CT Trading Bot...")
+async def post_init(app: Application):
+    asyncio.create_task(start_background_tasks(app))
 
-    # 2. Validate Config
+async def error_handler(update, context):
+    """سجل الأخطاء مع Traceback كامل"""
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    print(f"❌ [TELEGRAM ERROR] {tb_string}")
+
+def main():
+    # منع تشغيل أكثر من نسخة للبوت باستخدام File Lock (أكثر موثوقية في بيئات الـ Containers)
+    lock_file = "/tmp/bot.lock"
     try:
-        config.validate()
-        logger.info("Configuration validated.")
+        import fcntl
+        f = open(lock_file, 'w')
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (ImportError, IOError):
+        # Fallback to socket if fcntl is not available (e.g. Windows)
+        import socket
+        try:
+            lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            lock_socket.bind(('127.0.0.1', 47111))
+        except socket.error:
+            print("⚠️ [SYSTEM] هناك نسخة أخرى من البوت تعمل بالفعل (Socket Lock). إغلاق النسخة الحالية.")
+            sys.exit(1)
     except Exception as e:
-        logger.critical(f"Config validation failed: {e}")
+        print(f"⚠️ [SYSTEM] هناك نسخة أخرى من البوت تعمل بالفعل (File Lock).")
         sys.exit(1)
 
-    # 3. Initialize Components
-    tm = get_telegram_manager()
-    if tm.app:
-        setup_handlers(tm.app)
-        # استخدام Webhook بدلاً من Polling كما طلب المستخدم
-        from config import PORT
-        print(f"Starting Webserver on port {PORT}...")
-        await tm.start_webhook()
-        await tm.send_admin("🚀 CT Bot is now online (Webhook Mode) and monitoring markets.")
+    print("🚀 جاري إقلاع نظام التداول المؤسسي CT V4.0...")
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(init_db())
     
-    # 4. Load AI and Trading Engines (Simulated integration)
-    logger.info("Loading AI Models and Trading Engine...")
-    # from src.xaubot_engine import TradingBot
-    # bot = TradingBot()
-    # await bot.start()
+    # إعداد الطلب مع زيادة مهلة الاتصال لتجنب أخطاء الشبكة على Render
+    request_config = HTTPXRequest(connect_timeout=20, read_timeout=20)
+    app = Application.builder().token(TELEGRAM_TOKEN).request(request_config).post_init(post_init).build()
+    
+    # إضافة Error Handler
+    app.add_error_handler(error_handler)
+    
+    # إعداد المحادثة المؤسسية لإضافة عملة
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^➕ إضافة عملة$"), handle_message)],
+        states={
+            ADD_SYMBOL: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_symbol)],
+            ADD_CAPITAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_capital)],
+            ADD_RISK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_risk)],
+            ADD_TF: [CallbackQueryHandler(process_add_tf, pattern='^tf_')],
+        },
+        fallbacks=[CommandHandler('start', start)],
+        per_message=False
+    )
 
-    # 5. Keep alive
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    except asyncio.CancelledError:
-        pass
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv_handler)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("✅ النظام المؤسسي جاهز بالكامل.")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
-    for s in signals:
-        loop.add_signal_handler(s, lambda s=s: asyncio.create_task(shutdown(loop, signal=s)))
-    loop.set_exception_handler(handle_exception)
-
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.close()
+    main()
