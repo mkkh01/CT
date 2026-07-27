@@ -28,8 +28,13 @@ from contracts.config import SystemConfig
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8861445628:AAFVuxfIXmTQGIoKMmcTcPZipdShTKFaewg")
 
 # Supabase / Postgres (Transaction Pooler IPv4)
+# For asyncpg.create_pool, the DSN must start with postgresql:// NOT postgresql+asyncpg://
 RAW_DATABASE_URL = "postgresql://postgres.licqbfixgyzrahuscwnh:Mk_03065750@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
-DATABASE_URL = os.environ.get("SUPABASE_URL", RAW_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1) + "?ssl=require")
+# Ensure SSL is required as per Supabase/Render standards
+DATABASE_URL = os.environ.get("SUPABASE_URL", RAW_DATABASE_URL)
+if "ssl=" not in DATABASE_URL:
+    separator = "&" if "?" in DATABASE_URL else "?"
+    DATABASE_URL += f"{separator}ssl=require"
 
 # Redis Cloud
 REDIS_HOST = "deft-wonderful-receipt-35081.db.redis.io"
@@ -43,7 +48,7 @@ REDIS_URL = os.environ.get("REDIS_URL", f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}
 settings = SystemConfig(
     telegram_bot_token=TELEGRAM_TOKEN,
     supabase_url=DATABASE_URL,
-    supabase_key=os.environ.get("SUPABASE_KEY", "service_role_key_placeholder"), # SupabaseClient uses DSN primarily now
+    supabase_key=os.environ.get("SUPABASE_KEY", "service_role_key_placeholder"),
     redis_url=REDIS_URL,
     default_timeframes=["15m", "1h", "4h"],
     max_active_coins=10,
