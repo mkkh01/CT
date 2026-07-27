@@ -73,6 +73,22 @@ def configure_logging(level: int = logging.INFO) -> None:
         level=level,
     )
 
+    # Custom processor for the required format: [TIME] [LEVEL] [MODULE] [SYMBOL] [TIMEFRAME] message
+    def custom_formatter(logger, name, event_dict):
+        timestamp = event_dict.get("timestamp", datetime.now(timezone.utc).isoformat())
+        level = event_dict.get("level", "info").upper()
+        module = event_dict.get("module", name)
+        symbol = event_dict.get("symbol", "-")
+        timeframe = event_dict.get("timeframe", "-")
+        event = event_dict.get("event", "")
+        
+        # Remove these from dict so they don't appear twice if using JSON renderer
+        # but here we might want to keep them for structured logs in Render
+        
+        formatted_msg = f"[{timestamp}] [{level}] [{module}] [{symbol}] [{timeframe}] {event}"
+        event_dict["formatted_message"] = formatted_msg
+        return event_dict
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -80,6 +96,8 @@ def configure_logging(level: int = logging.INFO) -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            # We keep JSONRenderer for Render's structured logging, 
+            # but we can also use ConsoleRenderer for local debugging if needed.
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),

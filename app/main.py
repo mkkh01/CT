@@ -179,6 +179,10 @@ class CTApplication:
             timestamp=datetime.now(timezone.utc),
             pid=os.getpid(),
             simulation_mode=self._settings.simulation_mode,
+            version="1.0.0",
+            environment=os.getenv("ENVIRONMENT", "production"),
+            module="app.main",
+            event="بدء تشغيل النظام - الإصدار 1.0.0"
         )
 
         # 1. Logging first -- every subsequent step is observable.
@@ -187,24 +191,28 @@ class CTApplication:
         # 2 + 3. Storage layers.
         try:
             await self._redis.connect()
+            logger.info("service_connected", module="app.main", service="Redis", event="تم الاتصال بنجاح بخدمة Redis")
         except Exception as exc:  # noqa: BLE001
-            logger.error(
+            logger.critical(
                 "error",
                 timestamp=datetime.now(timezone.utc),
                 module="app.main",
                 error_type=type(exc).__name__,
-                error_message=f"redis connect failed: {exc}",
+                error_message=f"فشل الاتصال بـ Redis: {exc}",
+                critical=True
             )
             raise
         try:
             await self._supabase.connect()
+            logger.info("service_connected", module="app.main", service="Supabase", event="تم الاتصال بنجاح بخدمة Supabase")
         except Exception as exc:  # noqa: BLE001
-            logger.error(
+            logger.critical(
                 "error",
                 timestamp=datetime.now(timezone.utc),
                 module="app.main",
                 error_type=type(exc).__name__,
-                error_message=f"supabase connect failed: {exc}",
+                error_message=f"فشل الاتصال بـ Supabase: {exc}",
+                critical=True
             )
             raise
 
@@ -310,6 +318,12 @@ class CTApplication:
             # 1. Load active coins from the database.
             try:
                 coins = await self._supabase.fetch_all_coins(only_active=True)
+                logger.info(
+                    "config_loaded", 
+                    module="app.main", 
+                    active_coins_count=len(coins),
+                    event=f"تم تحميل الإعدادات: عدد العملات المفعلة {len(coins)}"
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "error",
@@ -892,7 +906,9 @@ class CTApplication:
                     opportunities_rejected=self._health_stats["opportunities_rejected"],
                     top_rejection_reasons=dict(top_reasons),
                     error_count=self._health_stats["errors"],
-                    last_data_received=self._health_stats["last_data_at"]
+                    last_data_received=self._health_stats["last_data_at"],
+                    module="app.main",
+                    event=f"ملخص أداء النظام: فحص {self._health_stats['scan_cycles']} دورة، وجد {self._health_stats['opportunities_found']} فرصة"
                 )
 
                 # Diagnostic Report if no trades for a while (Log #11)

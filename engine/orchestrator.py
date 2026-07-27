@@ -349,7 +349,8 @@ class Orchestrator:
 
         log_analysis_step(
             symbol, "timeframe_setup", "success", 
-            f"تم تحديد الأطر الزمنية: LTF={ltf_timeframe}, HTF={htf_timeframe}"
+            f"تم تحديد الأطر الزمنية: LTF={ltf_timeframe}, HTF={htf_timeframe}",
+            {"ltf": ltf_timeframe, "htf": htf_timeframe, "total_tfs": len(ordered_tfs)}
         )
 
         # -------------------------------------------------------------
@@ -391,7 +392,8 @@ class Orchestrator:
             
             log_analysis_step(
                 symbol, f"analysis_{tf}", "success", 
-                f"اكتمل تحليل {tf}: تم استخراج {len(tf_signals)} إشارات استراتيجية"
+                f"اكتمل تحليل {tf}: تم استخراج {len(tf_signals)} إشارات استراتيجية",
+                {"signals_count": len(tf_signals), "timeframe": tf}
             )
 
         # -------------------------------------------------------------
@@ -413,7 +415,8 @@ class Orchestrator:
         htf_ok = htf_result.alignment
         log_analysis_step(
             symbol, "htf_filter", "success" if htf_ok else "failed",
-            f"فلتر الإطار الزمني الأعلى: {'متوافق' if htf_ok else 'غير متوافق'} (Bias={htf_result.bias})"
+            f"فلتر الإطار الزمني الأعلى: {'متوافق' if htf_ok else 'غير متوافق'} (Bias={htf_result.bias})",
+            {"htf_bias": htf_result.bias, "htf_ok": htf_ok}
         )
 
         # -------------------------------------------------------------
@@ -423,7 +426,8 @@ class Orchestrator:
         structure_ok = self._structure_alignment_passed(per_tf)
         log_analysis_step(
             symbol, "structure_check", "success" if structure_ok else "failed",
-            f"فحص بنية السوق: {'متوافقة' if structure_ok else 'غير متوافقة'}"
+            f"فحص بنية السوق: {'متوافقة' if structure_ok else 'غير متوافقة'}",
+            {"structure_ok": structure_ok}
         )
 
         # -------------------------------------------------------------
@@ -433,7 +437,8 @@ class Orchestrator:
         regime_ok = regime != RegimeState.VOLATILE
         log_analysis_step(
             symbol, "regime_check", "success" if regime_ok else "failed",
-            f"فحص حالة السوق: {regime.value} ({'مقبول' if regime_ok else 'مرفوض - تذبذب عالي'})"
+            f"فحص حالة السوق: {regime.value} ({'مقبول' if regime_ok else 'مرفوض - تذبذب عالي'})",
+            {"regime": regime.value, "regime_ok": regime_ok}
         )
 
         # -------------------------------------------------------------
@@ -476,7 +481,8 @@ class Orchestrator:
         score = aggregate_score(component_signals)
         log_analysis_step(
             symbol, "confidence_gate", "success" if confidence_ok else "failed",
-            f"بوابة الثقة: {confidence:.2f} ({'اجتازت' if confidence_ok else 'أقل من الحد المطلوب'})"
+            f"بوابة الثقة: {confidence:.2f} ({'اجتازت' if confidence_ok else 'أقل من الحد المطلوب'})",
+            {"confidence": round(confidence, 4), "ok": confidence_ok}
         )
 
         # Log Decision Engine result (Requested Log #7)

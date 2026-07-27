@@ -339,6 +339,8 @@ class BinanceWSClient:
             url=url,
             attempt=self._reconnect_attempts,
             active_pairs=len(self._active_pairs),
+            module="ingest.binance_ws",
+            event=f"محاولة فتح اتصال WebSocket مع Binance (المحاولة {self._reconnect_attempts})"
         )
         self._ws = await websockets.connect(
             url,
@@ -354,7 +356,8 @@ class BinanceWSClient:
             timestamp=datetime.now(timezone.utc),
             attempt=self._reconnect_attempts,
             backoff_seconds=self._backoff_seconds,
-            note="connection established",
+            module="ingest.binance_ws",
+            event="تم تأسيس الاتصال بنجاح مع Binance WebSocket"
         )
 
     async def _receive_loop(self) -> None:
@@ -515,7 +518,9 @@ class BinanceWSClient:
                 last_price=candle.close,
                 is_closed=candle.is_closed,
                 receive_latency_ms=process_time_ms,
-                candle_open_time=candle.open_time,
+                candle_open_time=candle.open_time.isoformat(),
+                module="ingest.binance_ws",
+                event=f"استقبال بيانات لـ {candle.symbol} ({candle.timeframe}) - السعر: {candle.close} - مغلقة: {candle.is_closed}"
             )
 
         # 4f -- If is_closed: write to Postgres + advance checkpoint + publish.
