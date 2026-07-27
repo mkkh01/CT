@@ -1,0 +1,1172 @@
+"""
+File: app/main.py
+1. Single Responsibility: Be the CT process entry point -- wire every layer
+   together (config -> contracts -> storage -> ingest -> engine -> simulation
+   -> portfolio -> bot), run the Telegram bot, run the engine in the
+   background, and orchestrate graceful shutdown.
+2. Consumes: config.settings (SystemConfig), monitoring.logger,
+   storage.supabase.SupabaseClient, storage.redis_cache.RedisCache,
+   portfolio.performance.PerformanceCalculator, bot.telegram_bot.CTTelegramBot,
+   engine.orchestrator.Orchestrator (LAZY), ingest.binance_ws.BinanceWSClient
+   (LAZY), simulation.paper_trade (LAZY).
+3. Produces: CTApplication class and ``async def main()`` entry point.
+4. Downstream: Render web service / ``python -m app.main`` / ``python app/main.py``.
+5. New Dependencies: None beyond requirements.txt. Uses asyncio + signal from
+   the stdlib, plus python-telegram-bot==21.4 (already pinned).
+6. Touches Section 6 bugs? No (no engine / data / structure logic here).
+   Touches Section 0 hard constraints? Yes -- enforces #1 (bot stays thin:
+   app/main.py owns start_engine / stop_engine, the bot only calls the
+   callback) and #7 (never relabels simulated trades as live).
+7. Tests: tests/integration/test_telegram_flows.py exercises start/stop engine
+   and the lifecycle hooks; tests/integration/test_resume_flow.py exercises
+   the restart-with-checkpoints path.
+8. Logging: app_starting, app_ready, engine_started, engine_stopped,
+   app_shutdown, error (Section 9 + lifecycle catalog).
+9. Dependency Order: app/main.py is the LAST file in the import chain -- it
+   imports from every upstream layer. engine/* and ingest/* are imported
+   lazily inside methods to avoid import cycles with the orchestrator.
+
+DESIGN NOTES
+------------
+* Single asyncio event loop. The Telegram Application, the WebSocket ingest
+  task, the orchestrator subscriber task, and the paper-trader closure task
+  all share the loop.
+* ``start_engine`` is callable from two places: (a) the Telegram bot's Start
+  Engine button (via the callback injected into CTTelegramBot) and (b) on app
+  startup if Redis still has ``engine_running=true`` (auto-resume after
+  Render restart).
+* ``stop_engine`` is idempotent: it is safe to call when the engine is not
+  running.
+* Graceful shutdown (SIGTERM/SIGINT) -- order:
+  1. stop_engine()         (cancels ingest + orchestrator + paper trader)
+  2. telegram stop_polling
+  3. telegram shutdown
+  4. supabase.close()
+  5. redis.close()
+  6. log app_shutdown
+* Per Section 22 -- a single coin failure NEVER crashes the whole app. Every
+  background task wraps its body in try/except, logs ``error``, and continues.
+* Per Section 0 hard-constraint 7 -- this file NEVER places real orders. The
+  BinanceWSClient is read-only (kline subscription); paper_trade.py only
+  writes rows to the ``simulated_trades`` table.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from monitoring.logger import configure_logging, get_logger
+from storage.redis_cache import RedisCache
+from storage.supabase import SupabaseClient
+
+# Type-only imports (avoid hard runtime dependency on layers that may not yet
+# exist when this file is imported in isolation -- e.g. during unit testing).
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bot.telegram_bot import CTTelegramBot
+    from contracts.config import SystemConfig
+    from portfolio.performance import PerformanceCalculator
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MIGRATIONS_DIR = PROJECT_ROOT / "storage" / "migrations"
+
+# How often the paper-trader closure task wakes up to scan open trades and
+# decide if any have hit their stop / take-profit.
+PAPER_TRADER_POLL_SECONDS = 15
+
+# How often to log a heartbeat for the orchestrator subscriber (so Render's
+# log stream shows the process is alive even on quiet markets).
+SUBSCRIBER_HEARTBEAT_SECONDS = 300
+
+# Sentinel values for the engine state machine.
+_ENGINE_STATE_LOCK = asyncio.Lock()
+
+
+# ---------------------------------------------------------------------------
+# CTApplication
+# ---------------------------------------------------------------------------
+class CTApplication:
+    """Top-level orchestrator of the CT process.
+
+    Lifecycle::
+
+        app = CTApplication(settings)
+        await app.start()        # blocks until SIGTERM/SIGINT
+        # (shutdown is called internally by the signal handler)
+
+    The class is deliberately constructed with NO side effects -- only
+    ``start()`` opens connections and starts tasks.
+    """
+
+    # ---------------- construction ----------------
+    def __init__(self, settings: "SystemConfig") -> None:
+        self._settings: "SystemConfig" = settings
+
+        # Storage -- connected in start().
+        self._redis: RedisCache = RedisCache(url=settings.redis_url)
+        # The SupabaseClient expects a full Postgres DSN (e.g. postgresql://user:pass@host:port/db).
+        # We assume settings.supabase_url is actually the DSN in this context.
+        self._supabase: SupabaseClient = SupabaseClient(
+            dsn=settings.supabase_url,
+            key=settings.supabase_key,
+            min_size=1,
+            max_size=5,
+        )
+
+        # Built in start().
+        self._performance_calc: Optional["PerformanceCalculator"] = None
+        self._bot: Optional["CTTelegramBot"] = None
+        self._telegram_app: Optional[Any] = None  # telegram.ext.Application
+
+        # Engine -- built lazily in start_engine().
+        self._orchestrator: Optional[Any] = None
+        self._ws_client: Optional[Any] = None  # ingest.binance_ws.BinanceWSClient
+
+        # Background tasks. Held so we can cancel them on shutdown.
+        self._ingest_task: Optional[asyncio.Task[None]] = None
+        self._orchestrator_subscriber_task: Optional[asyncio.Task[None]] = None
+        self._paper_trader_task: Optional[asyncio.Task[None]] = None
+        self._telegram_polling_task: Optional[asyncio.Task[None]] = None
+
+        # Engine run-state flag (mirrors Redis ``engine_running`` so we don't
+        # race the cache when the user double-clicks Start/Stop).
+        self._engine_running: bool = False
+
+        # Shutdown coordination.
+        self._shutdown_event: asyncio.Event = asyncio.Event()
+        self._shutdown_started: bool = False
+
+    # =====================================================================
+    # Public lifecycle
+    # =====================================================================
+    async def start(self) -> None:
+        """Wire every layer, start polling, and wait for shutdown.
+
+        Per the spec, this method blocks until SIGTERM or SIGINT is received.
+        """
+        logger.info(
+            "app_starting",
+            timestamp=datetime.now(timezone.utc),
+            pid=os.getpid(),
+            simulation_mode=self._settings.simulation_mode,
+        )
+
+        # 1. Logging first -- every subsequent step is observable.
+        configure_logging()
+
+        # 2 + 3. Storage layers.
+        try:
+            await self._redis.connect()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"redis connect failed: {exc}",
+            )
+            raise
+        try:
+            await self._supabase.connect()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"supabase connect failed: {exc}",
+            )
+            raise
+
+        # 4. Apply idempotent migrations (Section 5).
+        await self._apply_migrations()
+
+        # 5. Performance calculator.
+        self._performance_calc = self._build_performance_calculator()
+
+        # 6. Telegram bot.
+        self._bot = self._build_bot()
+
+        # 7. Telegram Application.
+        self._telegram_app = self._bot.build_application()
+
+        # Inject the engine callbacks via bot_data so the bot can reach them
+        # without an explicit constructor argument. (CTTelegramBot already
+        # accepts the callbacks via __init__ -- we use BOTH paths so unit
+        # tests can inject either.)
+        self._telegram_app.bot_data["start_engine_callback"] = self.start_engine
+        self._telegram_app.bot_data["stop_engine_callback"] = self.stop_engine
+        self._telegram_app.bot_data["reload_engine_callback"] = self._reload_engine
+
+        # 8. Register signal handlers (SIGTERM for Render, SIGINT for local).
+        self._register_signal_handlers()
+
+        # 9. Initialise + start the Telegram Application, then poll in a
+        # background task so this coroutine can wait on the shutdown event.
+        await self._telegram_app.initialize()
+        await self._telegram_app.start()
+        if self._telegram_app.updater is not None:
+            await self._telegram_app.updater.start_polling(
+                allowed_updates=None,
+                drop_pending_updates=False,
+            )
+        self._telegram_polling_task = asyncio.create_task(
+            self._telegram_polling_guard(), name="telegram_polling_guard"
+        )
+
+        # 10. Auto-resume the engine if Redis says it was running before the
+        # process restarted (Render idles/restarts at will -- Section 0).
+        try:
+            should_resume = await self._redis.get_engine_running()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"could not read engine_running flag: {exc}",
+            )
+            should_resume = False
+
+        if should_resume:
+            logger.info(
+                "app_starting",
+                timestamp=datetime.now(timezone.utc),
+                note="auto-resuming engine after process restart",
+            )
+            try:
+                await self.start_engine()
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"auto-resume failed: {exc}",
+                )
+
+        logger.info(
+            "app_ready",
+            timestamp=datetime.now(timezone.utc),
+            auto_resumed_engine=should_resume,
+        )
+
+        # 11. Wait for shutdown signal.
+        await self._shutdown_event.wait()
+
+        # 12. Run graceful shutdown.
+        await self.shutdown()
+
+    # =====================================================================
+    # Engine lifecycle
+    # =====================================================================
+    async def start_engine(self) -> None:
+        """Start the ingest + orchestrator + paper-trader loop.
+
+        Idempotent: if the engine is already running, returns immediately
+        without side effects (the bot still shows "Engine is already running"
+        because it checks ``redis.get_engine_running`` BEFORE calling this).
+        """
+        async with _ENGINE_STATE_LOCK:
+            if self._engine_running:
+                logger.info(
+                    "engine_started",
+                    timestamp=datetime.now(timezone.utc),
+                    note="start_engine called but already running",
+                    active_coins=0,
+                )
+                return
+
+            # 1. Load active coins from the database.
+            try:
+                coins = await self._supabase.fetch_all_coins(only_active=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"could not load active coins: {exc}",
+                )
+                raise
+
+            if not coins:
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type="NoActiveCoins",
+                    error_message="start_engine called with zero active coins",
+                )
+                # Ensure the flag is False in Redis and memory to avoid "fake running" state.
+                await self._redis.set_engine_running(False)
+                self._engine_running = False
+                return
+
+            # 2. Build the orchestrator (lazy import to avoid cycles).
+            self._orchestrator = self._build_orchestrator()
+
+            # 3. Build the BinanceWSClient (lazy import).
+            self._ws_client = self._build_ws_client(coins)
+
+            # 4. Start the ingest task in the background.
+            self._ingest_task = asyncio.create_task(
+                self._run_ingest_guarded(), name="ingest_binance_ws"
+            )
+
+            # 5. Start the orchestrator subscriber task.
+            self._orchestrator_subscriber_task = asyncio.create_task(
+                self._run_orchestrator_subscriber_guarded(),
+                name="orchestrator_subscriber",
+            )
+
+            # 6. Start the paper-trader closure check task.
+            self._paper_trader_task = asyncio.create_task(
+                self._run_paper_trader_guarded(), name="paper_trader_closure"
+            )
+
+            # 7. Flip the engine flag last so a crash during setup doesn't
+            # leave Redis reporting a running engine while no tasks exist.
+            await self._redis.set_engine_running(True)
+            self._engine_running = True
+
+            logger.info(
+                "engine_started",
+                timestamp=datetime.now(timezone.utc),
+                active_coins=len(coins),
+                active_pairs=sum(len(c.timeframes) for c in coins),
+            )
+
+    async def stop_engine(self) -> None:
+        """Stop the engine gracefully.
+
+        Order (Section 7 Stop Engine flow):
+          1. Signal the WebSocket client to stop (flushes checkpoints).
+          2. Cancel the orchestrator subscriber task.
+          3. Cancel the paper-trader task.
+          4. Clear the Redis engine_running flag.
+        """
+        async with _ENGINE_STATE_LOCK:
+            if not self._engine_running:
+                logger.info(
+                    "engine_stopped",
+                    timestamp=datetime.now(timezone.utc),
+                    open_trades_count=0,
+                    note="stop_engine called but already stopped",
+                )
+                # Ensure Redis agrees -- a previous crash may have left it set.
+                try:
+                    await self._redis.set_engine_running(False)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "error",
+                        timestamp=datetime.now(timezone.utc),
+                        module="app.main",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                return
+
+            # 1. Stop the WebSocket client -- it writes final checkpoints.
+            if self._ws_client is not None:
+                try:
+                    await self._ws_client.stop()
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "error",
+                        timestamp=datetime.now(timezone.utc),
+                        module="app.main",
+                        error_type=type(exc).__name__,
+                        error_message=f"ws_client.stop() failed: {exc}",
+                    )
+
+            # 2 + 3. Cancel background tasks.
+            for task_attr in ("_ingest_task", "_orchestrator_subscriber_task", "_paper_trader_task"):
+                task: Optional[asyncio.Task[None]] = getattr(self, task_attr)
+                if task is not None and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "error",
+                            timestamp=datetime.now(timezone.utc),
+                            module="app.main",
+                            error_type=type(exc).__name__,
+                            error_message=f"{task_attr} cleanup raised: {exc}",
+                        )
+                setattr(self, task_attr, None)
+
+            # Count open simulated trades for the log event.
+            try:
+                open_trades_count = await self._supabase.count_open_trades()
+            except Exception:  # noqa: BLE001
+                open_trades_count = 0
+
+            # 4. Clear the Redis flag.
+            try:
+                await self._redis.set_engine_running(False)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+
+            self._engine_running = False
+            self._ws_client = None
+            self._orchestrator = None
+
+            logger.info(
+                "engine_stopped",
+                timestamp=datetime.now(timezone.utc),
+                open_trades_count=open_trades_count,
+            )
+
+    # =====================================================================
+    # Shutdown
+    # =====================================================================
+    async def shutdown(self) -> None:
+        """Graceful shutdown -- stop engine, stop Telegram, close storage."""
+        # Guard against double-shutdown (signal + explicit call).
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+
+        logger.info(
+            "app_shutdown",
+            timestamp=datetime.now(timezone.utc),
+            stage="begin",
+        )
+
+        # 1. Stop the engine first so we flush checkpoints before closing
+        # the storage layer.
+        try:
+            await self.stop_engine()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"stop_engine during shutdown failed: {exc}",
+            )
+
+        # 2. Stop Telegram polling.
+        if self._telegram_app is not None:
+            try:
+                if self._telegram_app.updater is not None:
+                    await self._telegram_app.updater.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"updater.stop() failed: {exc}",
+                )
+            try:
+                await self._telegram_app.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"telegram_app.stop() failed: {exc}",
+                )
+            try:
+                await self._telegram_app.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"telegram_app.shutdown() failed: {exc}",
+                )
+
+        # Cancel the polling guard if it's still running.
+        if self._telegram_polling_task is not None and not self._telegram_polling_task.done():
+            self._telegram_polling_task.cancel()
+            try:
+                await self._telegram_polling_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+
+        # 3. Close Supabase.
+        try:
+            await self._supabase.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"supabase.close() failed: {exc}",
+            )
+
+        # 4. Close Redis.
+        try:
+            await self._redis.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"redis.close() failed: {exc}",
+            )
+
+        logger.info(
+            "app_shutdown",
+            timestamp=datetime.now(timezone.utc),
+            stage="complete",
+        )
+
+    # =====================================================================
+    # Background task bodies (guarded -- never let one crash kill the process)
+    # =====================================================================
+    async def _run_ingest_guarded(self) -> None:
+        """Run the Binance WebSocket ingest loop, isolated from process death.
+
+        Per Section 22 -- a single coin failure must not crash the whole app.
+        Any exception is logged and the task exits cleanly; the engine flag
+        is NOT cleared (the operator can Stop + Start to retry).
+        """
+        if self._ws_client is None:
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="MissingWSClient",
+                error_message="_run_ingest_guarded called with no ws_client",
+            )
+            return
+        try:
+            await self._ws_client.start()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"ingest task crashed: {exc}",
+            )
+
+    async def _run_orchestrator_subscriber_guarded(self) -> None:
+        """Subscribe to ``new_candle:*`` pub/sub channels and feed the orchestrator.
+
+        The subscriber opens one Redis pubsub connection per (symbol,
+        timeframe) and dispatches each closed-candle message to
+        ``orchestrator.process_candle_safe``.
+        """
+        if self._orchestrator is None:
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="MissingOrchestrator",
+                error_message="_run_orchestrator_subscriber_guarded called with no orchestrator",
+            )
+            return
+
+        # Build the list of channels to subscribe to.
+        try:
+            coins = await self._supabase.fetch_all_coins(only_active=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"could not load coins for subscriber: {exc}",
+            )
+            return
+
+        channels: list[str] = []
+        for coin in coins:
+            for tf in coin.timeframes:
+                channels.append(f"new_candle:{coin.symbol}:{tf}")
+
+        if not channels:
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="NoSubscriberChannels",
+                error_message="subscriber started with zero channels",
+            )
+            return
+
+        try:
+            pubsub = await self._redis.get_pubsub()
+            for channel in channels:
+                await pubsub.subscribe(channel)
+            logger.info(
+                "app_ready",
+                timestamp=datetime.now(timezone.utc),
+                note="orchestrator subscriber subscribed",
+                channels=len(channels),
+            )
+
+            last_heartbeat = datetime.now(timezone.utc)
+            while not self._shutdown_event.is_set():
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=1.0
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "error",
+                        timestamp=datetime.now(timezone.utc),
+                        module="app.main",
+                        error_type=type(exc).__name__,
+                        error_message=f"pubsub.get_message failed: {exc}",
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
+
+                if message is None:
+                    # Periodic heartbeat so the log stream shows we're alive.
+                    now = datetime.now(timezone.utc)
+                    if (now - last_heartbeat).total_seconds() >= SUBSCRIBER_HEARTBEAT_SECONDS:
+                        logger.info(
+                            "app_ready",
+                            timestamp=now,
+                            note="orchestrator subscriber heartbeat",
+                        )
+                        last_heartbeat = now
+                    continue
+
+                await self._dispatch_candle_message(message)
+
+            # Clean up pubsub on exit.
+            try:
+                await pubsub.unsubscribe()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await pubsub.close()
+            except Exception:  # noqa: BLE001
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"orchestrator subscriber crashed: {exc}",
+            )
+
+    async def _dispatch_candle_message(self, message: Any) -> None:
+        """Decode a pubsub message and hand it to the orchestrator.
+
+        Per Section 22 -- a single bad candle MUST NOT crash the subscriber.
+        """
+        import json
+        from contracts.market import Candle
+
+        # redis-py pubsub messages look like {"type": "message", "channel": b"...", "data": "..."}
+        channel = message.get("channel") if isinstance(message, dict) else None
+        raw_data = message.get("data") if isinstance(message, dict) else None
+        if raw_data is None:
+            return
+
+        try:
+            payload = json.loads(raw_data)
+            candle = Candle(**payload)
+        except (TypeError, ValueError, Exception) as exc:
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="InvalidPubsubPayload",
+                error_message=f"could not decode pubsub payload: {exc}",
+                channel=str(channel),
+            )
+            return
+
+        # The orchestrator requires (candle, coin_config). We must fetch the
+        # config for this symbol from Supabase.
+        try:
+            coin_config = await self._supabase.fetch_coin(candle.symbol)
+            if not coin_config:
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type="MissingCoinConfig",
+                    error_message=f"no config found for symbol: {candle.symbol}",
+                    symbol=candle.symbol,
+                )
+                return
+
+            if self._orchestrator is not None:
+                # The orchestrator is responsible for Section 22 Engine-level error handling.
+                await self._orchestrator.process_candle_safe(candle, coin_config)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"dispatch_candle_message failed: {exc}",
+                channel=str(channel),
+                symbol=candle.symbol,
+            )
+
+    async def _reload_engine(self) -> None:
+        """Live-reload coins into the engine or start it if it was waiting for coins.
+
+        This is the entry point called by ``CTTelegramBot._trigger_engine_reload``
+        after an Add / Edit / Delete Coin operation completes successfully.
+
+        Logic:
+          1. Re-fetch the active-coin list from Supabase.
+          2. If the engine is NOT running but we now have coins, perform a full
+             start_engine() to build orchestrator, ws_client, and tasks.
+          3. If the engine IS running:
+             a. If coins still exist, tell the WS client to reload and reset the
+                subscriber task.
+             b. If no coins remain, perform a graceful stop.
+        """
+        async with _ENGINE_STATE_LOCK:
+            # 1. Re-fetch active coins from the database.
+            try:
+                coins = await self._supabase.fetch_all_coins(only_active=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"_reload_engine could not load coins: {exc}",
+                )
+                return
+
+            # Case A: Engine is not running.
+            if not self._engine_running:
+                if coins:
+                    logger.info(
+                        "engine_started",
+                        timestamp=datetime.now(timezone.utc),
+                        note="starting engine during reload because first coins were added",
+                    )
+                    # Release lock before calling start_engine to avoid deadlock
+                    # (start_engine also acquires _ENGINE_STATE_LOCK).
+                    pass 
+                else:
+                    return
+
+        # If we need to start the engine, do it outside the lock to avoid re-entrancy issues.
+        if not self._engine_running and coins:
+            await self.start_engine()
+            return
+
+        async with _ENGINE_STATE_LOCK:
+            # Re-check running state inside lock for the "already running" cases.
+            if not self._engine_running:
+                return
+
+            # 1. Re-fetch active coins from the database.
+            try:
+                coins = await self._supabase.fetch_all_coins(only_active=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"_reload_engine could not load coins: {exc}",
+                )
+                return
+
+            if not coins:
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type="NoActiveCoinsAfterReload",
+                    error_message="reload triggered with zero active coins -- stopping engine",
+                )
+                # Graceful WS shutdown (flush checkpoints) without calling
+                # stop_engine() to avoid the deadlock on _ENGINE_STATE_LOCK.
+                if self._ws_client is not None:
+                    try:
+                        await self._ws_client.stop()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "error",
+                            timestamp=datetime.now(timezone.utc),
+                            module="app.main",
+                            error_type=type(exc).__name__,
+                            error_message=f"ws_client.stop() during zero-coin reload: {exc}",
+                        )
+
+                # Cancel background tasks and clear fields.
+                for task_attr in ("_ingest_task", "_orchestrator_subscriber_task", "_paper_trader_task"):
+                    task: Optional[asyncio.Task[None]] = getattr(self, task_attr)
+                    if task is not None and not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "error",
+                                timestamp=datetime.now(timezone.utc),
+                                module="app.main",
+                                error_type=type(exc).__name__,
+                                error_message=f"{task_attr} cleanup during zero-coin reload: {exc}",
+                            )
+                    setattr(self, task_attr, None)
+
+                try:
+                    await self._redis.set_engine_running(False)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._ws_client = None
+                self._orchestrator = None
+                self._engine_running = False
+                return
+
+            # 2. Tell the WS client to reconnect with the new pairs.
+            if self._ws_client is not None:
+                try:
+                    await self._ws_client.reload_coins(coins)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "error",
+                        timestamp=datetime.now(timezone.utc),
+                        module="app.main",
+                        error_type=type(exc).__name__,
+                        error_message=f"ws_client.reload_coins failed: {exc}",
+                    )
+
+            # 3. Cancel the orchestrator subscriber so it restarts with new
+            # channels on its next iteration.  The subscriber loop already
+            # re-reads coins from the DB at the top, so cancelling it and
+            # letting it be recreated is the cleanest path.
+            if self._orchestrator_subscriber_task is not None:
+                task = self._orchestrator_subscriber_task
+                self._orchestrator_subscriber_task = None
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "error",
+                            timestamp=datetime.now(timezone.utc),
+                            module="app.main",
+                            error_type=type(exc).__name__,
+                            error_message=f"orchestrator subscriber cancel during reload: {exc}",
+                        )
+
+                # Re-create the subscriber task.
+                if self._orchestrator is not None:
+                    self._orchestrator_subscriber_task = asyncio.create_task(
+                        self._run_orchestrator_subscriber_guarded(),
+                        name="orchestrator_subscriber",
+                    )
+
+            logger.info(
+                "engine_reloaded",
+                timestamp=datetime.now(timezone.utc),
+                active_coins=len(coins),
+                active_pairs=sum(len(c.timeframes) for c in coins),
+            )
+
+    async def _run_paper_trader_guarded(self) -> None:
+        """Periodically scan open simulated trades and apply TP/SL closures.
+
+        Per Section 22 -- never crash the process on a single trade failure.
+        """
+        # Lazy import so app/main.py is importable even before
+        # simulation/paper_trade.py exists.
+        try:
+            from simulation.paper_trade import close_due_trades  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"simulation.paper_trade not importable: {exc}",
+            )
+            return
+
+        logger.info(
+            "app_ready",
+            timestamp=datetime.now(timezone.utc),
+            note="paper trader task started",
+            poll_seconds=PAPER_TRADER_POLL_SECONDS,
+        )
+        while not self._shutdown_event.is_set():
+            try:
+                await close_due_trades(
+                    supabase=self._supabase,
+                    redis=self._redis,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"paper_trader iteration failed: {exc}",
+                )
+            # Sleep cooperatively so shutdown cancels us quickly.
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=PAPER_TRADER_POLL_SECONDS
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+
+    async def _telegram_polling_guard(self) -> None:
+        """Wait for the Telegram updater to exit and log when it does.
+
+        PTB v21 runs the polling loop inside ``updater.start_polling`` -- it
+        does NOT block. This guard lets us observe unexpected polling
+        termination and trigger shutdown.
+        """
+        if self._telegram_app is None or self._telegram_app.updater is None:
+            return
+        try:
+            # The updater's running flag is the cleanest signal.
+            while self._telegram_app.updater.running:
+                await asyncio.sleep(5.0)
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="TelegramPollingExited",
+                error_message="telegram updater stopped running unexpectedly",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+        # Trigger shutdown if polling died unexpectedly.
+        if not self._shutdown_event.is_set():
+            self._shutdown_event.set()
+
+    # =====================================================================
+    # Builders (lazy imports here to keep app/main.py importable in tests
+    # that don't have the full stack wired up)
+    # =====================================================================
+    def _build_performance_calculator(self) -> "PerformanceCalculator":
+        """Construct the PerformanceCalculator with the live Supabase client."""
+        from portfolio.performance import PerformanceCalculator
+
+        return PerformanceCalculator(supabase=self._supabase)
+
+    def _build_bot(self) -> "CTTelegramBot":
+        """Construct the Telegram bot and inject the engine callbacks."""
+        from bot.telegram_bot import CTTelegramBot
+
+        return CTTelegramBot(
+            supabase=self._supabase,
+            redis=self._redis,
+            performance_calc=self._performance_calc,  # type: ignore[arg-type]
+            settings=self._settings,
+            start_engine_callback=self.start_engine,
+            stop_engine_callback=self.stop_engine,
+            reload_engine_callback=self._reload_engine,
+        )
+
+    def _build_orchestrator(self) -> Any:
+        """Construct the engine orchestrator (lazy import to avoid cycles)."""
+        from engine.orchestrator import Orchestrator  # type: ignore
+
+        return Orchestrator(
+            supabase=self._supabase,
+            redis=self._redis,
+        )
+
+    def _build_ws_client(self, coins: list[Any]) -> Any:
+        """Construct the Binance WebSocket ingest client (lazy import)."""
+        from ingest.binance_ws import BinanceWSClient  # type: ignore
+
+        return BinanceWSClient(
+            coins=coins,
+            redis=self._redis,
+            supabase=self._supabase,
+        )
+
+    # =====================================================================
+    # Migrations
+    # =====================================================================
+    async def _apply_migrations(self) -> None:
+        """Read every ``.sql`` file in ``storage/migrations`` and apply it.
+
+        Files are applied in alphabetical order so the numeric prefixes
+        (``001_``, ``002_``, ...) define the order. Each migration MUST be
+        idempotent (``CREATE TABLE IF NOT EXISTS``, ``DO $$`` blocks).
+        """
+        if not MIGRATIONS_DIR.exists():
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="MissingMigrationsDir",
+                error_message=f"migrations dir not found: {MIGRATIONS_DIR}",
+            )
+            return
+
+        files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+        if not files:
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="NoMigrations",
+                error_message="no .sql files found in migrations dir",
+            )
+            return
+
+        sqls: list[str] = []
+        for path in files:
+            try:
+                sqls.append(path.read_text(encoding="utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"could not read migration {path}: {exc}",
+                )
+                raise
+
+        try:
+            await self._supabase.apply_migrations(sqls)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"apply_migrations failed: {exc}",
+            )
+            raise
+
+    # =====================================================================
+    # Signal handling
+    # =====================================================================
+    def _register_signal_handlers(self) -> None:
+        """Register SIGTERM and SIGINT handlers.
+
+        SIGTERM is what Render sends on shutdown. SIGINT is what a developer
+        sends with Ctrl+C. Both trigger a graceful shutdown.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _handler(signum: int, _frame: Any) -> None:
+            sig_name = signal.Signals(signum).name
+            logger.info(
+                "app_shutdown",
+                timestamp=datetime.now(timezone.utc),
+                stage="signal_received",
+                signal=sig_name,
+            )
+            self._shutdown_event.set()
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _handler, sig, None)
+            except (NotImplementedError, RuntimeError):
+                # add_signal_handler is not available on Windows / some
+                # sandboxes -- fall back to the default handler.
+                signal.signal(sig, lambda s, f: _handler(s, f))
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+async def main() -> None:
+    """Load settings, build the application, and run it until shutdown."""
+    # Lazy import of config.settings so the rest of the module can be imported
+    # in test environments without a real settings.py on the path.
+    try:
+        from config.settings import settings
+    except Exception as exc:  # noqa: BLE001
+        # Configure logging first so the error is visible.
+        configure_logging()
+        logger.error(
+            "error",
+            timestamp=datetime.now(timezone.utc),
+            module="app.main",
+            error_type=type(exc).__name__,
+            error_message=f"could not import config.settings: {exc}",
+        )
+        sys.exit(1)
+
+    app = CTApplication(settings=settings)
+    try:
+        await app.start()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "error",
+            timestamp=datetime.now(timezone.utc),
+            module="app.main",
+            error_type=type(exc).__name__,
+            error_message=f"app.start() crashed: {exc}",
+        )
+        # Try a best-effort shutdown so resources are released.
+        try:
+            await app.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
