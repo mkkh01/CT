@@ -3,7 +3,8 @@ services:
   - type: web
     name: ct-trading-system
     env: python
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    # Force pip to use binary wheels for heavy dependencies to prevent source compilation
+    buildCommand: pip install --upgrade pip && pip install --only-binary :all: -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: PYTHON_VERSION
