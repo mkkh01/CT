@@ -342,12 +342,14 @@ def analyze_trend(candles: list[Candle]) -> dict:
 
     return {
         "direction": direction,
-        "strength": float(strength),
-        "adx": float(adx),
-        "plus_di": float(plus_di),
-        "minus_di": float(minus_di),
-        "ema_fast": float(ema_fast),
-        "ema_slow": float(ema_slow),
+        "strength": strength,
+        "adx": adx,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+        "ema_fast": ema_fast,
+        "ema_slow": ema_slow,
+        "ema_fast_aligned": last_close > ema_fast if direction == "bullish" else last_close < ema_fast if direction == "bearish" else False,
+        "ema_slow_aligned": ema_fast > ema_slow if direction == "bullish" else ema_fast < ema_slow if direction == "bearish" else False,
         "reasons": reasons,
     }
 

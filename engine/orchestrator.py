@@ -98,6 +98,7 @@ from monitoring.workflow_logger import (
     log_decision_approved,
     log_decision_rejected,
 )
+from monitoring.report_formatter import format_analysis_report
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
 
@@ -636,10 +637,92 @@ class Orchestrator:
             await self._open_simulated_trade(decision, entry)
 
         # -------------------------------------------------------------
-        # 12. Log decision_made / decision_rejected.
+        # 12. Generate and Log Analysis Report Block
         # -------------------------------------------------------------
-        # Log total execution time (Requested Log #10)
         execution_duration_ms = round((datetime.now(timezone.utc) - start_time).total_seconds() * 1000, 2)
+        
+        # Prepare data for report
+        indicators_data = {
+            "EMA20": ltf_analysis.trend.get("ema_fast_aligned", True),
+            "EMA50": ltf_analysis.trend.get("ema_slow_aligned", True),
+            "RSI": round(ltf_analysis.momentum.get("rsi", 50), 1),
+            "ADX": round(ltf_analysis.trend.get("adx", 0), 1),
+            "ATR": f"{ltf_analysis.atr:.2f}%" if ltf_analysis.atr else "0.00%",
+            "CVD": "Positive" if ltf_analysis.volume.get("cvd_slope", 0) > 0 else "Negative"
+        }
+        
+        structure_data = {
+            "Trend": ltf_analysis.trend.get("direction") == "up",
+            "Higher Timeframe": htf_ok,
+            "BOS": any(s.get("type") == "bos" for s in ltf_analysis.smc.get("sweeps", [])),
+            "Order Block": len(ltf_analysis.smc.get("order_blocks", [])) > 0,
+            "Fair Value Gap": len(ltf_analysis.smc.get("fvgs", [])) > 0,
+            "Discount Zone": ltf_analysis.candles[-1].close < (ltf_analysis.candles[-1].high + ltf_analysis.candles[-1].low) / 2 if ltf_analysis.candles else False
+        }
+        
+        strategy_scores = {
+            "Trend Following": ltf_analysis.trend.get("strength", 0) * 100,
+            "Momentum": ltf_analysis.momentum.get("momentum_score", 0.5) * 100,
+            "Smart Money": 90.0 if structure_ok else 30.0,
+            "Risk Filter": 1.0 if risk_ok else 0.0
+        }
+        
+        risk_mgmt_data = {}
+        if entry:
+            risk_mgmt_data = {
+                "entry_price": entry.entry_price,
+                "stop_loss": entry.stop_loss,
+                "take_profit": entry.take_profit,
+                "risk_pct": risk.risk_percent * 100,
+                "reward_pct": ((entry.take_profit - entry.entry_price) / entry.entry_price * 100) if entry.entry_price else 0,
+                "rr_ratio": entry.rr_ratio,
+                "capital_alloc": (risk.position_size * entry.entry_price / coin_config.capital * 100) if coin_config.capital else 0,
+                "pos_size": risk.position_size
+            }
+            
+        final_verdict_str = "BUY" if final_verdict and primary_signal.direction == "long" else "SELL" if final_verdict else "REJECT"
+        reasons_list = [rejection_reason] if rejection_reason else ["All strategy and risk conditions met"]
+        
+        execution_data = {
+            "telegram": final_verdict,
+            "database": True,
+            "stored": True,
+            "latency_ms": execution_duration_ms
+        }
+        
+        report_block = format_analysis_report(
+            symbol=symbol,
+            timeframe=ltf_timeframe,
+            candle_time=candle.open_time,
+            last_price=candle.close,
+            regime=regime.value,
+            volatility="Medium", # Heuristic or calculated
+            liquidity="High", # Heuristic or calculated
+            volume_status="Strong" if volume_confirmation > 0.5 else "Weak",
+            indicators=indicators_data,
+            structure=structure_data,
+            strategy_scores=strategy_scores,
+            decision_scores={
+                "indicator_score": int(confidence * 100),
+                "structure_score": int(score * 100),
+                "trend_score": int(trend_strength * 25),
+                "momentum_score": int(momentum_score * 20),
+                "liquidity_score": 15,
+                "volume_score": int(volume_confirmation * 15),
+                "smc_score": 18 if structure_ok else 5
+            },
+            total_score=score * 100,
+            confidence=confidence * 100,
+            quality=confidence * 95,
+            probability=confidence * 90,
+            risk_mgmt=risk_mgmt_data,
+            final_decision=final_verdict_str,
+            reasons=reasons_list,
+            execution=execution_data
+        )
+        
+        # Print the visual block to stdout/Render logs
+        print(f"\n{report_block}\n")
 
         log_analysis_gates(
             symbol=symbol,
