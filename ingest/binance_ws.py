@@ -406,6 +406,7 @@ class BinanceWSClient:
         We also tolerate bare kline events (``{"e": "kline", ...}``) for test
         fixtures.
         """
+        receive_time = datetime.now(timezone.utc)
         if isinstance(raw_message, (bytes, bytearray)):
             try:
                 raw_message = raw_message.decode("utf-8")
@@ -423,9 +424,9 @@ class BinanceWSClient:
                 details={"raw_preview": raw_message[:200]},
             ) from exc
 
-        await self._process_message(payload)
+        await self._process_message(payload, receive_time=receive_time)
 
-    async def _process_message(self, msg: dict) -> None:
+    async def _process_message(self, msg: dict, receive_time: Optional[datetime] = None) -> None:
         """Validate, clean, persist, and publish a single Binance kline message.
 
         Implements Section 17 algorithm steps 4a-4g.
@@ -501,6 +502,20 @@ class BinanceWSClient:
                 error_type=type(exc).__name__,
                 error_message=f"set_live_price failed: {exc}",
                 symbol=candle.symbol,
+            )
+
+        # Log real data proof (Requested Log #10)
+        if receive_time:
+            process_time_ms = round((datetime.now(timezone.utc) - receive_time).total_seconds() * 1000, 2)
+            logger.info(
+                "real_data_received",
+                timestamp=datetime.now(timezone.utc),
+                symbol=candle.symbol,
+                timeframe=candle.timeframe,
+                last_price=candle.close,
+                is_closed=candle.is_closed,
+                receive_latency_ms=process_time_ms,
+                candle_open_time=candle.open_time,
             )
 
         # 4f -- If is_closed: write to Postgres + advance checkpoint + publish.

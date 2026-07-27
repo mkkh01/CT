@@ -610,6 +610,19 @@ def analyze_smc(
     fvgs = detect_fvgs(closed)
     sweeps = detect_liquidity_sweeps(closed, swing_points or [])
 
+    # Log SMC Discovery (Requested Log #6)
+    logger.info(
+        "smc_discovery_summary",
+        timestamp=datetime.utcnow(),
+        symbol=candles[0].symbol if candles else "unknown",
+        timeframe=candles[0].timeframe if candles else "unknown",
+        order_blocks_found=len(order_blocks),
+        fvgs_found=len(fvgs),
+        sweeps_found=len(sweeps),
+        bos_found="N/A", # Structure module handles BOS/CHOCH
+        choch_found="N/A",
+    )
+
     return {
         "order_blocks": order_blocks,
         "fvgs": fvgs,

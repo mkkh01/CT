@@ -118,6 +118,17 @@ class CTApplication:
     # ---------------- construction ----------------
     def __init__(self, settings: "SystemConfig") -> None:
         self._settings: "SystemConfig" = settings
+        
+        # Health Tracking (Requested Log #9 & #11)
+        self._health_stats = {
+            "scan_cycles": 0,
+            "strategies_run": 0,
+            "opportunities_found": 0,
+            "opportunities_rejected": 0,
+            "rejection_reasons": {},
+            "errors": 0,
+            "last_data_at": None
+        }
 
         # Storage -- connected in start().
         self._redis: RedisCache = RedisCache(url=settings.redis_url)
@@ -144,6 +155,7 @@ class CTApplication:
         self._orchestrator_subscriber_task: Optional[asyncio.Task[None]] = None
         self._paper_trader_task: Optional[asyncio.Task[None]] = None
         self._telegram_polling_task: Optional[asyncio.Task[None]] = None
+        self._health_log_task: Optional[asyncio.Task[None]] = None
 
         # Engine run-state flag (mirrors Redis ``engine_running`` so we don't
         # race the cache when the user double-clicks Start/Stop).
@@ -340,6 +352,11 @@ class CTApplication:
             # 6. Start the paper-trader closure check task.
             self._paper_trader_task = asyncio.create_task(
                 self._run_paper_trader_guarded(), name="paper_trader_closure"
+            )
+
+            # 6.5 Start health logging task
+            self._health_log_task = asyncio.create_task(
+                self._run_health_logger_loop(), name="health_logger"
             )
 
             # 7. Flip the engine flag last so a crash during setup doesn't
@@ -712,6 +729,7 @@ class CTApplication:
             payload = json.loads(raw_data)
             candle = Candle(**payload)
         except (TypeError, ValueError, Exception) as exc:
+            self._health_stats["errors"] += 1
             logger.warning(
                 "error",
                 timestamp=datetime.now(timezone.utc),
@@ -721,6 +739,10 @@ class CTApplication:
                 channel=str(channel),
             )
             return
+
+        # Update health stats
+        self._health_stats["last_data_at"] = datetime.now(timezone.utc)
+        self._health_stats["scan_cycles"] += 1
 
         # The orchestrator requires (candle, coin_config). We must fetch the
         # config for this symbol from Supabase.
@@ -737,6 +759,7 @@ class CTApplication:
                 )
                 return
         except Exception as exc:  # noqa: BLE001
+            self._health_stats["errors"] += 1
             logger.warning(
                 "error",
                 timestamp=datetime.now(timezone.utc),
@@ -749,8 +772,17 @@ class CTApplication:
 
         # Process the candle.
         try:
-            await self._orchestrator.process_candle_safe(candle, coin_config)
+            result = await self._orchestrator.process_candle_safe(candle, coin_config)
+            if result:
+                self._health_stats["strategies_run"] += len(result.component_signals)
+                if result.final_verdict:
+                    self._health_stats["opportunities_found"] += 1
+                else:
+                    self._health_stats["opportunities_rejected"] += 1
+                    reason = result.rejection_reason or "unknown"
+                    self._health_stats["rejection_reasons"][reason] = self._health_stats["rejection_reasons"].get(reason, 0) + 1
         except Exception as exc:  # noqa: BLE001
+            self._health_stats["errors"] += 1
             logger.error(
                 "error",
                 timestamp=datetime.now(timezone.utc),
@@ -838,6 +870,49 @@ class CTApplication:
         """
         await self.stop_engine()
         await self.start_engine()
+
+    async def _run_health_logger_loop(self) -> None:
+        """Periodically log health stats and diagnostic reports (Requested Log #9 & #11)."""
+        while self._engine_running:
+            try:
+                # Log Health Summary (Log #9)
+                top_reasons = sorted(
+                    self._health_stats["rejection_reasons"].items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:3]
+                
+                logger.info(
+                    "system_health_summary",
+                    timestamp=datetime.now(timezone.utc),
+                    scan_cycles=self._health_stats["scan_cycles"],
+                    strategies_run=self._health_stats["strategies_run"],
+                    opportunities_found=self._health_stats["opportunities_found"],
+                    opportunities_rejected=self._health_stats["opportunities_rejected"],
+                    top_rejection_reasons=dict(top_reasons),
+                    error_count=self._health_stats["errors"],
+                    last_data_received=self._health_stats["last_data_at"]
+                )
+
+                # Diagnostic Report if no trades for a while (Log #11)
+                # (Simple heuristic: if opportunities_found is 0 after many cycles)
+                if self._health_stats["scan_cycles"] > 10 and self._health_stats["opportunities_found"] == 0:
+                    logger.info(
+                        "no_trade_diagnostic_report",
+                        timestamp=datetime.now(timezone.utc),
+                        data_arriving=self._health_stats["last_data_at"] is not None,
+                        strategies_active=True,
+                        cycles_checked=self._health_stats["scan_cycles"],
+                        most_restrictive_condition=top_reasons[0][0] if top_reasons else "N/A",
+                        diagnosis="Strategies are running but conditions are not being met",
+                    )
+
+                await asyncio.sleep(600) # Every 10 minutes
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning(f"Health logger error: {exc}")
+                await asyncio.sleep(60)
 
     # =====================================================================
     # Builders (lazy imports here to keep app/main.py importable in tests

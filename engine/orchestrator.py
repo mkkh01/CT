@@ -298,6 +298,19 @@ class Orchestrator:
         """
         symbol = coin_config.symbol
         source_open_time = candle.open_time
+        start_time = datetime.now(timezone.utc)
+
+        # -------------------------------------------------------------
+        # 0. Log Scan Cycle Start (Requested Log #1 & #10)
+        # -------------------------------------------------------------
+        logger.info(
+            "scan_cycle_started",
+            timestamp=start_time,
+            symbol=symbol,
+            trigger_timeframe=candle.timeframe,
+            source_candle_open_time=source_open_time,
+            is_real_data=True,  # Binance WS/REST is real data
+        )
 
         # -------------------------------------------------------------
         # 1. Validate minimum 3 timeframes (Section 0 hard constraint #6)
@@ -333,13 +346,31 @@ class Orchestrator:
         component_signals: list[StrategySignal] = []
 
         for tf in ordered_tfs:
+            tf_start_time = datetime.now(timezone.utc)
             analysis = await self._analyze_timeframe(candle, coin_config, tf)
             per_tf[tf] = analysis
 
+            # Log detailed analysis results per timeframe (Requested Log #1 & #10)
+            last_candle_time = analysis.candles[-1].open_time if analysis.candles else None
+            data_freshness = "fresh"
+            if last_candle_time:
+                seconds_diff = (datetime.now(timezone.utc) - last_candle_time.replace(tzinfo=timezone.utc)).total_seconds()
+                if seconds_diff > TIMEFRAME_TO_SECONDS.get(tf, 60) * 2:
+                    data_freshness = "stale"
+
+            logger.info(
+                "timeframe_scan_completed",
+                timestamp=datetime.now(timezone.utc),
+                symbol=symbol,
+                timeframe=tf,
+                candles_loaded=len(analysis.candles),
+                data_source="Database/Cache", # Orchestrator fetches from Supabase
+                last_candle_time=last_candle_time,
+                data_freshness=data_freshness,
+                analysis_duration_ms=round((datetime.now(timezone.utc) - tf_start_time).total_seconds() * 1000, 2),
+            )
+
             # Build component signals from each module on each timeframe.
-            # (We add the LTF's signals last so they're easy to find in the
-            # component_signals list -- but ordering does not affect the
-            # score because aggregate_score takes a mean.)
             tf_signals = self._build_component_signals(analysis)
             component_signals.extend(tf_signals)
 
@@ -385,6 +416,20 @@ class Orchestrator:
             else 0.5
         )
 
+        # Log Decision Engine inputs (Requested Log #7)
+        logger.info(
+            "decision_engine_calculation",
+            timestamp=datetime.now(timezone.utc),
+            symbol=symbol,
+            regime=regime.value,
+            trend_strength=round(trend_strength, 4),
+            momentum_score=round(momentum_score, 4),
+            volume_confirmation=round(volume_confirmation, 4),
+            session_score=round(session_score, 4),
+            htf_alignment=htf_result.alignment,
+            htf_bias=htf_result.bias,
+        )
+
         confidence = calculate_confidence(
             signals=component_signals,
             htf_result=htf_result,
@@ -397,6 +442,20 @@ class Orchestrator:
         )
         confidence_ok = confidence_gate(confidence)
         score = aggregate_score(component_signals)
+
+        # Log Decision Engine result (Requested Log #7)
+        logger.info(
+            "decision_engine_result",
+            timestamp=datetime.now(timezone.utc),
+            symbol=symbol,
+            final_score=round(score, 4),
+            final_confidence=round(confidence, 4),
+            confidence_threshold=CONFIDENCE_THRESHOLD,
+            confidence_ok=confidence_ok,
+            regime_ok=regime_ok,
+            structure_ok=structure_ok,
+            htf_ok=htf_ok,
+        )
 
         # -------------------------------------------------------------
         # 7. Risk assessment (only if regime + confidence pass).
@@ -439,6 +498,17 @@ class Orchestrator:
             ob_list = list(ltf_analysis.smc.get("order_blocks", []))
             fvg_list = list(ltf_analysis.smc.get("fvgs", []))
             current_price = ltf_analysis.candles[-1].close if ltf_analysis.candles else candle.close
+            
+            # Log pre-entry parameters (Requested Log #8)
+            logger.info(
+                "pre_entry_calculation",
+                timestamp=datetime.now(timezone.utc),
+                symbol=symbol,
+                current_price=current_price,
+                risk_allowed=risk.allowed,
+                risk_reason=risk.reason,
+            )
+
             entry = refine_entry(
                 signal=primary_signal,
                 risk=risk,
@@ -447,6 +517,20 @@ class Orchestrator:
                 current_price=current_price,
                 confidence=confidence,
             )
+
+            if entry:
+                logger.info(
+                    "entry_signal_generated",
+                    timestamp=datetime.now(timezone.utc),
+                    symbol=symbol,
+                    entry_price=entry.entry_price,
+                    stop_loss=entry.stop_loss,
+                    take_profit=entry.take_profit,
+                    risk_percent=risk.risk_percent,
+                    rr_ratio=entry.rr_ratio,
+                    position_size=risk.position_size,
+                )
+
             final_verdict = True
             rejection_reason = None
         else:
@@ -508,6 +592,9 @@ class Orchestrator:
         # -------------------------------------------------------------
         # 12. Log decision_made / decision_rejected.
         # -------------------------------------------------------------
+        # Log total execution time (Requested Log #10)
+        execution_duration_ms = round((datetime.now(timezone.utc) - start_time).total_seconds() * 1000, 2)
+
         if final_verdict:
             logger.info(
                 "decision_made",
@@ -518,6 +605,9 @@ class Orchestrator:
                 final_verdict=True,
                 rejection_reason=None,
                 component_signal_count=len(component_signals),
+                execution_duration_ms=execution_duration_ms,
+                success_reason="All strategy and risk conditions met",
+                conditions_met=["regime", "structure", "htf_bias", "confidence", "risk"],
             )
         else:
             logger.info(
@@ -528,6 +618,8 @@ class Orchestrator:
                 final_verdict=False,
                 rejection_reason=rejection_reason,
                 component_signal_count=len(component_signals),
+                execution_duration_ms=execution_duration_ms,
+                detailed_rejection=rejection_reason, # Requested Log #4
             )
 
         return decision

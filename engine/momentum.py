@@ -342,25 +342,56 @@ def calculate_momentum(candles: list[Candle]) -> dict:
 
     # RSI score
     rsi_score = 0.0
+    rsi_required = f"<{MOMENTUM_RSI_OVERSOLD} or >{MOMENTUM_RSI_OVERBOUGHT}"
     if rsi < MOMENTUM_RSI_OVERSOLD:
         rsi_score = 1.0
         reasons.append(f"RSI({rsi:.2f}) oversold (<{MOMENTUM_RSI_OVERSOLD})")
+        rsi_result = "PASS"
     elif rsi > MOMENTUM_RSI_OVERBOUGHT:
         rsi_score = -1.0
         reasons.append(f"RSI({rsi:.2f}) overbought (>{MOMENTUM_RSI_OVERBOUGHT})")
+        rsi_result = "PASS"
     else:
         reasons.append(f"RSI({rsi:.2f}) neutral")
+        rsi_result = "FAIL"
+
+    logger.info(
+        "strategy_condition_check",
+        timestamp=datetime.utcnow(),
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy="Momentum",
+        condition="RSI Check",
+        current=round(float(rsi), 2),
+        required=rsi_required,
+        result=rsi_result
+    )
 
     # MACD score
     macd_score = 0.0
     if macd_hist > 0:
         macd_score = 1.0
         reasons.append(f"MACD histogram({macd_hist:.4f}) positive")
+        macd_result = "PASS"
     elif macd_hist < 0:
         macd_score = -1.0
         reasons.append(f"MACD histogram({macd_hist:.4f}) negative")
+        macd_result = "PASS"
     else:
         reasons.append(f"MACD histogram({macd_hist:.4f}) flat")
+        macd_result = "FAIL"
+
+    logger.info(
+        "strategy_condition_check",
+        timestamp=datetime.utcnow(),
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy="Momentum",
+        condition="MACD Histogram",
+        current=round(float(macd_hist), 4),
+        required="Non-zero histogram",
+        result=macd_result
+    )
 
     # Stochastic score
     stoch_score = 0.0
@@ -369,15 +400,30 @@ def calculate_momentum(candles: list[Candle]) -> dict:
         reasons.append(
             f"Stoch %K({stoch_k:.2f}) > %D({stoch_d:.2f}) bullish crossover below overbought"
         )
+        stoch_result = "PASS"
     elif stoch_k < stoch_d and stoch_k > MOMENTUM_STOCH_OVERSOLD:
         stoch_score = -1.0
         reasons.append(
             f"Stoch %K({stoch_k:.2f}) < %D({stoch_d:.2f}) bearish crossover above oversold"
         )
+        stoch_result = "PASS"
     else:
         reasons.append(
             f"Stoch %K({stoch_k:.2f}) / %D({stoch_d:.2f}) no actionable crossover"
         )
+        stoch_result = "FAIL"
+
+    logger.info(
+        "strategy_condition_check",
+        timestamp=datetime.utcnow(),
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy="Momentum",
+        condition="Stochastic Cross",
+        current=f"k={round(float(stoch_k), 1)}, d={round(float(stoch_d), 1)}",
+        required="k > d or k < d",
+        result=stoch_result
+    )
 
     raw = (rsi_score + macd_score + stoch_score) / 3.0
     momentum_score = _clip((raw + 1.0) / 2.0)
