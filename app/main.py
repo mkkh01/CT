@@ -370,15 +370,15 @@ class CTApplication:
                 self._run_paper_trader_guarded(), name="paper_trader_closure"
             )
 
-            # 6.5 Start health logging task
-            self._health_log_task = asyncio.create_task(
-                self._run_health_logger_loop(), name="health_logger"
-            )
-
             # 7. Flip the engine flag last so a crash during setup doesn't
             # leave Redis reporting a running engine while no tasks exist.
             await self._redis.set_engine_running(True)
             self._engine_running = True
+
+            # 7.5 Start health logging task AFTER setting _engine_running=True
+            self._health_log_task = asyncio.create_task(
+                self._run_health_logger_loop(), name="health_logger"
+            )
 
             logger.info(
                 "engine_started",
@@ -431,7 +431,7 @@ class CTApplication:
                     )
 
             # 2 + 3. Cancel background tasks.
-            for task_attr in ("_ingest_task", "_orchestrator_subscriber_task", "_paper_trader_task"):
+            for task_attr in ("_ingest_task", "_orchestrator_subscriber_task", "_paper_trader_task", "_health_log_task"):
                 task: Optional[asyncio.Task[None]] = getattr(self, task_attr)
                 if task is not None and not task.done():
                     task.cancel()
