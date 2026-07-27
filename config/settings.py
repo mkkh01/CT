@@ -17,16 +17,17 @@ SECURITY POLICY (Section 3):
   - The file config/settings.example.py is the safe template committed instead.
 """
 
+import os
 from contracts.config import SystemConfig
 
 # ---------------------------------------------------------------------------
 # REPLACE the placeholders below with real values before running the bot.
 # ---------------------------------------------------------------------------
 settings = SystemConfig(
-    telegram_bot_token="PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE",
-    supabase_url="https://YOUR-PROJECT.supabase.co",
-    supabase_key="YOUR-SUPABASE-SERVICE-KEY",
-    redis_url="redis://localhost:6379/0",
+    telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE"),
+    supabase_url=os.environ.get("SUPABASE_URL", "https://YOUR-PROJECT.supabase.co"),
+    supabase_key=os.environ.get("SUPABASE_KEY", "YOUR-SUPABASE-SERVICE-KEY"),
+    redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
     default_timeframes=["15m", "1h", "4h"],
     max_active_coins=10,
     simulation_mode=True,

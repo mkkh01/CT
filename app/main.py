@@ -1,3 +1,4 @@
+
 """
 File: app/main.py
 1. Single Responsibility: Be the CT process entry point -- wire every layer
@@ -60,6 +61,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from fastapi import FastAPI, Response, status
+import uvicorn
 
 from monitoring.logger import configure_logging, get_logger
 from storage.redis_cache import RedisCache
@@ -212,7 +216,7 @@ class CTApplication:
         self._telegram_app.bot_data["reload_engine_callback"] = self._reload_engine
 
         # 8. Register signal handlers (SIGTERM for Render, SIGINT for local).
-        self._register_signal_handlers()
+        # This is now handled by FastAPI's lifespan events.
 
         # 9. Initialise + start the Telegram Application, then poll in a
         # background task so this coroutine can wait on the shutdown event.
@@ -264,11 +268,11 @@ class CTApplication:
             auto_resumed_engine=should_resume,
         )
 
-        # 11. Wait for shutdown signal.
-        await self._shutdown_event.wait()
+        # 11. Wait for shutdown signal. This is now handled by FastAPI's lifespan.
+        # await self._shutdown_event.wait()
 
-        # 12. Run graceful shutdown.
-        await self.shutdown()
+        # 12. Run graceful shutdown. This is now handled by FastAPI's lifespan.
+        # await self.shutdown()
 
     # =====================================================================
     # Engine lifecycle
@@ -728,262 +732,53 @@ class CTApplication:
                     timestamp=datetime.now(timezone.utc),
                     module="app.main",
                     error_type="MissingCoinConfig",
-                    error_message=f"no config found for symbol: {candle.symbol}",
+                    error_message=f"could not load coin config for {candle.symbol}",
                     symbol=candle.symbol,
                 )
                 return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"could not load coin config for {candle.symbol}: {exc}",
+                symbol=candle.symbol,
+            )
+            return
 
-            if self._orchestrator is not None:
-                # The orchestrator is responsible for Section 22 Engine-level error handling.
-                await self._orchestrator.process_candle_safe(candle, coin_config)
-
+        # Process the candle.
+        try:
+            await self._orchestrator.process_candle_safe(candle, coin_config)
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",
                 timestamp=datetime.now(timezone.utc),
                 module="app.main",
                 error_type=type(exc).__name__,
-                error_message=f"dispatch_candle_message failed: {exc}",
-                channel=str(channel),
+                error_message=f"orchestrator.process_candle_safe crashed: {exc}",
                 symbol=candle.symbol,
-            )
-
-    async def _reload_engine(self) -> None:
-        """Live-reload coins into the engine or start it if it was waiting for coins.
-
-        This is the entry point called by ``CTTelegramBot._trigger_engine_reload``
-        after an Add / Edit / Delete Coin operation completes successfully.
-
-        Logic:
-          1. Re-fetch the active-coin list from Supabase.
-          2. If the engine is NOT running but we now have coins, perform a full
-             start_engine() to build orchestrator, ws_client, and tasks.
-          3. If the engine IS running:
-             a. If coins still exist, tell the WS client to reload and reset the
-                subscriber task.
-             b. If no coins remain, perform a graceful stop.
-        """
-        async with _ENGINE_STATE_LOCK:
-            # 1. Re-fetch active coins from the database.
-            try:
-                coins = await self._supabase.fetch_all_coins(only_active=True)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="app.main",
-                    error_type=type(exc).__name__,
-                    error_message=f"_reload_engine could not load coins: {exc}",
-                )
-                return
-
-            # Case A: Engine is not running.
-            if not self._engine_running:
-                if coins:
-                    logger.info(
-                        "engine_started",
-                        timestamp=datetime.now(timezone.utc),
-                        note="starting engine during reload because first coins were added",
-                    )
-                    # Release lock before calling start_engine to avoid deadlock
-                    # (start_engine also acquires _ENGINE_STATE_LOCK).
-                    pass 
-                else:
-                    return
-
-        # If we need to start the engine, do it outside the lock to avoid re-entrancy issues.
-        if not self._engine_running and coins:
-            await self.start_engine()
-            return
-
-        async with _ENGINE_STATE_LOCK:
-            # Re-check running state inside lock for the "already running" cases.
-            if not self._engine_running:
-                return
-
-            # 1. Re-fetch active coins from the database.
-            try:
-                coins = await self._supabase.fetch_all_coins(only_active=True)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="app.main",
-                    error_type=type(exc).__name__,
-                    error_message=f"_reload_engine could not load coins: {exc}",
-                )
-                return
-
-            if not coins:
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="app.main",
-                    error_type="NoActiveCoinsAfterReload",
-                    error_message="reload triggered with zero active coins -- stopping engine",
-                )
-                # Graceful WS shutdown (flush checkpoints) without calling
-                # stop_engine() to avoid the deadlock on _ENGINE_STATE_LOCK.
-                if self._ws_client is not None:
-                    try:
-                        await self._ws_client.stop()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "error",
-                            timestamp=datetime.now(timezone.utc),
-                            module="app.main",
-                            error_type=type(exc).__name__,
-                            error_message=f"ws_client.stop() during zero-coin reload: {exc}",
-                        )
-
-                # Cancel background tasks and clear fields.
-                for task_attr in ("_ingest_task", "_orchestrator_subscriber_task", "_paper_trader_task"):
-                    task: Optional[asyncio.Task[None]] = getattr(self, task_attr)
-                    if task is not None and not task.done():
-                        task.cancel()
-                        try:
-                            await task
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "error",
-                                timestamp=datetime.now(timezone.utc),
-                                module="app.main",
-                                error_type=type(exc).__name__,
-                                error_message=f"{task_attr} cleanup during zero-coin reload: {exc}",
-                            )
-                    setattr(self, task_attr, None)
-
-                try:
-                    await self._redis.set_engine_running(False)
-                except Exception:  # noqa: BLE001
-                    pass
-                self._ws_client = None
-                self._orchestrator = None
-                self._engine_running = False
-                return
-
-            # 2. Tell the WS client to reconnect with the new pairs.
-            if self._ws_client is not None:
-                try:
-                    await self._ws_client.reload_coins(coins)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "error",
-                        timestamp=datetime.now(timezone.utc),
-                        module="app.main",
-                        error_type=type(exc).__name__,
-                        error_message=f"ws_client.reload_coins failed: {exc}",
-                    )
-
-            # 3. Cancel the orchestrator subscriber so it restarts with new
-            # channels on its next iteration.  The subscriber loop already
-            # re-reads coins from the DB at the top, so cancelling it and
-            # letting it be recreated is the cleanest path.
-            if self._orchestrator_subscriber_task is not None:
-                task = self._orchestrator_subscriber_task
-                self._orchestrator_subscriber_task = None
-                if not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "error",
-                            timestamp=datetime.now(timezone.utc),
-                            module="app.main",
-                            error_type=type(exc).__name__,
-                            error_message=f"orchestrator subscriber cancel during reload: {exc}",
-                        )
-
-                # Re-create the subscriber task.
-                if self._orchestrator is not None:
-                    self._orchestrator_subscriber_task = asyncio.create_task(
-                        self._run_orchestrator_subscriber_guarded(),
-                        name="orchestrator_subscriber",
-                    )
-
-            logger.info(
-                "engine_reloaded",
-                timestamp=datetime.now(timezone.utc),
-                active_coins=len(coins),
-                active_pairs=sum(len(c.timeframes) for c in coins),
+                timeframe=candle.timeframe,
             )
 
     async def _run_paper_trader_guarded(self) -> None:
-        """Periodically scan open simulated trades and apply TP/SL closures.
+        """Periodically scan for open paper trades and close any that have hit
+        their stop-loss or take-profit.
 
-        Per Section 22 -- never crash the process on a single trade failure.
+        Per Section 22 -- a single coin failure must not crash the whole app.
         """
-        # Lazy import so app/main.py is importable even before
-        # simulation/paper_trade.py exists.
-        try:
-            from simulation.paper_trade import close_due_trades  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "error",
-                timestamp=datetime.now(timezone.utc),
-                module="app.main",
-                error_type=type(exc).__name__,
-                error_message=f"simulation.paper_trade not importable: {exc}",
-            )
-            return
+        from simulation.paper_trade import PaperTrader
 
-        logger.info(
-            "app_ready",
-            timestamp=datetime.now(timezone.utc),
-            note="paper trader task started",
-            poll_seconds=PAPER_TRADER_POLL_SECONDS,
+        paper_trader = PaperTrader(
+            supabase=self._supabase,
+            redis=self._redis,
+            performance_calc=self._performance_calc,  # type: ignore[arg-type]
         )
-        while not self._shutdown_event.is_set():
-            try:
-                await close_due_trades(
-                    supabase=self._supabase,
-                    redis=self._redis,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="app.main",
-                    error_type=type(exc).__name__,
-                    error_message=f"paper_trader iteration failed: {exc}",
-                )
-            # Sleep cooperatively so shutdown cancels us quickly.
-            try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(), timeout=PAPER_TRADER_POLL_SECONDS
-                )
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                raise
 
-    async def _telegram_polling_guard(self) -> None:
-        """Wait for the Telegram updater to exit and log when it does.
-
-        PTB v21 runs the polling loop inside ``updater.start_polling`` -- it
-        does NOT block. This guard lets us observe unexpected polling
-        termination and trigger shutdown.
-        """
-        if self._telegram_app is None or self._telegram_app.updater is None:
-            return
         try:
-            # The updater's running flag is the cleanest signal.
-            while self._telegram_app.updater.running:
-                await asyncio.sleep(5.0)
-            logger.warning(
-                "error",
-                timestamp=datetime.now(timezone.utc),
-                module="app.main",
-                error_type="TelegramPollingExited",
-                error_message="telegram updater stopped running unexpectedly",
-            )
+            while True:
+                await paper_trader.scan_and_close_open_trades()
+                await asyncio.sleep(PAPER_TRADER_POLL_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -992,11 +787,57 @@ class CTApplication:
                 timestamp=datetime.now(timezone.utc),
                 module="app.main",
                 error_type=type(exc).__name__,
-                error_message=str(exc),
+                error_message=f"paper trader task crashed: {exc}",
             )
-        # Trigger shutdown if polling died unexpectedly.
-        if not self._shutdown_event.is_set():
+
+    async def _telegram_polling_guard(self) -> None:
+        """Guards the Telegram polling task against unexpected exits.
+
+        If the polling task exits, this task logs the error and sets the
+        shutdown event to trigger a graceful shutdown of the entire app.
+        """
+        if self._telegram_app is None:
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type="MissingTelegramApp",
+                error_message="_telegram_polling_guard called with no telegram_app",
+            )
             self._shutdown_event.set()
+            return
+
+        try:
+            await self._telegram_app.updater.start_polling(
+                allowed_updates=None,
+                drop_pending_updates=False,
+            )
+            # This loop will run indefinitely until the updater is stopped or an error occurs.
+            while True:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info(
+                "app_shutdown",
+                timestamp=datetime.now(timezone.utc),
+                note="telegram polling task cancelled",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="app.main",
+                error_type=type(exc).__name__,
+                error_message=f"telegram polling task crashed: {exc}",
+            )
+            self._shutdown_event.set()  # Trigger app shutdown on polling crash.
+
+    async def _reload_engine(self) -> None:
+        """Stop and restart the engine.
+
+        Idempotent: if the engine is already stopped, this is a no-op.
+        """
+        await self.stop_engine()
+        await self.start_engine()
 
     # =====================================================================
     # Builders (lazy imports here to keep app/main.py importable in tests
@@ -1101,44 +942,52 @@ class CTApplication:
     # =====================================================================
     # Signal handling
     # =====================================================================
-    def _register_signal_handlers(self) -> None:
-        """Register SIGTERM and SIGINT handlers.
+    # This is now handled by FastAPI's lifespan events.
+    # def _register_signal_handlers(self) -> None:
+    #     """Register SIGTERM and SIGINT handlers.
 
-        SIGTERM is what Render sends on shutdown. SIGINT is what a developer
-        sends with Ctrl+C. Both trigger a graceful shutdown.
-        """
-        loop = asyncio.get_running_loop()
+    #     SIGTERM is what Render sends on shutdown. SIGINT is what a developer
+    #     sends with Ctrl+C. Both trigger a graceful shutdown.
+    #     """
+    #     loop = asyncio.get_running_loop()
 
-        def _handler(signum: int, _frame: Any) -> None:
-            sig_name = signal.Signals(signum).name
-            logger.info(
-                "app_shutdown",
-                timestamp=datetime.now(timezone.utc),
-                stage="signal_received",
-                signal=sig_name,
-            )
-            self._shutdown_event.set()
+    #     def _handler(signum: int, _frame: Any) -> None:
+    #         sig_name = signal.Signals(signum).name
+    #         logger.info(
+    #             "app_shutdown",
+    #             timestamp=datetime.now(timezone.utc),
+    #             stage="signal_received",
+    #             signal=sig_name,
+    #         )
+    #         self._shutdown_event.set()
 
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(sig, _handler, sig, None)
-            except (NotImplementedError, RuntimeError):
-                # add_signal_handler is not available on Windows / some
-                # sandboxes -- fall back to the default handler.
-                signal.signal(sig, lambda s, f: _handler(s, f))
+    #     for sig in (signal.SIGTERM, signal.SIGINT):
+    #         try:
+    #             loop.add_signal_handler(sig, _handler, sig, None)
+    #         except (NotImplementedError, RuntimeError):
+    #             # add_signal_handler is not available on Windows / some
+    #             # sandboxes -- fall back to the default handler.
+    #             signal.signal(sig, lambda s, f: _handler(s, f))
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-async def main() -> None:
-    """Load settings, build the application, and run it until shutdown."""
-    # Lazy import of config.settings so the rest of the module can be imported
-    # in test environments without a real settings.py on the path.
+# Global instance of CTApplication to be managed by FastAPI lifespan.
+ct_app_instance: Optional[CTApplication] = None
+
+app = FastAPI(
+    title="CT Web Server",
+    description="Web server for the CT trading system, managing background tasks and Telegram bot.",
+    version="1.0.0",
+)
+
+@app.on_event("startup")
+async def startup_event():
+    global ct_app_instance
     try:
         from config.settings import settings
     except Exception as exc:  # noqa: BLE001
-        # Configure logging first so the error is visible.
         configure_logging()
         logger.error(
             "error",
@@ -1149,24 +998,73 @@ async def main() -> None:
         )
         sys.exit(1)
 
-    app = CTApplication(settings=settings)
-    try:
-        await app.start()
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "error",
-            timestamp=datetime.now(timezone.utc),
-            module="app.main",
-            error_type=type(exc).__name__,
-            error_message=f"app.start() crashed: {exc}",
-        )
-        # Try a best-effort shutdown so resources are released.
-        try:
-            await app.shutdown()
-        except Exception:  # noqa: BLE001
-            pass
-        sys.exit(1)
+    ct_app_instance = CTApplication(settings=settings)
+    await ct_app_instance.start()
+    logger.info("FastAPI startup complete, CTApplication started.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global ct_app_instance
+    if ct_app_instance:
+        await ct_app_instance.shutdown()
+        logger.info("FastAPI shutdown complete, CTApplication stopped.")
+
+@app.get("/health", status_code=status.HTTP_200_OK)
+async def health_check():
+    return {"status": "ok", "message": "CT Web Server is healthy"}
+
+@app.get("/ready", status_code=status.HTTP_200_OK)
+async def readiness_check():
+    global ct_app_instance
+    if ct_app_instance and ct_app_instance._engine_running:
+        return {"status": "ready", "message": "CT Engine is running"}
+    return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content="CT Engine not ready")
+
+@app.get("/", status_code=status.HTTP_200_OK)
+async def root():
+    return {"message": "Welcome to CT Web Server"}
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# This block is no longer needed as Uvicorn will run the FastAPI app directly.
+# async def main() -> None:
+#     """Load settings, build the application, and run it until shutdown."""
+#     # Lazy import of config.settings so the rest of the module can be imported
+#     # in test environments without a real settings.py on the path.
+#     try:
+#         from config.settings import settings
+#     except Exception as exc:  # noqa: BLE001
+#         # Configure logging first so the error is visible.
+#         configure_logging()
+#         logger.error(
+#             "error",
+#             timestamp=datetime.now(timezone.utc),
+#             module="app.main",
+#             error_type=type(exc).__name__,
+#             error_message=f"could not import config.settings: {exc}",
+#         )
+#         sys.exit(1)
+
+#     app = CTApplication(settings=settings)
+#     try:
+#         await app.start()
+#     except Exception as exc:  # noqa: BLE001
+#         logger.error(
+#             "error",
+#             timestamp=datetime.now(timezone.utc),
+#             module="app.main",
+#             error_type=type(exc).__name__,
+#             error_message=f"app.start() crashed: {exc}",
+#         )
+#         # Try a best-effort shutdown so resources are released.
+#         try:
+#             await app.shutdown()
+#         except Exception:  # noqa: BLE001
+#             pass
+#         sys.exit(1)
+
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
+
+# Uvicorn will be run directly, so this __name__ == "__main__" block is no longer needed.
+# To run with uvicorn: uvicorn app.main:app --host 0.0.0.0 --port $PORT
