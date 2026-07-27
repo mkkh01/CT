@@ -140,12 +140,9 @@ def identify_liquidity_levels(
     if not swing_points:
         logger.info(
             "liquidity_levels_identified",
-            extra={
-                "event": "liquidity_levels_identified",
-                "high_count": 0,
-                "low_count": 0,
-                "strongest_level": None,
-            },
+            high_count=0,
+            low_count=0,
+            strongest_level=None,
         )
         return {"high_levels": [], "low_levels": []}
 
@@ -174,22 +171,19 @@ def identify_liquidity_levels(
 
     logger.info(
         "liquidity_levels_identified",
-        extra={
-            "event": "liquidity_levels_identified",
-            "symbol": symbol,
-            "high_count": len(high_clusters),
-            "low_count": len(low_clusters),
-            "strongest_level": (
-                {
-                    "price": strongest["price"],
-                    "touches": strongest["touches"],
-                    "strength": strongest["strength"],
-                    "type": strongest["type"],
-                }
-                if strongest is not None
-                else None
-            ),
-        },
+        symbol=symbol,
+        high_count=len(high_clusters),
+        low_count=len(low_clusters),
+        strongest_level=(
+            {
+                "price": strongest["price"],
+                "touches": strongest["touches"],
+                "strength": strongest["strength"],
+                "type": strongest["type"],
+            }
+            if strongest is not None
+            else None
+        ),
     )
 
     return {

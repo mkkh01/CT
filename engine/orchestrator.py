@@ -289,21 +289,22 @@ class Orchestrator:
         self,
         candle: Candle,
         coin_config: CoinConfig,
-    ) -> DecisionResult:
+    ) -> Optional[DecisionResult]:
         """Process a closed candle end-to-end and return a DecisionResult.
 
         See module docstring for the full algorithm.  This method is
         ``async`` because it awaits Supabase I/O.
 
         Args:
-            candle: The closed trigger candle.  Its ``symbol`` MUST match
+            candle: The trigger candle.  Its ``symbol`` MUST match
                 ``coin_config.symbol``; its ``timeframe`` MUST be one of
                 ``coin_config.timeframes``.
             coin_config: Per-coin configuration (capital, risk_percent,
                 timeframes).
 
         Returns:
-            :class:`DecisionResult` -- always populated, even on rejection.
+            :class:`DecisionResult` -- always populated for closed candles, 
+            even on rejection. Returns None for unclosed candles after logging.
         """
         symbol = coin_config.symbol
         source_open_time = candle.open_time
@@ -313,13 +314,23 @@ class Orchestrator:
         # 0. Log Scan Cycle Start (Requested Log #1 & #10)
         # -------------------------------------------------------------
         logger.info(
-            "scan_cycle_started",
+            "scan_cycle_received",
             timestamp=start_time,
             symbol=symbol,
             trigger_timeframe=candle.timeframe,
             source_candle_open_time=source_open_time,
-            is_real_data=True,  # Binance WS/REST is real data
+            is_closed=candle.is_closed,
         )
+
+        if not candle.is_closed:
+            logger.debug(
+                "skipping_unclosed_candle",
+                symbol=symbol,
+                timeframe=candle.timeframe,
+                message_text=f"تخطي التحليل لأن الشمعة لم تغلق بعد ({symbol} {candle.timeframe})"
+            )
+            return None
+
         log_analysis_start(symbol, candle.timeframe, source_open_time)
 
         # -------------------------------------------------------------
@@ -858,14 +869,13 @@ class Orchestrator:
 
         if len(candles) < _MIN_USABLE_CANDLE_COUNT:
             logger.warning(
-                "error",
-                timestamp=datetime.utcnow(),
-                module="engine.orchestrator",
-                event_kind="insufficient_candles_for_tf",
+                "insufficient_candles",
+                timestamp=datetime.now(timezone.utc),
                 symbol=coin_config.symbol,
                 timeframe=timeframe,
                 count=len(candles),
                 minimum=_MIN_USABLE_CANDLE_COUNT,
+                message_text=f"بيانات غير كافية للإطار {timeframe}: {len(candles)} شمعة (المطلوب {_MIN_USABLE_CANDLE_COUNT})"
             )
             # Still populate defaults so downstream code doesn't crash.
             analysis.regime = RegimeState.RANGING

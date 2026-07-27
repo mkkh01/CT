@@ -178,15 +178,12 @@ def calculate_volatility(candles: list[Candle]) -> dict[str, Any]:
 
     logger.info(
         "volatility_calculated",
-        extra={
-            "event": "volatility_calculated",
-            "timestamp": last_close_time.isoformat() if last_close_time else None,
-            "symbol": last_symbol,
-            "atr": round(snapshot["atr"], 6),
-            "atr_percent": round(snapshot["atr_percent"], 4),
-            "bb_width": round(snapshot["bb_width"], 6),
-            "candle_count": n,
-        },
+        timestamp=last_close_time.isoformat() if last_close_time else None,
+        symbol=last_symbol,
+        atr=round(snapshot["atr"], 6),
+        atr_percent=round(snapshot["atr_percent"], 4),
+        bb_width=round(snapshot["bb_width"], 6),
+        candle_count=n,
     )
     return snapshot
 

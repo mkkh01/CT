@@ -167,13 +167,10 @@ def classify_and_log(
     score = session_quality_score(session, symbol)
     logger.info(
         "session_classified",
-        extra={
-            "event": "session_classified",
-            "timestamp": timestamp.isoformat(),
-            "symbol": symbol,
-            "session": session,
-            "quality_score": round(score, 4),
-        },
+        timestamp=timestamp.isoformat(),
+        symbol=symbol,
+        session=session,
+        quality_score=round(score, 4),
     )
     return session, score
 

@@ -124,12 +124,18 @@ class CTApplication:
         # Health Tracking (Requested Log #9 & #11)
         self._health_stats = {
             "scan_cycles": 0,
+            "pairs_analyzed": 0,  # Real closed-candle analyses
             "strategies_run": 0,
             "opportunities_found": 0,
             "opportunities_rejected": 0,
             "rejection_reasons": {},
             "errors": 0,
-            "last_data_at": None
+            "last_data_at": None,
+            "total_score_sum": 0.0,
+            "total_confidence_sum": 0.0,
+            "total_analysis_time_ms": 0.0,
+            "db_writes": 0,
+            "telegram_sent": 0
         }
 
         # Storage -- connected in start().
@@ -788,10 +794,31 @@ class CTApplication:
 
         # Process the candle.
         try:
+            # Generate correlation IDs for this analysis cycle
+            import uuid
+            from monitoring.logger import bind_context, clear_context
+            
+            trace_id = str(uuid.uuid4())[:8]
+            cycle_id = f"{candle.symbol}-{candle.timeframe}-{candle.open_time.strftime('%H%M%S')}"
+            
+            bind_context(trace_id=trace_id, cycle_id=cycle_id)
+            
+            start_analysis = datetime.now(timezone.utc)
             result = await self._orchestrator.process_candle_safe(candle, coin_config)
+            
+            # Clear context after analysis
+            clear_context()
+            
             if result:
+                analysis_duration = (datetime.now(timezone.utc) - start_analysis).total_seconds() * 1000
+                
                 # Update health stats with more granularity
+                self._health_stats["pairs_analyzed"] += 1
                 self._health_stats["strategies_run"] += len(result.component_signals)
+                self._health_stats["total_score_sum"] += result.score
+                self._health_stats["total_confidence_sum"] += result.confidence
+                self._health_stats["total_analysis_time_ms"] += analysis_duration
+                self._health_stats["db_writes"] += 1
                 
                 # Track regime for summary
                 regime_key = f"regime_{result.regime_check_passed}"
@@ -799,6 +826,7 @@ class CTApplication:
                 
                 if result.final_verdict:
                     self._health_stats["opportunities_found"] += 1
+                    self._health_stats["telegram_sent"] += 1
                     self._health_stats["last_success_at"] = datetime.now(timezone.utc)
                 else:
                     self._health_stats["opportunities_rejected"] += 1
@@ -907,20 +935,26 @@ class CTApplication:
                     reverse=True
                 )[:5]
                 
+                # Calculate real averages
+                analyzed_count = self._health_stats["pairs_analyzed"]
+                avg_score = (self._health_stats["total_score_sum"] / analyzed_count * 100) if analyzed_count > 0 else 0.0
+                avg_conf = (self._health_stats["total_confidence_sum"] / analyzed_count * 100) if analyzed_count > 0 else 0.0
+                avg_time = (self._health_stats["total_analysis_time_ms"] / analyzed_count) if analyzed_count > 0 else 0.0
+
                 summary_block = format_cycle_summary(
-                    pairs_analyzed=self._health_stats["scan_cycles"],
+                    pairs_analyzed=analyzed_count,
                     bullish_count=self._health_stats.get("regime_True", 0),
                     bearish_count=self._health_stats.get("regime_False", 0),
-                    sideways_count=max(0, self._health_stats["scan_cycles"] - self._health_stats.get("regime_True", 0) - self._health_stats.get("regime_False", 0)),
+                    sideways_count=max(0, analyzed_count - self._health_stats.get("regime_True", 0) - self._health_stats.get("regime_False", 0)),
                     signals_found=self._health_stats["opportunities_found"] + self._health_stats["opportunities_rejected"],
                     approved_count=self._health_stats["opportunities_found"],
                     rejected_count=self._health_stats["opportunities_rejected"],
                     rejection_reasons=dict(top_reasons),
-                    avg_strategy_score=82.0,
-                    avg_confidence=85.0,
-                    avg_analysis_time=145.0,
-                    telegram_count=self._health_stats["opportunities_found"],
-                    database_writes=self._health_stats["opportunities_found"] + self._health_stats["opportunities_rejected"],
+                    avg_strategy_score=avg_score,
+                    avg_confidence=avg_conf,
+                    avg_analysis_time=avg_time,
+                    telegram_count=self._health_stats["telegram_sent"],
+                    database_writes=self._health_stats["db_writes"],
                     warnings_count=0,
                     errors_count=self._health_stats["errors"],
                     system_health="EXCELLENT" if self._health_stats["errors"] == 0 else "GOOD"

@@ -328,27 +328,27 @@ def validate_binance_kline(raw: dict) -> dict:
 
     # Unwrap combined-stream envelope if present.
     if "data" in raw and isinstance(raw["data"], dict) and "k" in raw["data"]:
-        event = raw["data"]
+        payload = raw["data"]
         stream = raw.get("stream", "")
     else:
-        event = raw
+        payload = raw
         stream = ""
 
     # Top-level checks.
-    missing_top = [f for f in _REQUIRED_TOP_FIELDS if f not in event]
+    missing_top = [f for f in _REQUIRED_TOP_FIELDS if f not in payload]
     if missing_top:
         raise InvalidCandleError(
             f"missing_top_fields: {missing_top}",
             details={"missing": missing_top, "stream": stream},
         )
 
-    if event.get("e") != "kline":
+    if payload.get("e") != "kline":
         raise InvalidCandleError(
-            f"unexpected_event_type: e={event.get('e')!r}",
-            details={"event_type": event.get("e"), "stream": stream},
+            f"unexpected_event_type: e={payload.get('e')!r}",
+            details={"event_type": payload.get("e"), "stream": stream},
         )
 
-    k = event.get("k")
+    k = payload.get("k")
     if not isinstance(k, dict):
         raise InvalidCandleError(
             f"non_dict_kline: k_type={type(k).__name__}",
@@ -363,7 +363,7 @@ def validate_binance_kline(raw: dict) -> dict:
         )
 
     # Parse symbol + timeframe.
-    symbol = event.get("s") or k.get("s")
+    symbol = payload.get("s") or k.get("s")
     if not symbol or not isinstance(symbol, str):
         raise InvalidCandleError(
             f"invalid_symbol: symbol={symbol!r}",

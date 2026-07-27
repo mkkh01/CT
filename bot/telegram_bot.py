@@ -1508,7 +1508,27 @@ class CTTelegramBot:
                             text=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
                         )
                         return
-                    except Exception:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001
+                        # Log the original edit failure for diagnosis
+                        error_msg = str(exc)
+                        if "Message is not modified" in error_msg:
+                            logger.debug(
+                                "telegram_edit_skipped",
+                                chat_id=chat_id,
+                                message_id=query.message.message_id if query.message else None,
+                                note="Message content identical, skipping edit"
+                            )
+                            return
+                        
+                        logger.warning(
+                            "telegram_edit_failed_fallback",
+                            timestamp=datetime.now(timezone.utc),
+                            chat_id=chat_id,
+                            message_id=query.message.message_id if query.message else None,
+                            error_type=type(exc).__name__,
+                            error_message=error_msg,
+                            note="Falling back to send_message"
+                        )
                         # edit_message_text fails when the text is identical or
                         # the message is too old -- fall back to a fresh send.
                         pass

@@ -372,16 +372,9 @@ class SupabaseClient:
                     decision.final_verdict, decision.rejection_reason,
                 )
                 # Persist component_signals as JSON for traceability.
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS decision_component_signals (
-                        decision_id UUID NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
-                        idx INTEGER NOT NULL,
-                        payload JSONB NOT NULL,
-                        PRIMARY KEY (decision_id, idx)
-                    )
-                    """
-                )
+                # NOTE: CREATE TABLE moved to migrations/001_init_core_tables.sql
+                # to avoid DuplicatePreparedStatementError in PgBouncer.
+                pass
             except UniqueViolationError:
                 logger.info(
                     "decision_skipped_duplicate",

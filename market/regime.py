@@ -331,8 +331,9 @@ def classify_regime(candles: list[Candle]) -> RegimeState:
     """
     if not candles:
         logger.warning(
-            "regime_classified skipped: empty candle list",
-            extra={"event": "regime_classified", "regime": RegimeState.RANGING.value},
+            "regime_classified_skipped",
+            message_text="regime_classified skipped: empty candle list",
+            regime=RegimeState.RANGING.value,
         )
         return RegimeState.RANGING
 
@@ -458,15 +459,12 @@ def _log_regime(
     """Emit a regime_classified event per the Section 9 log catalog."""
     logger.info(
         "regime_classified",
-        extra={
-            "event": "regime_classified",
-            "timestamp": candle.close_time.isoformat() if candle.close_time else None,
-            "symbol": candle.symbol,
-            "regime": regime.value,
-            "adx": round(adx, 4),
-            "atr_pct": round(atr_pct, 4) if np.isfinite(atr_pct) else None,
-            "bb_width_pct": round(bb_width_pct, 4),
-        },
+        timestamp=candle.close_time.isoformat() if candle.close_time else None,
+        symbol=candle.symbol,
+        regime=regime.value,
+        adx=round(adx, 4),
+        atr_pct=round(atr_pct, 4) if np.isfinite(atr_pct) else None,
+        bb_width_pct=round(bb_width_pct, 4),
     )
 
 

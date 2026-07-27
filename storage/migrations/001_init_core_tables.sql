@@ -93,3 +93,10 @@ CREATE TABLE IF NOT EXISTS performance_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_perf_snapshots_created ON performance_snapshots(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS decision_component_signals (
+    decision_id UUID NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    payload JSONB NOT NULL,
+    PRIMARY KEY (decision_id, idx)
+);

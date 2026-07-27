@@ -524,31 +524,31 @@ class BinanceWSClient:
             )
 
         # 4f -- If is_closed: write to Postgres + advance checkpoint + publish.
+        # Note: We ALWAYS publish to Redis so the orchestrator can see every tick if needed,
+        # but only closed candles trigger persistence and checkpoint advancement.
         if candle.is_closed:
             await self._persist_closed_candle(candle)
             await self._advance_checkpoint(candle)
-            try:
-                await self._redis.publish_new_candle(candle)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=f"publish_new_candle failed: {exc}",
-                    symbol=candle.symbol,
-                    timeframe=candle.timeframe,
-                )
-        else:
-            # Live (unclosed) candle -- log at debug only. NEVER write to
-            # Postgres, NEVER advance checkpoint (Section 6 Bug 3).
+        
+        try:
+            # Always publish to trigger analysis cycle or update live state
+            await self._redis.publish_new_candle(candle)
             logger.debug(
-                "candle_received_live",
-                timestamp=now,
+                "candle_published",
                 symbol=candle.symbol,
                 timeframe=candle.timeframe,
-                open_time=candle.open_time.isoformat(),
-                close=candle.close,
+                is_closed=candle.is_closed,
+                open_time=candle.open_time.isoformat()
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="ingest.binance_ws",
+                error_type=type(exc).__name__,
+                error_message=f"publish_new_candle failed: {exc}",
+                symbol=candle.symbol,
+                timeframe=candle.timeframe,
             )
 
     async def _persist_closed_candle(self, candle: Candle) -> None:

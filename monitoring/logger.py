@@ -49,7 +49,9 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime, timezone
 from typing import Any
+import uuid
 
 import structlog
 
@@ -80,14 +82,15 @@ def configure_logging(level: int = logging.INFO) -> None:
         module = event_dict.get("module", name)
         symbol = event_dict.get("symbol", "-")
         timeframe = event_dict.get("timeframe", "-")
+        trace_id = event_dict.get("trace_id", "-")
+        cycle_id = event_dict.get("cycle_id", "-")
+        
         # Use message_text if provided, otherwise fall back to event (which is the first positional arg)
         # Note: structlog automatically puts the first positional argument into 'event'
         message = event_dict.get("message_text") or event_dict.get("event", "")
         
-        # Remove these from dict so they don't appear twice if using JSON renderer
-        # but here we might want to keep them for structured logs in Render
-        
-        formatted_msg = f"[{timestamp}] [{level}] [{module}] [{symbol}] [{timeframe}] {message}"
+        # Format with trace/cycle IDs for better correlation
+        formatted_msg = f"[{timestamp}] [{level}] [{module}] [{symbol}] [{timeframe}] [T:{trace_id}] [C:{cycle_id}] {message}"
         event_dict["formatted_message"] = formatted_msg
         return event_dict
 
@@ -98,6 +101,7 @@ def configure_logging(level: int = logging.INFO) -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            custom_formatter,
             # We keep JSONRenderer for Render's structured logging, 
             # but we can also use ConsoleRenderer for local debugging if needed.
             structlog.processors.JSONRenderer(),
