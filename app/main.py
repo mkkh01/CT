@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Response, status
+from datetime import timedelta
 import uvicorn
 
 from monitoring.logger import configure_logging, get_logger
@@ -1098,6 +1099,167 @@ async def readiness_check():
 @app.get("/", status_code=status.HTTP_200_OK)
 async def root():
     return {"message": "Welcome to CT Web Server"}
+
+# ============================================================================
+# Workflow Endpoints for Render Logs Display
+# ============================================================================
+@app.get("/api/workflow/status/{symbol}", status_code=status.HTTP_200_OK)
+async def get_workflow_status(symbol: str):
+    """Get workflow status for a specific symbol."""
+    global ct_app_instance
+    if not ct_app_instance or not ct_app_instance._supabase:
+        return {"error": "Application not initialized"}
+    
+    try:
+        decisions = await ct_app_instance._supabase.fetch_decisions_by_symbol(
+            symbol=symbol,
+            limit=10,
+        )
+        trades = await ct_app_instance._supabase.fetch_trades_by_symbol(
+            symbol=symbol,
+            limit=10,
+        )
+        
+        return {
+            "symbol": symbol,
+            "recent_decisions": [
+                {
+                    "created_at": d.timestamp.isoformat() if hasattr(d, 'timestamp') else None,
+                    "final_verdict": d.final_verdict,
+                    "score": d.score,
+                    "confidence": d.confidence,
+                    "rejection_reason": d.rejection_reason,
+                }
+                for d in decisions
+            ],
+            "recent_trades": [
+                {
+                    "opened_at": t.opened_at.isoformat() if t.opened_at else None,
+                    "status": t.status,
+                    "direction": t.direction,
+                    "entry_price": float(t.entry_price),
+                    "pnl": float(t.pnl) if t.pnl else None,
+                    "close_reason": t.close_reason,
+                }
+                for t in trades
+            ],
+        }
+    except Exception as exc:
+        logger.error(
+            "error",
+            timestamp=datetime.now(timezone.utc),
+            module="app.main",
+            error_type=type(exc).__name__,
+            error_message=f"Failed to fetch workflow status: {exc}",
+            symbol=symbol,
+        )
+        return {"error": str(exc)}
+
+@app.get("/api/workflow/decisions/{symbol}", status_code=status.HTTP_200_OK)
+async def get_decision_summary(symbol: str, hours: int = 24):
+    """Get decision summary for a symbol."""
+    global ct_app_instance
+    if not ct_app_instance or not ct_app_instance._supabase:
+        return {"error": "Application not initialized"}
+    
+    try:
+        decisions = await ct_app_instance._supabase.fetch_decisions_by_symbol(
+            symbol=symbol,
+            limit=1000,
+        )
+        
+        # Filter by time
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        decisions = [
+            d for d in decisions
+            if (hasattr(d, 'timestamp') and d.timestamp >= cutoff_time) or
+               (hasattr(d, 'created_at') and d.created_at >= cutoff_time)
+        ]
+        
+        total = len(decisions)
+        approved = sum(1 for d in decisions if d.final_verdict)
+        rejected = total - approved
+        
+        # Count rejection reasons
+        rejection_reasons = {}
+        for decision in decisions:
+            if not decision.final_verdict and decision.rejection_reason:
+                reason = decision.rejection_reason
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        
+        approval_rate = (approved / total * 100) if total > 0 else 0.0
+        
+        return {
+            "symbol": symbol,
+            "period_hours": hours,
+            "total_decisions": total,
+            "approved_decisions": approved,
+            "rejected_decisions": rejected,
+            "approval_rate": round(approval_rate, 2),
+            "top_rejection_reasons": dict(sorted(
+                rejection_reasons.items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )[:5]),
+        }
+    except Exception as exc:
+        logger.error(
+            "error",
+            timestamp=datetime.now(timezone.utc),
+            module="app.main",
+            error_type=type(exc).__name__,
+            error_message=f"Failed to fetch decision summary: {exc}",
+            symbol=symbol,
+        )
+        return {"error": str(exc)}
+
+@app.get("/api/workflow/trades/{symbol}", status_code=status.HTTP_200_OK)
+async def get_trade_summary(symbol: str, hours: int = 24):
+    """Get trade summary for a symbol."""
+    global ct_app_instance
+    if not ct_app_instance or not ct_app_instance._supabase:
+        return {"error": "Application not initialized"}
+    
+    try:
+        trades = await ct_app_instance._supabase.fetch_trades_by_symbol(
+            symbol=symbol,
+            limit=1000,
+        )
+        
+        # Filter by time and closed trades only
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        trades = [
+            t for t in trades
+            if t.status == "closed"
+            and t.closed_at and t.closed_at >= cutoff_time
+        ]
+        
+        total = len(trades)
+        winning = sum(1 for t in trades if t.pnl and t.pnl > 0)
+        losing = total - winning
+        total_pnl = sum(t.pnl or 0 for t in trades)
+        
+        win_rate = (winning / total * 100) if total > 0 else 0.0
+        
+        return {
+            "symbol": symbol,
+            "period_hours": hours,
+            "total_trades": total,
+            "winning_trades": winning,
+            "losing_trades": losing,
+            "win_rate": round(win_rate, 2),
+            "total_pnl": round(total_pnl, 2),
+        }
+    except Exception as exc:
+        logger.error(
+            "error",
+            timestamp=datetime.now(timezone.utc),
+            module="app.main",
+            error_type=type(exc).__name__,
+            error_message=f"Failed to fetch trade summary: {exc}",
+            symbol=symbol,
+        )
+        return {"error": str(exc)}
 
 
 # This block is no longer needed as Uvicorn will run the FastAPI app directly.

@@ -525,6 +525,24 @@ class SupabaseClient:
             )
         return [_trade_from_row(r) for r in rows]
 
+    async def fetch_trades_by_symbol(
+        self,
+        symbol: str,
+        limit: int = 100,
+        status: Optional[str] = None,
+    ) -> list[SimulatedTrade]:
+        """Fetch trades for a specific symbol with optional status filter."""
+        pool = self._require_pool()
+        if status is None:
+            sql = "SELECT * FROM simulated_trades WHERE symbol = $1 ORDER BY opened_at DESC LIMIT $2"
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(sql, symbol, limit)
+        else:
+            sql = "SELECT * FROM simulated_trades WHERE symbol = $1 AND status = $2 ORDER BY opened_at DESC LIMIT $3"
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(sql, symbol, status, limit)
+        return [_trade_from_row(r) for r in rows]
+
     async def fetch_closed_trades(
         self,
         symbol: Optional[str] = None,
