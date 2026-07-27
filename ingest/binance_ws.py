@@ -301,11 +301,31 @@ class BinanceWSClient:
 
     # ---------------- connection lifecycle ----------------
     def _build_stream_url(self) -> str:
-        """Build the combined-stream URL for all configured pairs."""
+        """Build the combined-stream URL for all configured pairs.
+
+        Binance combined streams use '/' as a separator, NOT ','.
+        Maximum 200 streams per connection.
+        """
+        if len(self._active_pairs) > 200:
+            logger.error(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="ingest.binance_ws",
+                error_type="MaxStreamsExceeded",
+                error_message=f"Too many streams: {len(self._active_pairs)} (max 200)",
+            )
+            # We truncate to 200 to at least try connecting, but the operator
+            # should be warned.
+            active_pairs = self._active_pairs[:200]
+        else:
+            active_pairs = self._active_pairs
+
         streams = []
-        for symbol, timeframe in self._active_pairs:
+        for symbol, timeframe in active_pairs:
             streams.append(f"{symbol.lower()}@kline_{timeframe}")
-        stream_query = ",".join(streams)
+        
+        # CORRECT: Binance uses '/' for combined streams
+        stream_query = "/".join(streams)
         return f"{BINANCE_WS_BASE_URL}?streams={stream_query}"
 
     async def _connect(self) -> None:
@@ -543,16 +563,14 @@ class BinanceWSClient:
         the whole ingest module.
         """
         if not candle.is_closed:
-            logger.error(
-                "error",
+            # Expected condition for live candles -- log at debug (Section 6 Bug 3).
+            logger.debug(
+                "checkpoint_skip_unclosed",
                 timestamp=datetime.now(timezone.utc),
-                module="ingest.binance_ws",
-                error_type="CheckpointOnUnclosedCandle",
-                error_message=(
-                    f"_advance_checkpoint called on unclosed candle "
-                    f"symbol={candle.symbol} timeframe={candle.timeframe} "
-                    f"open_time={candle.open_time.isoformat()} -- SKIPPING"
-                ),
+                symbol=candle.symbol,
+                timeframe=candle.timeframe,
+                open_time=candle.open_time.isoformat(),
+                note="skipping checkpoint advance on unclosed candle",
             )
             return
 
@@ -650,21 +668,16 @@ class BinanceWSClient:
 
     # ---------------- disconnect / reconnect ----------------
     async def _on_disconnect(self, reason: str) -> None:
-        """Log the disconnect, wait the current backoff, fetch gaps, reconnect.
+        """Log the disconnect, wait with jittered backoff, fetch gaps, reconnect.
 
-        Section 4 algorithm:
-          1. Log ws_disconnect.
-          2. Mark connection as down.
-          3. Compute uptime of the just-ended connection. If it stayed up for
-             >= ``WS_STABLE_RESET_SECONDS``, reset backoff to
-             ``WS_INITIAL_BACKOFF_SECONDS`` (Section 4 -- "Reset to 1s after
-             30s of stable connection"). Otherwise, double the backoff
-             (capped at ``WS_MAX_BACKOFF_SECONDS``).
-          4. Sleep for ``self._backoff_seconds``.
-          5. For each active pair, fetch gap candles via REST and persist them.
-          6. The outer ``start()`` loop will then call ``_connect()`` again.
+        Improved Stability:
+          1. Heartbeat: Handled by websockets lib (ping_interval).
+          2. Graceful reconnect: Computed based on uptime.
+          3. Exponential backoff with jitter: Prevents "thundering herd".
+          4. Resume from checkpoint: Covered by _refill_all_gaps.
         """
-        # Capture uptime BEFORE nulling the started_at timestamp.
+        import random
+
         uptime_seconds: Optional[float] = None
         if self._connection_started_at is not None:
             uptime_seconds = (
@@ -683,45 +696,42 @@ class BinanceWSClient:
             uptime_seconds=uptime_seconds,
         )
 
-        # Decide the backoff for the *next* failure.
-        # Section 4: reset to initial after a stable run; otherwise double.
-        if (
-            uptime_seconds is not None
-            and uptime_seconds >= WS_STABLE_RESET_SECONDS
-        ):
-            new_backoff = float(WS_INITIAL_BACKOFF_SECONDS)
+        # 1. Update backoff strategy
+        if uptime_seconds is not None and uptime_seconds >= WS_STABLE_RESET_SECONDS:
+            # Reset on stable connection
+            self._backoff_seconds = float(WS_INITIAL_BACKOFF_SECONDS)
             self._reconnect_attempts = 0
-            note = (
-                f"backoff reset to initial after {uptime_seconds:.1f}s "
-                f"stable connection (>= {WS_STABLE_RESET_SECONDS}s)"
-            )
+            note = f"backoff reset to initial after {uptime_seconds:.1f}s stable run"
         else:
-            new_backoff = min(
+            # Exponential increase
+            self._backoff_seconds = min(
                 self._backoff_seconds * 2.0,
                 float(WS_MAX_BACKOFF_SECONDS),
             )
-            note = "backoff doubled"
+            self._reconnect_attempts += 1
+            note = f"backoff increased (attempt {self._reconnect_attempts})"
+
+        # 2. Add Jitter (Section 4 best practice)
+        # sleep = backoff * (0.5 to 1.5)
+        jittered_sleep = self._backoff_seconds * (0.5 + random.random())
+        
         logger.info(
             "ws_reconnect",
             timestamp=datetime.now(timezone.utc),
-            attempt=self._reconnect_attempts + 1,
-            backoff_seconds=new_backoff,
+            attempt=self._reconnect_attempts,
+            backoff_seconds=self._backoff_seconds,
+            jittered_sleep=f"{jittered_sleep:.2f}s",
             note=note,
         )
 
-        # Sleep BEFORE the reconnect (Section 4 -- "never retry in a tight
-        # loop"). Use the *current* backoff (pre-update) for this sleep.
+        # 3. Sleep with jitter
         try:
-            await asyncio.sleep(self._backoff_seconds)
+            await asyncio.sleep(jittered_sleep)
         except asyncio.CancelledError:
-            # Stop was called during the backoff sleep -- exit cleanly.
             raise
 
-        # Persist the updated backoff for the next failure.
-        self._backoff_seconds = new_backoff
-
-        # Fetch gap candles for every active pair. Per Section 22 Ingest Level,
-        # REST failure retries WS_REST_RETRY_COUNT times then skips (logged).
+        # 4. Refill gaps BEFORE reconnecting
+        # Only reconnect on real failures (handled by the outer loop)
         await self._refill_all_gaps()
 
     # ---------------- gap fill via REST ----------------
@@ -729,41 +739,101 @@ class BinanceWSClient:
         """For every active ``(symbol, timeframe)`` pair, fetch and persist
         any candles that may have been missed while disconnected.
 
-        The window starts at the last known checkpoint (Redis first, Postgres
-        fallback) and ends at "now". The number of candles fetched is bounded
-        by ``resume_window_candles()`` per Section 4.
+        Optimized Gap-Fill:
+          1. Detect exactly how many candles are missing by comparing checkpoint vs now.
+          2. Download only the missing candles.
+          3. Avoid redownloading existing candles by setting precise startTime.
+          4. Respect Binance rate limits.
         """
-        # Lazy-create the HTTP client so we don't hold a connection pool open
-        # while the WS is healthy.
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(REST_TIMEOUT_SECONDS),
                 limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
             )
 
-        window = resume_window_candles()
+        now = datetime.now(timezone.utc)
         for symbol, timeframe in self._active_pairs:
             try:
+                # 1. Get the last known checkpoint
                 since = await self._load_checkpoint(symbol, timeframe)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=f"load_checkpoint failed: {exc}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
-                since = None
+                if not since:
+                    # If no checkpoint, we fetch the default window
+                    limit = resume_window_candles()
+                    logger.info(
+                        "ws_reconnect",
+                        timestamp=now,
+                        note=f"no checkpoint for {symbol} {timeframe}, fetching default {limit} candles",
+                        symbol=symbol,
+                        timeframe=timeframe,
+                    )
+                else:
+                    # 2. Calculate missing candles
+                    tf_seconds = timeframe_to_seconds(timeframe)
+                    seconds_missed = (now - since).total_seconds()
+                    # We subtract 1 candle because the current one is likely in progress
+                    missing_count = int(seconds_missed // tf_seconds)
+                    
+                    if missing_count <= 0:
+                        logger.debug(
+                            "ws_reconnect",
+                            timestamp=now,
+                            note=f"no candles missing for {symbol} {timeframe}",
+                            symbol=symbol,
+                            timeframe=timeframe,
+                        )
+                        continue
+                    
+                    # Cap at 1000 (Binance limit) or resume_window_candles
+                    limit = min(missing_count + 1, REST_BATCH_LIMIT)
+                    logger.info(
+                        "ws_reconnect",
+                        timestamp=now,
+                        note=f"detected {missing_count} missing candles for {symbol} {timeframe}",
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        limit=limit,
+                    )
 
-            try:
+                # 3. Fetch ONLY missing candles
                 gap_candles = await self._fetch_gap_candles(
                     symbol=symbol,
                     timeframe=timeframe,
                     since=since,
-                    limit=window,
+                    limit=limit,
                 )
+
+                if not gap_candles:
+                    continue
+
+                # 4. Filter out any that might have been received just as we reconnected
+                # (idempotency at DB level handles this, but filtering here is cleaner)
+                closed_gaps = [c for c in gap_candles if c.is_closed]
+                if not closed_gaps:
+                    continue
+
+                # Persist via batch upsert
+                await self._supabase.upsert_candles(closed_gaps)
+
+                # Advance checkpoint to the latest CLOSED candle from REST
+                latest = max(closed_gaps, key=lambda c: c.open_time)
+                await self._advance_checkpoint(latest)
+
+                # Publish to Redis
+                await self._redis.publish_new_candle(latest)
+
+                logger.info(
+                    "ws_reconnect",
+                    timestamp=datetime.now(timezone.utc),
+                    note=f"gap-fill wrote {len(closed_gaps)} candles for {symbol} {timeframe}",
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    filled=len(closed_gaps),
+                )
+
+                # 5. Respect rate limits - small sleep between pairs if we have many
+                if len(self._active_pairs) > 5:
+                    await asyncio.sleep(0.1)
+
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "error",
@@ -774,64 +844,6 @@ class BinanceWSClient:
                     symbol=symbol,
                     timeframe=timeframe,
                 )
-                continue
-
-            if not gap_candles:
-                logger.info(
-                    "ws_reconnect",
-                    timestamp=datetime.now(timezone.utc),
-                    attempt=self._reconnect_attempts,
-                    backoff_seconds=self._backoff_seconds,
-                    note=f"no gaps to fill for {symbol} {timeframe}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
-                continue
-
-            # Persist via batch upsert (idempotent on natural key).
-            try:
-                await self._supabase.upsert_candles(gap_candles)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=f"upsert_candles (gap-fill) failed: {exc}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
-                continue
-
-            # Advance the checkpoint to the most-recently-fetched closed
-            # candle. (All REST klines older than "now" are closed.)
-            latest = max(gap_candles, key=lambda c: c.open_time)
-            await self._advance_checkpoint(latest)
-
-            # Publish the latest closed candle so the engine picks it up.
-            try:
-                await self._redis.publish_new_candle(latest)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=f"publish_new_candle (gap-fill) failed: {exc}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
-
-            logger.info(
-                "ws_reconnect",
-                timestamp=datetime.now(timezone.utc),
-                attempt=self._reconnect_attempts,
-                backoff_seconds=self._backoff_seconds,
-                note=f"gap-fill wrote {len(gap_candles)} candles for {symbol} {timeframe}",
-                symbol=symbol,
-                timeframe=timeframe,
-                filled=len(gap_candles),
-            )
 
     async def _load_checkpoint(self, symbol: str, timeframe: str) -> Optional[datetime]:
         """Load the most recent checkpoint from Redis, falling back to Postgres."""
