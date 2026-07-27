@@ -928,6 +928,14 @@ class CTApplication:
                 
                 # Print visual summary block
                 print(f"\n{summary_block}\n")
+                
+                # Heartbeat to confirm active monitoring
+                logger.info(
+                    "engine_heartbeat",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    event="[HEARTBEAT] النظام يعمل بكفاءة ويراقب السوق في هذه اللحظة..."
+                )
 
                 logger.info(
                     "system_health_summary",
@@ -955,7 +963,7 @@ class CTApplication:
                         diagnosis="Strategies are running but conditions are not being met",
                     )
 
-                await asyncio.sleep(600) # Every 10 minutes
+                await asyncio.sleep(60) # Every 1 minute for faster feedback
             except asyncio.CancelledError:
                 break
             except Exception as exc:
