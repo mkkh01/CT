@@ -30,6 +30,7 @@ class WorkflowEventType(str, Enum):
     
     # Analysis phase
     ANALYSIS_START = "analysis_start"
+    ANALYSIS_STEP = "analysis_step"
     ANALYSIS_COMPONENT = "analysis_component"
     ANALYSIS_GATES = "analysis_gates"
     ANALYSIS_COMPLETE = "analysis_complete"
@@ -88,6 +89,27 @@ def log_analysis_start(
         details={
             "trigger_timeframe": trigger_timeframe,
             "source_candle_open_time": source_candle_open_time.isoformat(),
+            "status": "started",
+            "step_description": f"بدء دورة البحث عن صفقات لعملة {symbol} بناءً على شمعة {trigger_timeframe}"
+        },
+    )
+
+def log_analysis_step(
+    symbol: str,
+    step_name: str,
+    status: str,
+    message: str,
+    details: Optional[dict[str, Any]] = None,
+) -> None:
+    """Log a specific step in the analysis workflow."""
+    log_workflow_event(
+        event_type=WorkflowEventType.ANALYSIS_STEP,
+        symbol=symbol,
+        details={
+            "step": step_name,
+            "status": status,
+            "message": message,
+            "step_details": details or {},
         },
     )
 

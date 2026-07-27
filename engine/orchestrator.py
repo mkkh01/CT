@@ -90,6 +90,14 @@ from engine.volume import analyze_volume, volume_confirmation_score
 from market.regime import classify_regime
 from market.volatility import calculate_atr
 from monitoring.logger import get_logger
+from monitoring.workflow_logger import (
+    log_analysis_start,
+    log_analysis_step,
+    log_analysis_component,
+    log_analysis_gates,
+    log_decision_approved,
+    log_decision_rejected,
+)
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
 
@@ -311,6 +319,7 @@ class Orchestrator:
             source_candle_open_time=source_open_time,
             is_real_data=True,  # Binance WS/REST is real data
         )
+        log_analysis_start(symbol, candle.timeframe, source_open_time)
 
         # -------------------------------------------------------------
         # 1. Validate minimum 3 timeframes (Section 0 hard constraint #6)
@@ -338,6 +347,11 @@ class Orchestrator:
         ltf_timeframe = ordered_tfs[0]
         htf_timeframe = ordered_tfs[-1]
 
+        log_analysis_step(
+            symbol, "timeframe_setup", "success", 
+            f"تم تحديد الأطر الزمنية: LTF={ltf_timeframe}, HTF={htf_timeframe}"
+        )
+
         # -------------------------------------------------------------
         # 2. Per-timeframe analysis (structure, smc, trend, momentum,
         #    volume, session, regime).
@@ -346,6 +360,7 @@ class Orchestrator:
         component_signals: list[StrategySignal] = []
 
         for tf in ordered_tfs:
+            log_analysis_step(symbol, f"analysis_{tf}", "started", f"بدء تحليل الإطار الزمني {tf}")
             tf_start_time = datetime.now(timezone.utc)
             analysis = await self._analyze_timeframe(candle, coin_config, tf)
             per_tf[tf] = analysis
@@ -373,6 +388,11 @@ class Orchestrator:
             # Build component signals from each module on each timeframe.
             tf_signals = self._build_component_signals(analysis)
             component_signals.extend(tf_signals)
+            
+            log_analysis_step(
+                symbol, f"analysis_{tf}", "success", 
+                f"اكتمل تحليل {tf}: تم استخراج {len(tf_signals)} إشارات استراتيجية"
+            )
 
         # -------------------------------------------------------------
         # 3. Run htf_filter using the highest timeframe as the HTF.
@@ -391,18 +411,30 @@ class Orchestrator:
             ltf_timeframe=ltf_timeframe,
         )
         htf_ok = htf_result.alignment
+        log_analysis_step(
+            symbol, "htf_filter", "success" if htf_ok else "failed",
+            f"فلتر الإطار الزمني الأعلى: {'متوافق' if htf_ok else 'غير متوافق'} (Bias={htf_result.bias})"
+        )
 
         # -------------------------------------------------------------
         # 4. Structure alignment: at least one TF has a non-neutral trend
         #    OR a BOS/CHOCH detected.
         # -------------------------------------------------------------
         structure_ok = self._structure_alignment_passed(per_tf)
+        log_analysis_step(
+            symbol, "structure_check", "success" if structure_ok else "failed",
+            f"فحص بنية السوق: {'متوافقة' if structure_ok else 'غير متوافقة'}"
+        )
 
         # -------------------------------------------------------------
         # 5. Regime check: use the HTF (or primary) regime; block VOLATILE.
         # -------------------------------------------------------------
         regime = htf_analysis.regime if htf_analysis.regime else ltf_analysis.regime
         regime_ok = regime != RegimeState.VOLATILE
+        log_analysis_step(
+            symbol, "regime_check", "success" if regime_ok else "failed",
+            f"فحص حالة السوق: {regime.value} ({'مقبول' if regime_ok else 'مرفوض - تذبذب عالي'})"
+        )
 
         # -------------------------------------------------------------
         # 6. Confidence aggregation.
@@ -442,6 +474,10 @@ class Orchestrator:
         )
         confidence_ok = confidence_gate(confidence)
         score = aggregate_score(component_signals)
+        log_analysis_step(
+            symbol, "confidence_gate", "success" if confidence_ok else "failed",
+            f"بوابة الثقة: {confidence:.2f} ({'اجتازت' if confidence_ok else 'أقل من الحد المطلوب'})"
+        )
 
         # Log Decision Engine result (Requested Log #7)
         logger.info(
@@ -478,6 +514,10 @@ class Orchestrator:
                 coin_config=coin_config,
                 portfolio_state=portfolio_state,
                 atr=atr,
+            )
+            log_analysis_step(
+                symbol, "risk_assessment", "success" if risk.allowed else "failed",
+                f"تقييم المخاطر: {'مقبول' if risk.allowed else 'مرفوض'} ({risk.reason})"
             )
         else:
             risk = RiskAssessment(
@@ -595,6 +635,18 @@ class Orchestrator:
         # Log total execution time (Requested Log #10)
         execution_duration_ms = round((datetime.now(timezone.utc) - start_time).total_seconds() * 1000, 2)
 
+        log_analysis_gates(
+            symbol=symbol,
+            regime_ok=regime_ok,
+            regime=regime.value,
+            structure_ok=structure_ok,
+            htf_ok=htf_ok,
+            confidence_ok=confidence_ok,
+            confidence=confidence,
+            risk_ok=risk_ok,
+            risk_reason=risk.reason,
+        )
+
         if final_verdict:
             logger.info(
                 "decision_made",
@@ -609,6 +661,17 @@ class Orchestrator:
                 success_reason="All strategy and risk conditions met",
                 conditions_met=["regime", "structure", "htf_bias", "confidence", "risk"],
             )
+            if entry:
+                log_decision_approved(
+                    symbol=symbol,
+                    score=score,
+                    confidence=confidence,
+                    entry_price=entry.entry_price,
+                    stop_loss=entry.stop_loss,
+                    take_profit=entry.take_profit,
+                    position_size=risk.position_size,
+                    execution_time_ms=execution_duration_ms,
+                )
         else:
             logger.info(
                 "decision_rejected",
@@ -620,6 +683,13 @@ class Orchestrator:
                 component_signal_count=len(component_signals),
                 execution_duration_ms=execution_duration_ms,
                 detailed_rejection=rejection_reason, # Requested Log #4
+            )
+            log_decision_rejected(
+                symbol=symbol,
+                score=score,
+                confidence=confidence,
+                rejection_reason=rejection_reason,
+                execution_time_ms=execution_duration_ms,
             )
 
         return decision
@@ -738,6 +808,11 @@ class Orchestrator:
         # --- structure ----------------------------------------------
         try:
             analysis.structure = analyze_structure(candles)
+            if analysis.structure:
+                log_analysis_step(
+                    coin_config.symbol, f"component_structure_{timeframe}", "success",
+                    f"تم تحليل بنية السوق ({timeframe}): الاتجاه={analysis.structure.trend_direction}"
+                )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",
@@ -759,6 +834,13 @@ class Orchestrator:
                 else []
             )
             analysis.smc = analyze_smc(candles, swing_points=swing_points)
+            if analysis.smc:
+                ob_count = len(analysis.smc.get("order_blocks", []))
+                fvg_count = len(analysis.smc.get("fvgs", []))
+                log_analysis_step(
+                    coin_config.symbol, f"component_smc_{timeframe}", "success",
+                    f"تم تحليل SMC ({timeframe}): تم العثور على {ob_count} مناطق OB و {fvg_count} فجوات FVG"
+                )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",
@@ -775,6 +857,11 @@ class Orchestrator:
         # --- trend --------------------------------------------------
         try:
             analysis.trend = analyze_trend(candles)
+            if analysis.trend:
+                log_analysis_step(
+                    coin_config.symbol, f"component_trend_{timeframe}", "success",
+                    f"تم تحليل الاتجاه ({timeframe}): {analysis.trend.get('direction')} (القوة={analysis.trend.get('strength'):.2f})"
+                )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",
@@ -798,6 +885,11 @@ class Orchestrator:
         # --- momentum -----------------------------------------------
         try:
             analysis.momentum = calculate_momentum(candles)
+            if analysis.momentum:
+                log_analysis_step(
+                    coin_config.symbol, f"component_momentum_{timeframe}", "success",
+                    f"تم تحليل الزخم ({timeframe}): {analysis.momentum.get('direction')} (Score={analysis.momentum.get('momentum_score'):.2f})"
+                )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",
