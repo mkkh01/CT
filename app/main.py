@@ -762,13 +762,30 @@ class CTApplication:
             )
             return
 
-        # Update health stats
-        self._health_stats["last_data_at"] = datetime.now(timezone.utc)
+        # [TRACE] Consumer received
+        now = datetime.now(timezone.utc)
+        self._health_stats["last_data_at"] = now
         self._health_stats["scan_cycles"] += 1
+        
+        logger.debug(
+            "trace_consumer_received",
+            symbol=candle.symbol,
+            timeframe=candle.timeframe,
+            is_closed=candle.is_closed,
+            module="app.main"
+        )
+
+        # OPTIMIZATION: Early return for unclosed candles BEFORE database I/O.
+        # This prevents the subscriber from hanging on database pressure for 
+        # thousands of tick updates that are just ignored by the engine.
+        if not candle.is_closed:
+            # We still updated scan_cycles and last_data_at above.
+            return
 
         # The orchestrator requires (candle, coin_config). We must fetch the
         # config for this symbol from Supabase.
         try:
+            # [TRACE] Cache check / DB fetch started
             coin_config = await self._supabase.fetch_coin(candle.symbol)
             if not coin_config:
                 logger.warning(
@@ -780,6 +797,7 @@ class CTApplication:
                     symbol=candle.symbol,
                 )
                 return
+            # [TRACE] Cache updated (loaded config)
         except Exception as exc:  # noqa: BLE001
             self._health_stats["errors"] += 1
             logger.warning(
@@ -803,15 +821,20 @@ class CTApplication:
             
             bind_context(trace_id=trace_id, cycle_id=cycle_id)
             
+            # [TRACE] Analysis started
+            logger.info("trace_analysis_started", symbol=candle.symbol, timeframe=candle.timeframe)
+            
             start_analysis = datetime.now(timezone.utc)
             result = await self._orchestrator.process_candle_safe(candle, coin_config)
+            
+            # [TRACE] Analysis finished
+            analysis_duration = (datetime.now(timezone.utc) - start_analysis).total_seconds() * 1000
+            logger.info("trace_analysis_finished", symbol=candle.symbol, duration_ms=analysis_duration)
             
             # Clear context after analysis
             clear_context()
             
             if result:
-                analysis_duration = (datetime.now(timezone.utc) - start_analysis).total_seconds() * 1000
-                
                 # Update health stats with more granularity
                 self._health_stats["pairs_analyzed"] += 1
                 self._health_stats["strategies_run"] += len(result.component_signals)

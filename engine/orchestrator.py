@@ -375,8 +375,15 @@ class Orchestrator:
         for tf in ordered_tfs:
             log_analysis_step(symbol, f"analysis_{tf}", "started", f"بدء تحليل الإطار الزمني {tf}")
             tf_start_time = datetime.now(timezone.utc)
+            
+            # [TRACE] Strategy started (per timeframe)
+            logger.info("trace_strategy_started", symbol=symbol, timeframe=tf)
+            
             analysis = await self._analyze_timeframe(candle, coin_config, tf)
             per_tf[tf] = analysis
+            
+            # [TRACE] Strategy finished (per timeframe)
+            logger.info("trace_strategy_finished", symbol=symbol, timeframe=tf)
 
             # Log detailed analysis results per timeframe (Requested Log #1 & #10)
             last_candle_time = analysis.candles[-1].open_time if analysis.candles else None
@@ -626,7 +633,11 @@ class Orchestrator:
         # 10. Write to decisions table (idempotent upsert).
         # -------------------------------------------------------------
         try:
+            # [TRACE] Decision started (saving to DB)
+            logger.info("trace_decision_started", symbol=symbol, verdict=final_verdict)
             await self._supabase.upsert_decision(decision)
+            # [TRACE] Decision finished (saved to DB)
+            logger.info("trace_decision_finished", symbol=symbol, decision_id=str(decision.id))
         except Exception as exc:  # noqa: BLE001
             # Storage failure MUST NOT block the in-memory decision -- the
             # orchestrator still returns the DecisionResult so the bot can

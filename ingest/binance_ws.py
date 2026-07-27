@@ -401,6 +401,10 @@ class BinanceWSClient:
 
     async def _on_raw_message(self, raw_message: str | bytes) -> None:
         """Parse a raw WS frame and dispatch to ``_process_message``.
+        
+        [TRACE] WebSocket received
+        """
+        logger.debug("trace_websocket_received", raw_len=len(raw_message))
 
         Binance combined-stream messages look like::
 
@@ -421,6 +425,8 @@ class BinanceWSClient:
 
         try:
             payload = json.loads(raw_message)
+            # [TRACE] Message parsed
+            logger.debug("trace_message_parsed", stream=payload.get("stream"))
         except json.JSONDecodeError as exc:
             raise InvalidCandleError(
                 f"unparseable_json: {exc}",
@@ -480,9 +486,11 @@ class BinanceWSClient:
                 error_message=f"touch_last_message failed: {exc}",
             )
 
+        # [TRACE] Cache updated
         # 4e -- Cache the latest candle in Redis (live price display etc.).
         try:
             await self._redis.set_candle(candle)
+            logger.debug("trace_cache_updated", symbol=candle.symbol, timeframe=candle.timeframe)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "error",
@@ -531,8 +539,18 @@ class BinanceWSClient:
             await self._advance_checkpoint(candle)
         
         try:
+            # [TRACE] Queue push (Publish to Redis Pub/Sub)
             # Always publish to trigger analysis cycle or update live state
             await self._redis.publish_new_candle(candle)
+            
+            # [TRACE] Queue size (not directly available for Pub/Sub, but we log the publish)
+            logger.info(
+                "trace_queue_push",
+                symbol=candle.symbol,
+                timeframe=candle.timeframe,
+                is_closed=candle.is_closed
+            )
+            
             logger.debug(
                 "candle_published",
                 symbol=candle.symbol,
