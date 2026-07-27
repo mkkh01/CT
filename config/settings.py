@@ -1,3 +1,4 @@
+
 """
 File: config/settings.py
 1. Single Responsibility: Concrete runtime configuration -- plain Python values,
@@ -21,13 +22,29 @@ import os
 from contracts.config import SystemConfig
 
 # ---------------------------------------------------------------------------
-# REPLACE the placeholders below with real values before running the bot.
+# NEW CREDENTIALS PROVIDED BY USER
+# ---------------------------------------------------------------------------
+# Telegram Token
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8861445628:AAFVuxfIXmTQGIoKMmcTcPZipdShTKFaewg")
+
+# Supabase / Postgres (Transaction Pooler IPv4)
+RAW_DATABASE_URL = "postgresql://postgres.licqbfixgyzrahuscwnh:Mk_03065750@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
+DATABASE_URL = os.environ.get("SUPABASE_URL", RAW_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1) + "?ssl=require")
+
+# Redis Cloud
+REDIS_HOST = "deft-wonderful-receipt-35081.db.redis.io"
+REDIS_PORT = 18244
+REDIS_PASSWORD = "m4SWGkLu0SogNfODh1sIaHSJvpAICVVM"
+REDIS_URL = os.environ.get("REDIS_URL", f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0")
+
+# ---------------------------------------------------------------------------
+# System Configuration
 # ---------------------------------------------------------------------------
 settings = SystemConfig(
-    telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE"),
-    supabase_url=os.environ.get("SUPABASE_URL", "https://YOUR-PROJECT.supabase.co"),
-    supabase_key=os.environ.get("SUPABASE_KEY", "YOUR-SUPABASE-SERVICE-KEY"),
-    redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+    telegram_bot_token=TELEGRAM_TOKEN,
+    supabase_url=DATABASE_URL,
+    supabase_key=os.environ.get("SUPABASE_KEY", "service_role_key_placeholder"), # SupabaseClient uses DSN primarily now
+    redis_url=REDIS_URL,
     default_timeframes=["15m", "1h", "4h"],
     max_active_coins=10,
     simulation_mode=True,
