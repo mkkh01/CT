@@ -188,11 +188,14 @@ class SupabaseClient:
         if self._pool is not None:
             return
         try:
+            # Note: statement_cache_size=0 is REQUIRED for PgBouncer in transaction mode
+            # to avoid DuplicatePreparedStatementError.
             self._pool = await asyncpg.create_pool(
                 dsn=self._dsn,
                 min_size=self._min_size,
                 max_size=self._max_size,
                 command_timeout=30.0,
+                statement_cache_size=0,
             )
         except Exception as exc:  # noqa: BLE001
             # Never log the DSN -- the traceback could contain credentials.
