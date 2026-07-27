@@ -3,11 +3,11 @@ services:
   - type: web
     name: ct-trading-system
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.3
+        value: 3.11.9
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: SUPABASE_URL
