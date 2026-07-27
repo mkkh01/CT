@@ -183,7 +183,7 @@ class CTApplication:
             version="1.0.0",
             environment=os.getenv("ENVIRONMENT", "production"),
             module="app.main",
-            event="بدء تشغيل النظام - الإصدار 1.0.0"
+            message_text="بدء تشغيل النظام - الإصدار 1.0.0"
         )
 
         # 1. Logging first -- every subsequent step is observable.
@@ -192,7 +192,7 @@ class CTApplication:
         # 2 + 3. Storage layers.
         try:
             await self._redis.connect()
-            logger.info("service_connected", module="app.main", service="Redis", event="تم الاتصال بنجاح بخدمة Redis")
+            logger.info("service_connected", module="app.main", service="Redis", message_text="تم الاتصال بنجاح بخدمة Redis")
         except Exception as exc:  # noqa: BLE001
             logger.critical(
                 "error",
@@ -205,7 +205,7 @@ class CTApplication:
             raise
         try:
             await self._supabase.connect()
-            logger.info("service_connected", module="app.main", service="Supabase", event="تم الاتصال بنجاح بخدمة Supabase")
+            logger.info("service_connected", module="app.main", service="Supabase", message_text="تم الاتصال بنجاح بخدمة Supabase")
         except Exception as exc:  # noqa: BLE001
             logger.critical(
                 "error",
@@ -323,7 +323,7 @@ class CTApplication:
                     "config_loaded", 
                     module="app.main", 
                     active_coins_count=len(coins),
-                    event=f"تم تحميل الإعدادات: عدد العملات المفعلة {len(coins)}"
+                    message_text=f"تم تحميل الإعدادات: عدد العملات المفعلة {len(coins)}"
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -934,7 +934,7 @@ class CTApplication:
                     "engine_heartbeat",
                     timestamp=datetime.now(timezone.utc),
                     module="app.main",
-                    event="[HEARTBEAT] النظام يعمل بكفاءة ويراقب السوق في هذه اللحظة..."
+                    message_text="[HEARTBEAT] النظام يعمل بكفاءة ويراقب السوق في هذه اللحظة..."
                 )
 
                 logger.info(
@@ -948,7 +948,7 @@ class CTApplication:
                     error_count=self._health_stats["errors"],
                     last_data_received=self._health_stats["last_data_at"],
                     module="app.main",
-                    event=f"ملخص أداء النظام: فحص {self._health_stats['scan_cycles']} دورة، وجد {self._health_stats['opportunities_found']} فرصة"
+                    message_text=f"ملخص أداء النظام: فحص {self._health_stats['scan_cycles']} دورة، وجد {self._health_stats['opportunities_found']} فرصة"
                 )
 
                 # Diagnostic Report if no trades for a while (Log #11)

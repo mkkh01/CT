@@ -418,7 +418,7 @@ class SupabaseClient:
             decision_id=str(decision.id),
             final_verdict=decision.final_verdict,
             module="storage.supabase",
-            event=f"تم حفظ القرار بنجاح في قاعدة البيانات لـ {decision.symbol}"
+            message_text=f"تم حفظ القرار بنجاح في قاعدة البيانات لـ {decision.symbol}"
         )
         return True
 
