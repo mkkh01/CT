@@ -78,6 +78,9 @@ from contracts.simulation import SimulatedTrade
 from monitoring.logger import get_logger
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
+from analysis.result_aggregator import ResultAggregator
+from analysis.result_formatter import ResultFormatter
+from analysis.performance_analyzer import PerformanceAnalyzer
 
 if TYPE_CHECKING:
     # Imported only for type hints so the bot stays importable in test
@@ -188,6 +191,11 @@ class CTTelegramBot:
         self._start_engine_callback: Optional[EngineCallback] = start_engine_callback
         self._stop_engine_callback: Optional[EngineCallback] = stop_engine_callback
         self._reload_engine_callback: Optional[EngineCallback] = reload_engine_callback
+        
+        # New analysis components
+        self._aggregator = ResultAggregator(supabase)
+        self._formatter = ResultFormatter()
+        self._analyzer = PerformanceAnalyzer()
 
     async def _trigger_engine_reload(self, context: Optional[ContextTypes.DEFAULT_TYPE] = None) -> None:
         """Notify the app layer that coins changed so it can refresh subscriptions.
@@ -1383,7 +1391,11 @@ class CTTelegramBot:
             )
             return
 
-        body = self._format_trade_history(trades)
+        # Enhanced reporting using the new analysis package
+        summary = await self._aggregator.get_performance_summary()
+        body = self._formatter.format_summary_telegram(summary)
+        body += "\n\n" + self._format_trade_history(trades)
+        
         await self._reply_safe(update, context, body, reply_markup=self._build_main_menu())
         logger.info(
             "bot_reply",

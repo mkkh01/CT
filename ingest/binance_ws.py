@@ -53,6 +53,7 @@ from data.validators import InvalidCandleError, validate_binance_kline, validate
 from monitoring.logger import get_logger
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
+from monitoring.health_manager import health_manager, HealthStatus
 
 logger = get_logger(__name__)
 
@@ -351,13 +352,11 @@ class BinanceWSClient:
             open_timeout=20,
         )
         self._connected = True
-        logger.info(
-            "ws_reconnect",
-            timestamp=datetime.now(timezone.utc),
-            attempt=self._reconnect_attempts,
-            backoff_seconds=self._backoff_seconds,
-            module="ingest.binance_ws",
-            message_text="تم تأسيس الاتصال بنجاح مع Binance WebSocket"
+        await health_manager.update_component(
+            "WebSocket", 
+            HealthStatus.OK, 
+            "تم تأسيس الاتصال بنجاح مع Binance WebSocket",
+            {"attempt": self._reconnect_attempts, "backoff": self._backoff_seconds}
         )
 
     async def _receive_loop(self) -> None:
@@ -675,12 +674,11 @@ class BinanceWSClient:
         self._ws = None
         self._connection_started_at = None
 
-        logger.warning(
-            "ws_disconnect",
-            timestamp=datetime.now(timezone.utc),
-            reason=reason,
-            backoff_seconds=self._backoff_seconds,
-            uptime_seconds=uptime_seconds,
+        await health_manager.update_component(
+            "WebSocket", 
+            HealthStatus.ERROR, 
+            f"انقطع الاتصال بـ Binance WebSocket: {reason}",
+            {"reason": reason, "uptime": uptime_seconds, "backoff": self._backoff_seconds}
         )
 
         # 1. Update backoff strategy
@@ -953,13 +951,11 @@ class BinanceWSClient:
                     expected_interval = timeframe_to_seconds(timeframe)
                     threshold = expected_interval * WS_STALE_MULTIPLIER
                     if seconds_since > threshold:
-                        logger.warning(
-                            "ws_stale",
-                            timestamp=now,
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            seconds_since_last=round(seconds_since, 1),
-                            threshold=threshold,
+                        await health_manager.update_component(
+                            "WebSocket", 
+                            HealthStatus.WARNING, 
+                            f"WebSocket data stale for {symbol} {tf}: {seconds_since:.1f}s",
+                            {"symbol": symbol, "timeframe": tf, "delta": seconds_since}
                         )
         except asyncio.CancelledError:
             return

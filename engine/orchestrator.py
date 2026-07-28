@@ -101,6 +101,7 @@ from monitoring.workflow_logger import (
 from monitoring.report_formatter import format_analysis_report
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
+from monitoring.health_manager import health_manager, HealthStatus
 
 logger = get_logger(__name__)
 
@@ -332,6 +333,13 @@ class Orchestrator:
             return None
 
         log_analysis_start(symbol, candle.timeframe, source_open_time)
+        await health_manager.update_component(
+            "Orchestrator", 
+            HealthStatus.OK, 
+            f"Processing candle for {symbol} {candle.timeframe}",
+            {"symbol": symbol, "timeframe": candle.timeframe}
+        )
+        await health_manager.increment_stat("candles_received")
 
         # -------------------------------------------------------------
         # 1. Validate minimum 3 timeframes (Section 0 hard constraint #6)

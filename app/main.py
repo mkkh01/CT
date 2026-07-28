@@ -72,6 +72,8 @@ from monitoring.report_formatter import format_cycle_summary
 from app.dashboard_endpoints import setup_dashboard_endpoints
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
+from monitoring.health_manager import health_manager, HealthStatus
+from monitoring.heartbeat import run_heartbeat_loop
 
 # Type-only imports (avoid hard runtime dependency on layers that may not yet
 # exist when this file is imported in isolation -- e.g. during unit testing).
@@ -200,29 +202,15 @@ class CTApplication:
         # 2 + 3. Storage layers.
         try:
             await self._redis.connect()
-            logger.info("service_connected", module="app.main", service="Redis", message_text="تم الاتصال بنجاح بخدمة Redis")
+            await health_manager.update_component("Redis", HealthStatus.OK, "تم الاتصال بنجاح بخدمة Redis")
         except Exception as exc:  # noqa: BLE001
-            logger.critical(
-                "error",
-                timestamp=datetime.now(timezone.utc),
-                module="app.main",
-                error_type=type(exc).__name__,
-                error_message=f"فشل الاتصال بـ Redis: {exc}",
-                critical=True
-            )
+            await health_manager.update_component("Redis", HealthStatus.CRITICAL, f"فشل الاتصال بـ Redis: {exc}")
             raise
         try:
             await self._supabase.connect()
-            logger.info("service_connected", module="app.main", service="Supabase", message_text="تم الاتصال بنجاح بخدمة Supabase")
+            await health_manager.update_component("Supabase", HealthStatus.OK, "تم الاتصال بنجاح بخدمة Supabase")
         except Exception as exc:  # noqa: BLE001
-            logger.critical(
-                "error",
-                timestamp=datetime.now(timezone.utc),
-                module="app.main",
-                error_type=type(exc).__name__,
-                error_message=f"فشل الاتصال بـ Supabase: {exc}",
-                critical=True
-            )
+            await health_manager.update_component("Supabase", HealthStatus.CRITICAL, f"فشل الاتصال بـ Supabase: {exc}")
             raise
 
         # 4. Apply idempotent migrations (Section 5).
@@ -241,9 +229,12 @@ class CTApplication:
         # without an explicit constructor argument. (CTTelegramBot already
         # accepts the callbacks via __init__ -- we use BOTH paths so unit
         # tests can inject either.)
-        self._telegram_app.bot_data["start_engine_callback"] = self.start_engine
+        self._telegram_app.bot_data["start_engine_callback"] =            self.start_engine
         self._telegram_app.bot_data["stop_engine_callback"] = self.stop_engine
         self._telegram_app.bot_data["reload_engine_callback"] = self._reload_engine
+        
+        # 7.5 Start the new observability heartbeat loop
+        asyncio.create_task(run_heartbeat_loop(interval_seconds=60.0), name="runtime_heartbeat")
 
         # 8. Register signal handlers (SIGTERM for Render, SIGINT for local).
         # This is now handled by FastAPI's lifespan events.
@@ -767,7 +758,7 @@ class CTApplication:
         # [TRACE] Consumer received
         now = datetime.now(timezone.utc)
         self._health_stats["last_data_at"] = now
-        self._health_stats["scan_cycles"] += 1
+        await health_manager.increment_stat("scan_cycles")
         
         logger.debug(
             "trace_consumer_received",
@@ -837,6 +828,9 @@ class CTApplication:
             clear_context()
             
             if result:
+                # Update health stats via health_manager
+                await health_manager.increment_stat("analyses_executed")
+                
                 # Update health stats with more granularity
                 self._health_stats["pairs_analyzed"] += 1
                 self._health_stats["strategies_run"] += len(result.component_signals)
@@ -850,6 +844,7 @@ class CTApplication:
                 self._health_stats[regime_key] = self._health_stats.get(regime_key, 0) + 1
                 
                 if result.final_verdict:
+                    await health_manager.increment_stat("signals_emitted")
                     self._health_stats["opportunities_found"] += 1
                     self._health_stats["telegram_sent"] += 1
                     self._health_stats["last_success_at"] = datetime.now(timezone.utc)

@@ -66,6 +66,7 @@ from simulation import slippage as slippage_mod
 from simulation.fees import calculate_fee
 from simulation.slippage import estimate_slippage
 from storage.supabase import SupabaseClient
+from monitoring.health_manager import health_manager, HealthStatus
 
 logger = get_logger(__name__)
 
@@ -348,10 +349,23 @@ class PaperTrader:
         # Persist (idempotent on decision_id at the DB level).
         try:
             await self._supabase.insert_simulated_trade(trade)
+            await health_manager.increment_stat("trades_simulated")
+            await health_manager.update_component(
+                "PaperTrader", 
+                HealthStatus.OK, 
+                f"Opened simulated trade for {symbol}",
+                {"trade_id": str(trade.id), "symbol": symbol}
+            )
         except Exception as exc:  # noqa: BLE001
             # Section 22 (Storage Level): foreign key violation -> log error,
             # skip trade write.  We re-raise as RuntimeError so the caller
             # (orchestrator) can decide whether to retry / skip the cycle.
+            await health_manager.update_component(
+                "PaperTrader", 
+                HealthStatus.ERROR, 
+                f"Failed to open simulated trade for {symbol}: {exc}",
+                {"symbol": symbol}
+            )
             logger.error(
                 "error",
                 timestamp=_utcnow(),
