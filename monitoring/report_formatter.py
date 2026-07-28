@@ -55,7 +55,9 @@ def format_analysis_report(
     lines.append(f"🪙 Symbol        : {symbol}")
     lines.append(f"🕒 Timeframe     : {timeframe}")
     lines.append(f"📅 Candle Time   : {candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    lines.append(f"💰 Last Price    : {last_price:.2f}")
+    # [FIX] Use dynamic precision for Last Price to support low-priced coins (VTHO, etc.)
+    price_precision = 2 if last_price >= 1 else 6
+    lines.append(f"💰 Last Price    : {last_price:.{price_precision}f}")
     lines.append(f"📈 Market Regime : {regime}")
     lines.append(f"📊 Volatility    : {volatility}")
     lines.append(f"🌊 Liquidity     : {liquidity}")
@@ -134,9 +136,12 @@ def format_analysis_report(
         lines.append("💼 RISK MANAGEMENT")
         lines.append(sep_light)
         lines.append("")
-        lines.append(f"Entry Price          : {risk_mgmt.get('entry_price', 0):.2f}")
-        lines.append(f"Stop Loss            : {risk_mgmt.get('stop_loss', 0):.2f}")
-        lines.append(f"Take Profit          : {risk_mgmt.get('take_profit', 0):.2f}")
+        # [FIX] Use dynamic precision for risk levels
+        entry_p = risk_mgmt.get('entry_price', 0)
+        p_prec = 2 if entry_p >= 1 else 6
+        lines.append(f"Entry Price          : {entry_p:.{p_prec}f}")
+        lines.append(f"Stop Loss            : {risk_mgmt.get('stop_loss', 0):.{p_prec}f}")
+        lines.append(f"Take Profit          : {risk_mgmt.get('take_profit', 0):.{p_prec}f}")
         lines.append(f"Risk                 : {risk_mgmt.get('risk_pct', 0):.2f}%")
         lines.append(f"Reward               : {risk_mgmt.get('reward_pct', 0):.2f}%")
         lines.append(f"Risk/Reward          : 1 : {risk_mgmt.get('rr_ratio', 0):.2f}")

@@ -761,6 +761,8 @@ class CTApplication:
         # [TRACE] Consumer received
         now = datetime.now(timezone.utc)
         self._health_stats["last_data_at"] = now
+        # [FIX] Synchronize scan_cycles between local health_stats and global health_manager
+        self._health_stats["scan_cycles"] += 1
         await health_manager.increment_stat("scan_cycles")
         
         logger.debug(
@@ -1013,7 +1015,15 @@ class CTApplication:
                     database_writes=self._health_stats["db_writes"],
                     warnings_count=0,
                     errors_count=self._health_stats["errors"],
-                    system_health="EXCELLENT" if self._health_stats["errors"] == 0 else "GOOD"
+                    # [FIX] Derive system health from global health_manager instead of just error count
+                    health_summary = await health_manager.get_overall_health()
+                    status_map = {
+                        HealthStatus.OK: "EXCELLENT",
+                        HealthStatus.WARNING: "GOOD",
+                        HealthStatus.ERROR: "POOR",
+                        HealthStatus.CRITICAL: "CRITICAL"
+                    }
+                    system_health = status_map.get(health_summary["status"], "UNKNOWN")
                 )
                 
                 # Print visual summary block

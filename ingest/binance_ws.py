@@ -490,6 +490,14 @@ class BinanceWSClient:
                 symbol=candle.symbol,
             )
 
+        # [FIX] Refresh health status on successful message receipt to prevent stale CRITICAL status.
+        await health_manager.update_component(
+            "WebSocket", 
+            HealthStatus.OK, 
+            f"Receiving data for {candle.symbol}",
+            {"symbol": candle.symbol, "timeframe": candle.timeframe, "is_closed": candle.is_closed}
+        )
+
         # Log real data proof (Requested Log #10)
         if receive_time:
             process_time_ms = round((datetime.now(timezone.utc) - receive_time).total_seconds() * 1000, 2)
