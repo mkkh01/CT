@@ -361,43 +361,31 @@ class BinanceWSClient:
         )
 
     async def _receive_loop(self) -> None:
-        """Receive messages until the connection drops or ``_running`` is False."""
+        """Continuous recv() loop. Exits when ws closes or _running is False."""
         if self._ws is None:
-            raise RuntimeError("_receive_loop called before _connect")
+            return
 
-        async for raw_message in self._ws:
-            if not self._running:
-                # Shutdown requested mid-stream -- break out cleanly.
-                break
+        # 1. On every connect, load fresh checkpoints and gap-fill (Section 4 #2).
+        await self._refill_all_gaps()
+
+        while self._running:
             try:
+                # recv() blocks until a message arrives or a ping timeout occurs.
+                raw_message = await asyncio.wait_for(
+                    self._ws.recv(),
+                    timeout=WS_RECEIVE_TIMEOUT_SECONDS,
+                )
                 await self._on_raw_message(raw_message)
-            except InvalidCandleError as exc:
-                # Section 22 -- Ingest Level: invalid message -> log, skip.
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type="InvalidCandleError",
-                    error_message=exc.reason,
-                    details=exc.details,
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Per Section 22 Ingest Level: log and continue -- never crash
-                # the receive loop on a single bad message.
-                logger.error(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=str(exc),
-                )
-
-        # If we exit the loop because the connection dropped, raise so the
-        # outer loop calls _on_disconnect.
-        if self._running and self._ws is not None and self._ws.closed:
-            raise ConnectionClosed(
-                rcvd=None, sent=None  # type: ignore[arg-type]
-            )
+            except asyncio.TimeoutError:
+                # Treated as a disconnect so the outer loop can back off and
+                # reconnect (Section 4 #4).
+                raise ConnectionClosedError(
+                    code=1006,
+                    reason=f"recv_timeout_after_{WS_RECEIVE_TIMEOUT_SECONDS}s",
+                ) from None
+            except (ConnectionClosed, ConnectionClosedError, ConnectionClosedOK):
+                # Raise to the outer loop.
+                raise
 
     async def _on_raw_message(self, raw_message: str | bytes) -> None:
         """Parse a raw WS frame and dispatch to ``_process_message``.
@@ -406,13 +394,6 @@ class BinanceWSClient:
         """
         logger.debug("trace_websocket_received", raw_len=len(raw_message))
 
-        Binance combined-stream messages look like::
-
-            {"stream": "btcusdt@kline_15m", "data": { ... kline event ... }}
-
-        We also tolerate bare kline events (``{"e": "kline", ...}``) for test
-        fixtures.
-        """
         receive_time = datetime.now(timezone.utc)
         if isinstance(raw_message, (bytes, bytearray)):
             try:
@@ -436,10 +417,7 @@ class BinanceWSClient:
         await self._process_message(payload, receive_time=receive_time)
 
     async def _process_message(self, msg: dict, receive_time: Optional[datetime] = None) -> None:
-        """Validate, clean, persist, and publish a single Binance kline message.
-
-        Implements Section 17 algorithm steps 4a-4g.
-        """
+        """Validate, clean, persist, and publish a single Binance kline message."""
         # 4a/4b -- Validate the raw payload and build a typed dict that
         # satisfies Candle's constructor. InvalidCandleError propagates to
         # ``_on_raw_message``'s caller which logs + skips.
@@ -498,8 +476,6 @@ class BinanceWSClient:
                 module="ingest.binance_ws",
                 error_type=type(exc).__name__,
                 error_message=f"set_candle failed: {exc}",
-                symbol=candle.symbol,
-                timeframe=candle.timeframe,
             )
 
         # Update live price (every kline tick -- WS or closed) for the bot.
@@ -570,12 +546,7 @@ class BinanceWSClient:
             )
 
     async def _persist_closed_candle(self, candle: Candle) -> None:
-        """Write a closed candle to Postgres via the idempotent upsert.
-
-        Section 22 Storage Level: unique-constraint violations are expected on
-        resume and logged at debug; genuine errors are logged at error level
-        but do NOT crash the loop.
-        """
+        """Write a closed candle to Postgres via the idempotent upsert."""
         try:
             await self._supabase.upsert_candle(candle)
         except Exception as exc:  # noqa: BLE001
@@ -592,14 +563,7 @@ class BinanceWSClient:
 
     # ---------------- checkpoint advancement ----------------
     async def _advance_checkpoint(self, candle: Candle) -> None:
-        """Advance the Redis + Postgres checkpoints for ``(symbol, timeframe)``.
-
-        Section 6 Bug 3 guardrail: this method is ONLY called from
-        ``_process_message`` when ``candle.is_closed == True``. As a defensive
-        belt-and-braces measure we re-check the flag here and refuse to advance
-        on unclosed candles -- this is the single most important invariant in
-        the whole ingest module.
-        """
+        """Advance the Redis + Postgres checkpoints for ``(symbol, timeframe)``."""
         if not candle.is_closed:
             # Expected condition for live candles -- log at debug (Section 6 Bug 3).
             logger.debug(
@@ -627,9 +591,7 @@ class BinanceWSClient:
             )
             return
 
-        # Update Redis checkpoint first. If Postgres fails below we still have
-        # the Redis checkpoint -- on resume the gap-fill REST call will cover
-        # any missed candle (Section 4 #2).
+        # Update Redis checkpoint first.
         try:
             await self._redis.set_checkpoint(candle.symbol, candle.timeframe, candle.open_time)
         except Exception as exc:  # noqa: BLE001
@@ -671,13 +633,7 @@ class BinanceWSClient:
         )
 
     async def _flush_final_checkpoints(self) -> None:
-        """On graceful stop, re-write the in-memory checkpoints to both stores.
-
-        This is belt-and-braces: the checkpoints were already advanced when
-        each closed candle was processed. Re-flushing here guards against the
-        case where ``stop()`` is called between a Redis write and a Postgres
-        write for the same candle.
-        """
+        """On graceful stop, re-write the in-memory checkpoints to both stores."""
         for (symbol, timeframe), open_time in self._last_checkpoint.items():
             try:
                 await self._redis.set_checkpoint(symbol, timeframe, open_time)
@@ -706,14 +662,7 @@ class BinanceWSClient:
 
     # ---------------- disconnect / reconnect ----------------
     async def _on_disconnect(self, reason: str) -> None:
-        """Log the disconnect, wait with jittered backoff, fetch gaps, reconnect.
-
-        Improved Stability:
-          1. Heartbeat: Handled by websockets lib (ping_interval).
-          2. Graceful reconnect: Computed based on uptime.
-          3. Exponential backoff with jitter: Prevents "thundering herd".
-          4. Resume from checkpoint: Covered by _refill_all_gaps.
-        """
+        """Log the disconnect, wait with jittered backoff, fetch gaps, reconnect."""
         import random
 
         uptime_seconds: Optional[float] = None
@@ -750,7 +699,6 @@ class BinanceWSClient:
             note = f"backoff increased (attempt {self._reconnect_attempts})"
 
         # 2. Add Jitter (Section 4 best practice)
-        # sleep = backoff * (0.5 to 1.5)
         jittered_sleep = self._backoff_seconds * (0.5 + random.random())
         
         logger.info(
@@ -769,20 +717,11 @@ class BinanceWSClient:
             raise
 
         # 4. Refill gaps BEFORE reconnecting
-        # Only reconnect on real failures (handled by the outer loop)
         await self._refill_all_gaps()
 
     # ---------------- gap fill via REST ----------------
     async def _refill_all_gaps(self) -> None:
-        """For every active ``(symbol, timeframe)`` pair, fetch and persist
-        any candles that may have been missed while disconnected.
-
-        Optimized Gap-Fill:
-          1. Detect exactly how many candles are missing by comparing checkpoint vs now.
-          2. Download only the missing candles.
-          3. Avoid redownloading existing candles by setting precise startTime.
-          4. Respect Binance rate limits.
-        """
+        """For every active ``(symbol, timeframe)`` pair, fetch and persist any missed candles."""
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(REST_TIMEOUT_SECONDS),
@@ -808,7 +747,6 @@ class BinanceWSClient:
                     # 2. Calculate missing candles
                     tf_seconds = timeframe_to_seconds(timeframe)
                     seconds_missed = (now - since).total_seconds()
-                    # We subtract 1 candle because the current one is likely in progress
                     missing_count = int(seconds_missed // tf_seconds)
                     
                     if missing_count <= 0:
@@ -844,66 +782,48 @@ class BinanceWSClient:
                     continue
 
                 # 4. Filter out any that might have been received just as we reconnected
-                # (idempotency at DB level handles this, but filtering here is cleaner)
                 closed_gaps = [c for c in gap_candles if c.is_closed]
                 if not closed_gaps:
                     continue
 
-                # Persist via batch upsert
-                await self._supabase.upsert_candles(closed_gaps)
-
-                # Advance checkpoint to the latest CLOSED candle from REST
-                latest = max(closed_gaps, key=lambda c: c.open_time)
-                await self._advance_checkpoint(latest)
-
-                # Publish to Redis
-                await self._redis.publish_new_candle(latest)
-
-                logger.info(
-                    "ws_reconnect",
-                    timestamp=datetime.now(timezone.utc),
-                    note=f"gap-fill wrote {len(closed_gaps)} candles for {symbol} {timeframe}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    filled=len(closed_gaps),
-                )
-
-                # 5. Respect rate limits - small sleep between pairs if we have many
-                if len(self._active_pairs) > 5:
-                    await asyncio.sleep(0.1)
+                # 5. Persist and advance
+                for candle in closed_gaps:
+                    await self._persist_closed_candle(candle)
+                
+                # Advance to the last one
+                await self._advance_checkpoint(closed_gaps[-1])
 
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "error",
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=now,
                     module="ingest.binance_ws",
                     error_type=type(exc).__name__,
-                    error_message=f"gap_fill failed for {symbol} {timeframe}: {exc}",
-                    symbol=symbol,
-                    timeframe=timeframe,
+                    error_message=f"gap-fill failed for {symbol} {timeframe}: {exc}",
                 )
 
     async def _load_checkpoint(self, symbol: str, timeframe: str) -> Optional[datetime]:
-        """Load the most recent checkpoint from Redis, falling back to Postgres."""
+        """Load the most recent checkpoint from Redis, then Postgres."""
+        pair_key = (symbol, timeframe)
+        if pair_key in self._last_checkpoint:
+            return self._last_checkpoint[pair_key]
+
         try:
             cp = await self._redis.get_checkpoint(symbol, timeframe)
-            if cp is not None:
-                self._last_checkpoint[(symbol, timeframe)] = cp
+            if cp:
+                self._last_checkpoint[pair_key] = cp
                 return cp
         except Exception:  # noqa: BLE001
             pass
+
         try:
-            cp = await self._supabase.get_checkpoint(symbol, timeframe)
-            if cp is not None:
-                self._last_checkpoint[(symbol, timeframe)] = cp
-                # Backfill Redis so the next load is fast.
-                try:
-                    await self._redis.set_checkpoint(symbol, timeframe, cp)
-                except Exception:  # noqa: BLE001
-                    pass
+            cp = await self._supabase.fetch_checkpoint(symbol, timeframe)
+            if cp:
+                self._last_checkpoint[pair_key] = cp
                 return cp
         except Exception:  # noqa: BLE001
             pass
+
         return None
 
     async def _fetch_gap_candles(
@@ -913,94 +833,32 @@ class BinanceWSClient:
         since: Optional[datetime],
         limit: int,
     ) -> list[Candle]:
-        """Fetch historical candles from Binance REST API.
-
-        GET https://api.binance.com/api/v3/klines
-            ?symbol=BTCUSDT&interval=15m&startTime=<ms>&limit=<N>
-
-        Retries up to ``WS_REST_RETRY_COUNT`` times on transport / 5xx errors.
-        4xx errors are NOT retried (the request is malformed).
-
-        Args:
-            symbol:     Upper-case symbol, e.g. "BTCUSDT".
-            timeframe:  Binance interval string, e.g. "15m".
-            since:      If provided, fetch candles with ``open_time > since``.
-                        If ``None``, fetch the most recent ``limit`` candles.
-            limit:      Maximum number of candles to fetch (Binance caps at 1000).
-
-        Returns:
-            A list of validated ``Candle`` objects, sorted ascending by
-            ``open_time``. All returned candles have ``is_closed=True`` (REST
-            klines are historical).
-        """
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(REST_TIMEOUT_SECONDS),
-                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
-            )
-
-        capped_limit = max(1, min(limit, REST_BATCH_LIMIT))
+        """Fetch historical candles from Binance REST API."""
         params: dict[str, Any] = {
-            "symbol": symbol.upper(),
+            "symbol": symbol,
             "interval": timeframe,
-            "limit": capped_limit,
+            "limit": limit,
         }
-        if since is not None:
-            # Binance expects ms-since-epoch. Add 1ms so we don't re-fetch
-            # the candle whose open_time IS the checkpoint (it's already stored).
+        if since:
             params["startTime"] = int(since.timestamp() * 1000) + 1
 
-        last_exc: Optional[Exception] = None
-        for attempt in range(1, WS_REST_RETRY_COUNT + 1):
+        for attempt in range(WS_REST_RETRY_COUNT):
             try:
-                resp = await self._http_client.get(BINANCE_REST_KLINES_URL, params=params)
-                if resp.status_code >= 500:
-                    # Server error -- retry.
-                    raise httpx.HTTPStatusError(
-                        f"binance 5xx: {resp.status_code}",
-                        request=resp.request,
-                        response=resp,
-                    )
-                if resp.status_code >= 400:
-                    # Client error -- DO NOT retry (the request is malformed).
-                    raise InvalidCandleError(
-                        f"binance_rest_client_error: status={resp.status_code} body={resp.text[:200]}",
-                        details={"symbol": symbol, "timeframe": timeframe,
-                                 "status": resp.status_code, "body": resp.text[:500]},
-                    )
+                resp = await self._http_client.get(BINANCE_REST_KLINES_URL, params=params)  # type: ignore[union-attr]
+                resp.raise_for_status()
                 data = resp.json()
                 return self._parse_rest_klines(data, symbol, timeframe)
-            except InvalidCandleError:
-                # 4xx -- raise immediately, do not retry.
-                raise
-            except (httpx.HTTPError, httpx.TransportError) as exc:
-                last_exc = exc
+            except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                if attempt == WS_REST_RETRY_COUNT - 1:
+                    raise
                 logger.warning(
-                    "error",
+                    "ws_reconnect",
                     timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=f"REST klines attempt {attempt}/{WS_REST_RETRY_COUNT} failed: {exc}",
+                    note=f"REST klines failed (attempt {attempt+1}): {exc}",
                     symbol=symbol,
                     timeframe=timeframe,
                 )
-                if attempt < WS_REST_RETRY_COUNT:
-                    await asyncio.sleep(min(2 ** attempt, 8))
-                continue
-
-        # All retries exhausted -- Section 22 Ingest Level: log error, skip.
-        logger.error(
-            "error",
-            timestamp=datetime.now(timezone.utc),
-            module="ingest.binance_ws",
-            error_type=type(last_exc).__name__ if last_exc else "Unknown",
-            error_message=(
-                f"REST klines exhausted {WS_REST_RETRY_COUNT} retries: "
-                f"{last_exc}"
-            ),
-            symbol=symbol,
-            timeframe=timeframe,
-        )
+                await asyncio.sleep(1.0 * (attempt + 1))
         return []
 
     def _parse_rest_klines(
@@ -1009,28 +867,7 @@ class BinanceWSClient:
         symbol: str,
         timeframe: str,
     ) -> list[Candle]:
-        """Parse the array-of-arrays response from ``GET /api/v3/klines``.
-
-        Binance REST response schema::
-
-            [
-              [
-                1499040000000,      // 0  Open time (ms)
-                "0.01634790",       // 1  Open
-                "0.80000000",       // 2  High
-                "0.01575800",       // 3  Low
-                "0.01577100",       // 4  Close
-                "148976.11427815",  // 5  Volume
-                1499644799999,      // 6  Close time (ms)
-                "2434.19055334",    // 7  Quote asset volume
-                308,                // 8  Number of trades
-                "1756.87402397",    // 9  Taker buy base asset volume
-                "28.46694368",      // 10 Taker buy quote asset volume
-                "17928899.62484339" // 11 Ignore
-              ],
-              ...
-            ]
-        """
+        """Parse the array-of-arrays response from ``GET /api/v3/klines``."""
         if not isinstance(data, list):
             raise InvalidCandleError(
                 f"rest_klines_not_list: type={type(data).__name__}",
@@ -1042,15 +879,6 @@ class BinanceWSClient:
         tf_seconds = timeframe_to_seconds(timeframe)
         for idx, row in enumerate(data):
             if not isinstance(row, list) or len(row) < 11:
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type="MalformedKlineRow",
-                    error_message=f"row {idx} malformed: len={len(row) if isinstance(row, list) else 'n/a'}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
                 continue
             try:
                 open_time_ms = int(row[0])
@@ -1061,34 +889,15 @@ class BinanceWSClient:
                 c = float(row[4])
                 v = float(row[5])
                 taker_buy = float(row[9])
-            except (TypeError, ValueError) as exc:
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=f"row {idx} unparseable: {exc}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
+            except (TypeError, ValueError):
                 continue
 
             taker_sell = v - taker_buy
             if -1e-6 < taker_sell < 0:
                 taker_sell = 0.0
 
-            # A REST kline is "closed" if its close_time has passed. Binance
-            # includes the in-progress candle at the end of the response -- we
-            # must NOT treat it as closed (Section 6 Bug 3).
             is_closed = close_time_ms < now_ms
-            # Extra safety: a candle that hasn't filled its full interval is
-            # also not closed even if its close_time somehow leaked into the
-            # past (clock skew).
             if is_closed and (now_ms - close_time_ms) < (tf_seconds * 1000):
-                # Less than one timeframe has elapsed since close_time -- this
-                # could be the in-progress candle. Treat as closed only if the
-                # gap is at least 1 second (Binance emits close_time = open_time
-                # + tf*1000 - 1 ms for closed candles).
                 if (now_ms - close_time_ms) < 1000:
                     is_closed = False
 
@@ -1105,29 +914,16 @@ class BinanceWSClient:
                     is_closed=is_closed,
                 )
                 validate_candle(candle)
-            except InvalidCandleError as exc:
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type="InvalidCandleError",
-                    error_message=f"REST kline row {idx} invalid: {exc.reason}",
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
+                out.append(candle)
+            except InvalidCandleError:
                 continue
-            out.append(candle)
 
         out.sort(key=lambda c: c.open_time)
         return out
 
     # ---------------- health check ----------------
     async def _health_check_loop(self) -> None:
-        """Periodically check that each stream has produced a message within
-        ``WS_STALE_MULTIPLIER * timeframe_seconds``. Logs ``ws_stale`` warnings.
-
-        Section 4 #4 -- health check.
-        """
+        """Periodically check that each stream has produced a message."""
         try:
             while self._running:
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
@@ -1136,13 +932,9 @@ class BinanceWSClient:
                     try:
                         last = await self._redis.get_last_message(symbol, timeframe)
                     except Exception:  # noqa: BLE001
-                        # Redis down -- use in-memory tracker (best-effort).
                         last = self._last_message_at.get((symbol, timeframe))
 
                     if last is None:
-                        # If we just started and haven't received anything yet,
-                        # don't cry wolf. Only flag stale if we've been running
-                        # long enough that at least one message should have arrived.
                         if self._connected and self._connection_started_at is not None:
                             uptime = (now - self._connection_started_at).total_seconds()
                             expected = timeframe_to_seconds(timeframe) * WS_STALE_MULTIPLIER
@@ -1170,7 +962,6 @@ class BinanceWSClient:
                             threshold=threshold,
                         )
         except asyncio.CancelledError:
-            # Cooperative shutdown -- exit quietly.
             return
 
     # ---------------- helpers ----------------
@@ -1184,14 +975,6 @@ class BinanceWSClient:
                 await self._health_task
             except asyncio.CancelledError:
                 pass
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "error",
-                    timestamp=datetime.now(timezone.utc),
-                    module="ingest.binance_ws",
-                    error_type=type(exc).__name__,
-                    error_message=f"health_check_loop exited with: {exc}",
-                )
         self._health_task = None
 
     @staticmethod
@@ -1209,14 +992,12 @@ class BinanceWSClient:
                 seen.add(key)
                 pairs.append(key)
         if not pairs:
-            raise ValueError(
-                "no active (symbol, timeframe) pairs -- all coins inactive?"
-            )
+            raise ValueError("no active (symbol, timeframe) pairs")
         return pairs
 
     @staticmethod
     def _describe_exception(exc: Exception) -> str:
-        """Compact one-line description of an exception for log messages."""
+        """Compact one-line description of an exception."""
         if isinstance(exc, ConnectionClosedOK):
             return "connection_closed_ok"
         if isinstance(exc, ConnectionClosedError):
@@ -1236,14 +1017,8 @@ async def start_ingestion(
     redis: RedisCache,
     supabase: SupabaseClient,
 ) -> BinanceWSClient:
-    """Construct and start a ``BinanceWSClient``.
-
-    Returns the running client so the caller can ``await client.stop()`` on
-    shutdown. Matches the function signature sketched in Section 17.
-    """
+    """Construct and start a ``BinanceWSClient``."""
     client = BinanceWSClient(coins=coins, redis=redis, supabase=supabase)
-    # The caller is expected to ``asyncio.create_task`` the ``start`` coroutine.
-    # We return the client immediately so they can wire up the stop signal.
     return client
 
 
