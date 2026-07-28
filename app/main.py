@@ -907,9 +907,7 @@ class CTApplication:
         from simulation.paper_trade import PaperTrader
 
         paper_trader = PaperTrader(
-            supabase=self._supabase,
-            redis=self._redis,
-            performance_calc=self._performance_calc,  # type: ignore[arg-type]
+            supabase=self._supabase
         )
 
         try:
@@ -999,6 +997,15 @@ class CTApplication:
                 avg_conf = (self._health_stats["total_confidence_sum"] / analyzed_count * 100) if analyzed_count > 0 else 0.0
                 avg_time = (self._health_stats["total_analysis_time_ms"] / analyzed_count) if analyzed_count > 0 else 0.0
 
+                # [FIX] Derive system health from global health_manager
+                health_summary = await health_manager.get_overall_health()
+                status_map = {
+                    HealthStatus.OK: "EXCELLENT",
+                    HealthStatus.WARNING: "GOOD",
+                    HealthStatus.ERROR: "POOR",
+                    HealthStatus.CRITICAL: "CRITICAL"
+                }
+
                 summary_block = format_cycle_summary(
                     pairs_analyzed=analyzed_count,
                     bullish_count=self._health_stats.get("regime_True", 0),
@@ -1016,14 +1023,7 @@ class CTApplication:
                     warnings_count=0,
                     errors_count=self._health_stats["errors"],
                     # [FIX] Derive system health from global health_manager instead of just error count
-                    health_summary = await health_manager.get_overall_health()
-                    status_map = {
-                        HealthStatus.OK: "EXCELLENT",
-                        HealthStatus.WARNING: "GOOD",
-                        HealthStatus.ERROR: "POOR",
-                        HealthStatus.CRITICAL: "CRITICAL"
-                    }
-                    system_health = status_map.get(health_summary["status"], "UNKNOWN")
+                    system_health=status_map.get(health_summary["status"], "UNKNOWN")
                 )
                 
                 # Print visual summary block
