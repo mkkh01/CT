@@ -169,7 +169,9 @@ def check_exposure(
         return False
     projected = current_exposure + new_trade_size
     limit = total_capital * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100.0)
-    return projected <= limit
+    # [FIX] Add a small epsilon (0.01 USDT) to handle floating point precision 
+    # and prevent rejection of trades that are effectively at the limit.
+    return projected <= (limit + 0.01)
 
 
 # ---------------------------------------------------------------------------

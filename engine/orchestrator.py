@@ -684,7 +684,7 @@ class Orchestrator:
         structure_data = {
             "Trend": ltf_analysis.trend.get("direction") == "up",
             "Higher Timeframe": htf_ok,
-            "BOS": any(s.get("type") == "bos" for s in ltf_analysis.smc.get("sweeps", [])),
+            "BOS": ltf_analysis.structure.last_bos is not None if ltf_analysis.structure else False,
             "Order Block": len(ltf_analysis.smc.get("order_blocks", [])) > 0,
             "Fair Value Gap": len(ltf_analysis.smc.get("fvgs", [])) > 0,
             "Discount Zone": ltf_analysis.candles[-1].close < (ltf_analysis.candles[-1].high + ltf_analysis.candles[-1].low) / 2 if ltf_analysis.candles else False
@@ -1170,6 +1170,8 @@ class Orchestrator:
         sweeps = analysis.smc.get("sweeps", []) if analysis.smc else []
         if sweeps:
             last_sweep = sweeps[-1]
+            # [FIX] LiquiditySweep is a Pydantic model, not a dict. Access attributes directly.
+            # Also normalise direction: 'bullish' sweep (low sweep) -> 'long' signal.
             smc_dir = "long" if last_sweep.direction == "bullish" else "short"
             smc_score = float(last_sweep.strength)
             smc_reasons = [

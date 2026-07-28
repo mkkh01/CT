@@ -244,9 +244,12 @@ class CTApplication:
         await self._telegram_app.initialize()
         await self._telegram_app.start()
         if self._telegram_app.updater is not None:
+            # [FIX] Set drop_pending_updates=True to clear any stale polling sessions 
+            # from previous instances, preventing Conflict: terminated by other getUpdates.
+            logger.info("telegram_polling_starting", drop_pending_updates=True)
             await self._telegram_app.updater.start_polling(
                 allowed_updates=None,
-                drop_pending_updates=False,
+                drop_pending_updates=True,
             )
         self._telegram_polling_task = asyncio.create_task(
             self._telegram_polling_guard(), name="telegram_polling_guard"

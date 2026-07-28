@@ -353,7 +353,10 @@ class SupabaseClient:
             try:
                 entry_json = json.dumps(decision.entry.model_dump(mode="json")) if decision.entry else None
                 risk_json = json.dumps(decision.risk.model_dump(mode="json"))
-                await conn.execute(
+                # [FIX] Use ON CONFLICT ... DO UPDATE to ensure we can RETURNING the ID 
+                # even if the row already exists. This prevents ForeignKeyViolation 
+                # in decision_component_signals.
+                row = await conn.fetchrow(
                     """
                     INSERT INTO decisions (
                         id, symbol, source_candle_open_time, score, confidence,
@@ -362,7 +365,9 @@ class SupabaseClient:
                         entry_payload, risk_payload,
                         final_verdict, rejection_reason
                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-                    ON CONFLICT (symbol, source_candle_open_time) DO NOTHING
+                    ON CONFLICT (symbol, source_candle_open_time) 
+                    DO UPDATE SET score = EXCLUDED.score  -- dummy update to trigger RETURNING
+                    RETURNING id
                     """,
                     decision.id, decision.symbol, decision.source_candle_open_time,
                     decision.score, decision.confidence,
@@ -371,6 +376,10 @@ class SupabaseClient:
                     entry_json, risk_json,
                     decision.final_verdict, decision.rejection_reason,
                 )
+                if row:
+                    decision_id = row["id"]
+                else:
+                    decision_id = decision.id
                 # Persist component_signals as JSON for traceability.
                 # NOTE: CREATE TABLE moved to migrations/001_init_core_tables.sql
                 # to avoid DuplicatePreparedStatementError in PgBouncer.
@@ -394,7 +403,7 @@ class SupabaseClient:
                     ON CONFLICT (decision_id, idx) DO NOTHING
                     """,
                     [
-                        (decision.id, i, json.dumps(s.model_dump(mode="json")))
+                        (decision_id, i, json.dumps(s.model_dump(mode="json")))
                         for i, s in enumerate(decision.component_signals)
                     ],
                 )
