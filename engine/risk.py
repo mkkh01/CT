@@ -7,10 +7,10 @@ File: engine/risk.py
    ``config/thresholds.py`` -- nothing is hardcoded.
 2. Consumes: ``StrategySignal``, ``RiskAssessment`` (contracts/decision.py),
    ``CoinConfig`` (contracts/config.py); thresholds from
-   config/thresholds.py (MAX_PORTFOLIO_EXPOSURE_PCT, MAX_POSITION_SIZE_PCT,
-   MAX_DAILY_LOSS_PCT, MAX_CONCURRENT_TRADES, MIN_RISK_REWARD_RATIO,
-   RISK_REWARD_TARGET, VOLATILITY_ATR_MULTIPLIER_SL,
-   VOLATILITY_ATR_MULTIPLIER_TP).
+   config/thresholds.py (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT, thresholds.MAX_POSITION_SIZE_PCT,
+   thresholds.MAX_DAILY_LOSS_PCT, thresholds.MAX_CONCURRENT_TRADES, thresholds.MIN_RISK_REWARD_RATIO,
+   thresholds.RISK_REWARD_TARGET, thresholds.VOLATILITY_ATR_MULTIPLIER_SL,
+   thresholds.VOLATILITY_ATR_MULTIPLIER_TP).
 3. Produces: ``calculate_position_size``, ``check_exposure``,
    ``check_drawdown``, ``calculate_stop_loss``, ``calculate_take_profit``,
    ``calculate_risk_reward``, ``assess_risk`` returning ``RiskAssessment``
@@ -32,7 +32,7 @@ File: engine/risk.py
           call time).
        4. Drawdown rejection -- a signal exceeding max drawdown is rejected
           with a clear reason.
-       5. R:R rejection -- a signal with R:R below ``MIN_RISK_REWARD_RATIO``
+       5. R:R rejection -- a signal with R:R below ``thresholds.MIN_RISK_REWARD_RATIO``
           is rejected.
 8. Logging: ``risk_assessed`` {timestamp, symbol, allowed, reason,
    position_size} per the monitoring/logger.py event catalog.
@@ -45,16 +45,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from config.thresholds import (
-    MAX_CONCURRENT_TRADES,
-    MAX_DAILY_LOSS_PCT,
-    MAX_PORTFOLIO_EXPOSURE_PCT,
-    MAX_POSITION_SIZE_PCT,
-    MIN_RISK_REWARD_RATIO,
-    RISK_REWARD_TARGET,
-    VOLATILITY_ATR_MULTIPLIER_SL,
-    VOLATILITY_ATR_MULTIPLIER_TP,
-)
+import config.thresholds as thresholds
 from contracts.config import CoinConfig
 from contracts.decision import RiskAssessment, StrategySignal
 from monitoring.logger import get_logger
@@ -113,9 +104,9 @@ def calculate_position_size(
     where ``risk_amount = capital * (risk_percent / 100)`` and ``price_risk
     = abs(entry_price - stop_loss_price)``.
 
-    The size is then capped at ``MAX_POSITION_SIZE_PCT`` percent of capital
+    The size is then capped at ``thresholds.MAX_POSITION_SIZE_PCT`` percent of capital
     converted to base-currency units:
-    ``max_size = capital * (MAX_POSITION_SIZE_PCT / 100) / entry_price``.
+    ``max_size = capital * (thresholds.MAX_POSITION_SIZE_PCT / 100) / entry_price``.
 
     Args:
         capital: Total capital allocated to this coin (USDT).
@@ -142,7 +133,7 @@ def calculate_position_size(
         return 0.0
 
     raw_size = risk_amount / price_risk
-    max_size = capital * (MAX_POSITION_SIZE_PCT / 100.0) / entry_price
+    max_size = capital * (thresholds.MAX_POSITION_SIZE_PCT / 100.0) / entry_price
     if max_size <= 0:
         return 0.0
     return min(raw_size, max_size)
@@ -159,7 +150,7 @@ def check_exposure(
     """True iff adding ``new_trade_size`` keeps exposure within the limit.
 
     ``projected = current_exposure + new_trade_size``;
-    passes iff ``projected <= total_capital * (MAX_PORTFOLIO_EXPOSURE_PCT / 100)``.
+    passes iff ``projected <= total_capital * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100)``.
 
     Args:
         current_exposure: Current $ exposure across all open trades.
@@ -177,7 +168,7 @@ def check_exposure(
     if total_capital <= 0:
         return False
     projected = current_exposure + new_trade_size
-    limit = total_capital * (MAX_PORTFOLIO_EXPOSURE_PCT / 100.0)
+    limit = total_capital * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100.0)
     return projected <= limit
 
 
@@ -192,7 +183,7 @@ def check_drawdown(
     """True iff taking a loss of ``new_trade_risk`` keeps drawdown in limit.
 
     ``projected_drawdown = peak_pnl - (current_pnl - new_trade_risk)``;
-    passes iff ``projected_drawdown <= peak_pnl * (MAX_DAILY_LOSS_PCT / 100)``.
+    passes iff ``projected_drawdown <= peak_pnl * (thresholds.MAX_DAILY_LOSS_PCT / 100)``.
 
     Args:
         current_pnl: Current realised + unrealised PnL for the period.
@@ -222,21 +213,29 @@ def check_drawdown(
     if new_trade_risk < 0:
         new_trade_risk = 0.0
 
-    # No profits to protect yet.
+    # No profits to protect yet (Cold Start or Reset).
     if peak_pnl <= 0:
         if current_pnl >= 0:
-            # Fresh start -- no profits, no losses. Allow the trade.
+            # Fresh start -- no profits, no losses. 
+            # We allow the trade as long as the new_trade_risk itself 
+            # doesn't exceed the thresholds.MAX_DAILY_LOSS_PCT of a "virtual" peak.
+            # Since peak_pnl is 0, we can't divide by it. But Section 8 
+            # implies protection of capital. If we don't have capital here,
+            # we allow the first trade.
             return True
-        # Already in a loss. Reject any further risk that would push the
-        # cumulative loss past the configured percentage of the (zero) peak.
-        # We treat the existing loss as the "peak drawdown" and reject if
-        # adding new_trade_risk would exceed the limit on a zero baseline --
-        # equivalently, this always rejects (any new risk on a zero-peak
-        # losing account is blocked).
+        
+        # If we are already in a loss (current_pnl < 0) but peak_pnl is 0,
+        # it means we haven't made any profit yet and we are underwater.
+        # We should block new trades if the total loss (abs(current_pnl) + new_trade_risk)
+        # exceeds the allowed daily loss percentage of the initial capital.
+        # However, since we don't have 'initial_capital' passed here directly, 
+        # and Section 8 implies peak_pnl is the baseline, any risk on a 
+        # losing account with zero peak is blocked to prevent "revenge trading" 
+        # or compounding losses on a failing strategy from day 1.
         return False
 
     projected_drawdown = peak_pnl - (current_pnl - new_trade_risk)
-    limit = peak_pnl * (MAX_DAILY_LOSS_PCT / 100.0)
+    limit = peak_pnl * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
     return projected_drawdown <= limit
 
 
@@ -248,10 +247,10 @@ def calculate_stop_loss(
     atr: float,
     direction: Literal["long", "short"],
 ) -> float:
-    """Stop-loss price for ``direction`` using ``VOLATILITY_ATR_MULTIPLIER_SL``.
+    """Stop-loss price for ``direction`` using ``thresholds.VOLATILITY_ATR_MULTIPLIER_SL``.
 
-    * Long  : ``SL = entry_price - atr * VOLATILITY_ATR_MULTIPLIER_SL``
-    * Short : ``SL = entry_price + atr * VOLATILITY_ATR_MULTIPLIER_SL``
+    * Long  : ``SL = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
+    * Short : ``SL = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
 
     Returns ``entry_price`` (no stop) if ``atr <= 0`` -- the orchestrator
     will reject this downstream via the R:R check (price_risk = 0).
@@ -260,7 +259,7 @@ def calculate_stop_loss(
     atr = _safe_float(atr)
     if atr <= 0:
         return entry_price
-    distance = atr * VOLATILITY_ATR_MULTIPLIER_SL
+    distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL
     if direction == "long":
         return entry_price - distance
     if direction == "short":
@@ -273,10 +272,10 @@ def calculate_take_profit(
     atr: float,
     direction: Literal["long", "short"],
 ) -> float:
-    """Take-profit price for ``direction`` using ``VOLATILITY_ATR_MULTIPLIER_TP``.
+    """Take-profit price for ``direction`` using ``thresholds.VOLATILITY_ATR_MULTIPLIER_TP``.
 
-    * Long  : ``TP = entry_price + atr * VOLATILITY_ATR_MULTIPLIER_TP``
-    * Short : ``TP = entry_price - atr * VOLATILITY_ATR_MULTIPLIER_TP``
+    * Long  : ``TP = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
+    * Short : ``TP = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
 
     Returns ``entry_price`` (no target) if ``atr <= 0`` -- downstream R:R
     check will reject.
@@ -285,7 +284,7 @@ def calculate_take_profit(
     atr = _safe_float(atr)
     if atr <= 0:
         return entry_price
-    distance = atr * VOLATILITY_ATR_MULTIPLIER_TP
+    distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP
     if direction == "long":
         return entry_price + distance
     if direction == "short":
@@ -348,8 +347,8 @@ def assess_risk(
          entry_price``.
       7. Compute ``risk_amount`` = ``capital * (risk_percent / 100)``.
       8. Check in order (first failure wins, returns immediately):
-           a. R:R >= ``MIN_RISK_REWARD_RATIO``
-           b. ``open_trade_count < MAX_CONCURRENT_TRADES``
+           a. R:R >= ``thresholds.MIN_RISK_REWARD_RATIO``
+           b. ``open_trade_count < thresholds.MAX_CONCURRENT_TRADES``
            c. Exposure: :func:`check_exposure` passes for ``new_trade_value``.
            d. Drawdown: :func:`check_drawdown` passes for ``risk_amount``.
       9. If all pass: return ``RiskAssessment(allowed=True, ...)`` with all
@@ -403,16 +402,43 @@ def assess_risk(
     new_trade_value = position_size * entry_price
 
     projected_exposure = current_exposure + new_trade_value
-    projected_drawdown = (
-        peak_pnl - (current_pnl - risk_amount) if peak_pnl > 0 else risk_amount
+    # If peak_pnl is 0 (cold start), projected_drawdown is just the absolute loss
+    # we would have if this trade hits SL, plus any current loss.
+    if peak_pnl <= 0:
+        projected_drawdown = abs(current_pnl) + risk_amount if current_pnl < 0 else risk_amount
+    else:
+        projected_drawdown = peak_pnl - (current_pnl - risk_amount)
+
+    # Detailed Logging for investigation
+    logger.info(
+        "risk_calculation_details",
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        risk_reward_ratio=risk_reward,
+        calculated_risk_percent=risk_percent,
+        max_allowed_risk_percent=thresholds.MAX_DAILY_LOSS_PCT,
+        capital=capital,
+        allocated_capital=capital, # In this system, allocated_capital per coin is coin_config.capital
+        position_size=position_size,
+        risk_amount=risk_amount,
+        current_exposure=current_exposure,
+        projected_exposure=projected_exposure,
+        current_pnl=current_pnl,
+        peak_pnl=peak_pnl,
+        projected_drawdown=projected_drawdown,
+        open_trade_count=open_trade_count,
+        max_concurrent_trades=thresholds.MAX_CONCURRENT_TRADES
     )
 
     # --- run the four checks in order; first failure wins ----------------
     # 1. R:R check
-    if risk_reward < MIN_RISK_REWARD_RATIO:
+    if risk_reward < thresholds.MIN_RISK_REWARD_RATIO:
         reason = (
             f"risk_reward_below_min: {risk_reward:.3f} < "
-            f"{MIN_RISK_REWARD_RATIO:.3f}"
+            f"{thresholds.MIN_RISK_REWARD_RATIO:.3f}"
         )
         return _build_rejection(
             symbol, reason, position_size, risk_amount,
@@ -422,10 +448,10 @@ def assess_risk(
         )
 
     # 2. Concurrent-trades check
-    if open_trade_count >= MAX_CONCURRENT_TRADES:
+    if open_trade_count >= thresholds.MAX_CONCURRENT_TRADES:
         reason = (
             f"max_concurrent_trades_reached: {open_trade_count} >= "
-            f"{MAX_CONCURRENT_TRADES}"
+            f"{thresholds.MAX_CONCURRENT_TRADES}"
         )
         return _build_rejection(
             symbol, reason, position_size, risk_amount,
@@ -438,8 +464,8 @@ def assess_risk(
     if not check_exposure(current_exposure, capital, new_trade_value):
         reason = (
             f"exposure_limit_exceeded: projected={projected_exposure:.4f} "
-            f"USDT > limit={capital * (MAX_PORTFOLIO_EXPOSURE_PCT / 100.0):.4f} "
-            f"USDT ({MAX_PORTFOLIO_EXPOSURE_PCT:.1f}% of {capital:.4f})"
+            f"USDT > limit={capital * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100.0):.4f} "
+            f"USDT ({thresholds.MAX_PORTFOLIO_EXPOSURE_PCT:.1f}% of {capital:.4f})"
         )
         return _build_rejection(
             symbol, reason, position_size, risk_amount,
@@ -453,8 +479,8 @@ def assess_risk(
         reason = (
             f"drawdown_limit_exceeded: projected_drawdown="
             f"{projected_drawdown:.4f} USDT > "
-            f"limit={peak_pnl * (MAX_DAILY_LOSS_PCT / 100.0):.4f} USDT "
-            f"({MAX_DAILY_LOSS_PCT:.1f}% of peak {peak_pnl:.4f})"
+            f"limit={peak_pnl * (thresholds.MAX_DAILY_LOSS_PCT / 100.0):.4f} USDT "
+            f"({thresholds.MAX_DAILY_LOSS_PCT:.1f}% of peak {peak_pnl:.4f})"
         )
         return _build_rejection(
             symbol, reason, position_size, risk_amount,
@@ -540,33 +566,33 @@ def _build_rejection(
 # Bonus: helpers for tests / bot display
 # ---------------------------------------------------------------------------
 def check_risk_reward(risk_reward: float) -> bool:
-    """True iff ``risk_reward >= MIN_RISK_REWARD_RATIO``."""
-    return _safe_float(risk_reward) >= MIN_RISK_REWARD_RATIO
+    """True iff ``risk_reward >= thresholds.MIN_RISK_REWARD_RATIO``."""
+    return _safe_float(risk_reward) >= thresholds.MIN_RISK_REWARD_RATIO
 
 
 def check_concurrent_trades(open_trade_count: int) -> bool:
-    """True iff ``open_trade_count < MAX_CONCURRENT_TRADES``."""
-    return int(open_trade_count) < MAX_CONCURRENT_TRADES
+    """True iff ``open_trade_count < thresholds.MAX_CONCURRENT_TRADES``."""
+    return int(open_trade_count) < thresholds.MAX_CONCURRENT_TRADES
 
 
 def target_risk_reward() -> float:
-    """Return the configured ``RISK_REWARD_TARGET`` (for orchestrator hints)."""
-    return float(RISK_REWARD_TARGET)
+    """Return the configured ``thresholds.RISK_REWARD_TARGET`` (for orchestrator hints)."""
+    return float(thresholds.RISK_REWARD_TARGET)
 
 
 def exposure_limit(capital: float) -> float:
     """Return the maximum allowed USDT exposure for ``capital``."""
-    return _safe_float(capital) * (MAX_PORTFOLIO_EXPOSURE_PCT / 100.0)
+    return _safe_float(capital) * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100.0)
 
 
 def max_position_notional(capital: float) -> float:
     """Return the maximum allowed USDT notional for a single new trade."""
-    return _safe_float(capital) * (MAX_POSITION_SIZE_PCT / 100.0)
+    return _safe_float(capital) * (thresholds.MAX_POSITION_SIZE_PCT / 100.0)
 
 
 def drawdown_limit(peak_pnl: float) -> float:
     """Return the maximum allowed drawdown (USDT) given ``peak_pnl``."""
-    return _safe_float(peak_pnl) * (MAX_DAILY_LOSS_PCT / 100.0)
+    return _safe_float(peak_pnl) * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
 
 
 __all__ = [
