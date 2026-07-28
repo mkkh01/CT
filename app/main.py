@@ -247,6 +247,11 @@ class CTApplication:
             # [FIX] Set drop_pending_updates=True to clear any stale polling sessions 
             # from previous instances, preventing Conflict: terminated by other getUpdates.
             logger.info("telegram_polling_starting", drop_pending_updates=True)
+            # Try to stop any existing polling first to be safe
+            try:
+                await self._telegram_app.updater.stop()
+            except:
+                pass
             await self._telegram_app.updater.start_polling(
                 allowed_updates=None,
                 drop_pending_updates=True,
@@ -284,6 +289,27 @@ class CTApplication:
                     module="app.main",
                     error_type=type(exc).__name__,
                     error_message=f"auto-resume failed: {exc}",
+                )
+        else:
+            # [FIX] Force start engine if it's not running in Redis but we have active coins
+            # This ensures the system works even if the operator didn't click Start in Telegram
+            # or if Redis state was lost/incorrect.
+            try:
+                coins = await self._supabase.fetch_all_coins(only_active=True)
+                if coins:
+                    logger.info(
+                        "app_starting",
+                        timestamp=datetime.now(timezone.utc),
+                        note=f"force-starting engine on boot: {len(coins)} active coins found",
+                    )
+                    await self.start_engine()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type=type(exc).__name__,
+                    error_message=f"force-start on boot failed: {exc}",
                 )
 
         logger.info(
