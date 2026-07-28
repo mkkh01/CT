@@ -56,8 +56,11 @@ class ResultAggregator:
             return {
                 "total_trades": len(trades),
                 "closed_trades": 0,
-                "win_rate": 0,
-                "total_pnl": 0
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate": 0.0,
+                "total_pnl": 0.0,
+                "avg_pnl": 0.0
             }
 
         wins = [t for t in closed_trades if (t.pnl or 0) > 0]

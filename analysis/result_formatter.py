@@ -86,15 +86,21 @@ class ResultFormatter:
     @staticmethod
     def format_summary_telegram(summary: Dict[str, Any]) -> str:
         """Format a performance summary for Telegram."""
+        # [FIX] Use .get() for all keys to prevent KeyError if summary is incomplete
+        total_trades = summary.get('total_trades', 0)
+        win_rate = summary.get('win_rate', 0.0)
+        total_pnl = summary.get('total_pnl', 0.0)
+        avg_pnl = summary.get('avg_pnl', 0.0)
+        
         msg = (
             f"📊 *ملخص أداء النظام*\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"📈 *إجمالي الصفقات:* {summary['total_trades']}\n"
+            f"📈 *إجمالي الصفقات:* {total_trades}\n"
             f"✅ *الصفقات الناجحة:* {summary.get('winning_trades', 0)}\n"
             f"❌ *الصفقات الخاسرة:* {summary.get('losing_trades', 0)}\n"
-            f"🎯 *نسبة النجاح:* `{summary['win_rate']:.2f}%`\n"
-            f"💰 *إجمالي الأرباح:* `{summary['total_pnl']:.2f}`\n"
-            f"📉 *متوسط الربح:* `{summary['avg_pnl']:.2f}`\n"
+            f"🎯 *نسبة النجاح:* `{win_rate:.2f}%`\n"
+            f"💰 *إجمالي الأرباح:* `{total_pnl:.2f}`\n"
+            f"📉 *متوسط الربح:* `{avg_pnl:.2f}`\n"
             f"━━━━━━━━━━━━━━━\n"
             f"🕒 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
