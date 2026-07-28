@@ -599,9 +599,9 @@ class Orchestrator:
                     entry_price=entry.entry_price,
                     stop_loss=entry.stop_loss,
                     take_profit=entry.take_profit,
-                    risk_percent=risk.risk_percent,
-                    rr_ratio=entry.rr_ratio,
-                    position_size=risk.position_size,
+                    risk_percent=coin_config.risk_percent,
+                    rr_ratio=entry.risk_reward,
+                    position_size=risk.max_position_size,
                 )
 
             final_verdict = True
@@ -703,11 +703,11 @@ class Orchestrator:
                 "entry_price": entry.entry_price,
                 "stop_loss": entry.stop_loss,
                 "take_profit": entry.take_profit,
-                "risk_pct": risk.risk_percent * 100,
+                "risk_pct": coin_config.risk_percent,
                 "reward_pct": ((entry.take_profit - entry.entry_price) / entry.entry_price * 100) if entry.entry_price else 0,
-                "rr_ratio": entry.rr_ratio,
-                "capital_alloc": (risk.position_size * entry.entry_price / coin_config.capital * 100) if coin_config.capital else 0,
-                "pos_size": risk.position_size
+                "rr_ratio": entry.risk_reward,
+                "capital_alloc": (risk.max_position_size * entry.entry_price / coin_config.capital * 100) if coin_config.capital else 0,
+                "pos_size": risk.max_position_size
             }
             
         final_verdict_str = "BUY" if final_verdict and primary_signal.direction == "long" else "SELL" if final_verdict else "REJECT"
@@ -788,7 +788,7 @@ class Orchestrator:
                     entry_price=entry.entry_price,
                     stop_loss=entry.stop_loss,
                     take_profit=entry.take_profit,
-                    position_size=risk.position_size,
+                    position_size=risk.max_position_size,
                     execution_time_ms=execution_duration_ms,
                 )
         else:

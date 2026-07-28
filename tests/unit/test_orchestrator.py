@@ -66,7 +66,7 @@ class TestProcessCandleSafe:
     ):
         # Configure mock supabase to return enough candles for analysis.
         from tests.conftest import bullish_seq
-        orchestrator.supabase.fetch_closed_candles = AsyncMock(
+        orchestrator._supabase.fetch_closed_candles = AsyncMock(
             return_value=bullish_seq(n=30)
         )
         result = await orchestrator.process_candle_safe(closed_candle, coin_config)
@@ -78,7 +78,7 @@ class TestProcessCandleSafe:
         self, orchestrator, closed_candle, coin_config
     ):
         # Configure mock to raise -- process_candle_safe must catch and return None.
-        orchestrator.supabase.fetch_closed_candles = AsyncMock(
+        orchestrator._supabase.fetch_closed_candles = AsyncMock(
             side_effect=RuntimeError("DB down")
         )
         result = await orchestrator.process_candle_safe(closed_candle, coin_config)
@@ -93,7 +93,7 @@ class TestMinimumThreeTimeframes:
         self, orchestrator, closed_candle, coin_config
     ):
         from tests.conftest import bullish_seq
-        orchestrator.supabase.fetch_closed_candles = AsyncMock(
+        orchestrator._supabase.fetch_closed_candles = AsyncMock(
             return_value=bullish_seq(n=30)
         )
         # Should not raise.
@@ -113,10 +113,10 @@ class TestIdempotency:
         self, orchestrator, closed_candle, coin_config
     ):
         from tests.conftest import bullish_seq
-        orchestrator.supabase.fetch_closed_candles = AsyncMock(
+        orchestrator._supabase.fetch_closed_candles = AsyncMock(
             return_value=bullish_seq(n=30)
         )
-        orchestrator.supabase.upsert_decision = AsyncMock(return_value=True)
+        orchestrator._supabase.upsert_decision = AsyncMock(return_value=True)
 
         # process_candle_safe may or may not call upsert_decision depending on
         # whether the analysis succeeds. We verify that IF it's called, the
@@ -128,8 +128,8 @@ class TestIdempotency:
             pass
 
         # If a decision was produced, upsert_decision was called with a DecisionResult.
-        if orchestrator.supabase.upsert_decision.called:
-            args = orchestrator.supabase.upsert_decision.call_args
+        if orchestrator._supabase.upsert_decision.called:
+            args = orchestrator._supabase.upsert_decision.call_args
             assert args is not None
             decision = args.args[0] if args.args else args.kwargs.get("decision")
             assert isinstance(decision, DecisionResult)
@@ -143,7 +143,7 @@ class TestDecisionResultShape:
         self, orchestrator, closed_candle, coin_config
     ):
         from tests.conftest import bullish_seq
-        orchestrator.supabase.fetch_closed_candles = AsyncMock(
+        orchestrator._supabase.fetch_closed_candles = AsyncMock(
             return_value=bullish_seq(n=30)
         )
         result = await orchestrator.process_candle_safe(closed_candle, coin_config)
