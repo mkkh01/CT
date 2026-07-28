@@ -62,12 +62,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, Response, status, Request
+from fastapi.staticfiles import StaticFiles
 from datetime import timedelta
 import uvicorn
 
 from monitoring.logger import configure_logging, get_logger
 from monitoring.report_formatter import format_cycle_summary
+from app.dashboard_endpoints import setup_dashboard_endpoints
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
 
@@ -1172,6 +1174,7 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event():
+    # Store instances in app.state for dependency injection
     global ct_app_instance
     try:
         from config.settings import settings
@@ -1189,6 +1192,11 @@ async def startup_event():
     ct_app_instance = CTApplication(settings=settings)
     await ct_app_instance.start()
     logger.info("FastAPI startup complete, CTApplication started.")
+    app.state.redis = ct_app_instance._redis
+    app.state.supabase = ct_app_instance._supabase
+    app.state.performance_calculator = ct_app_instance._performance_calc
+    setup_dashboard_endpoints(app, ct_app_instance)
+    app.mount("/dashboard", StaticFiles(directory="app/static"), name="dashboard")
 
 @app.on_event("shutdown")
 async def shutdown_event():

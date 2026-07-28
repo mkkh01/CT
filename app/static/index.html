@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CT Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: sans-serif; }
+        .container { max-width: 1200px; margin: auto; padding: 20px; }
+        .grid-cols-3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+        .card { background-color: #1f2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        .card-title { font-size: 1.25rem; font-weight: bold; margin-bottom: 10px; color: #e5e7eb; }
+        .text-green-500 { color: #10b981; }
+        .text-red-500 { color: #ef4444; }
+        .text-yellow-500 { color: #f59e0b; }
+        .text-blue-500 { color: #3b82f6; }
+        .text-gray-400 { color: #9ca3af; }
+        .text-white { color: #ffffff; }
+        .bg-gray-800 { background-color: #1f2937; }
+        .bg-gray-900 { background-color: #111827; }
+        .border-gray-700 { border-color: #374151; }
+        .ring-offset-gray-900 { --tw-ring-offset-color: #111827; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white">
+    <div class="container">
+        <h1 class="text-3xl font-bold text-center mb-8">CT System Dashboard</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="card">
+                <div class="card-title">System Health</div>
+                <p>Engine Running: <span id="engine-status" class="font-semibold">Loading...</span></p>
+                <p>Active Coins: <span id="active-coins" class="font-semibold">Loading...</span></p>
+                <p>Last Data At: <span id="last-data-at" class="font-semibold">Loading...</span></p>
+                <p>Errors: <span id="system-errors" class="font-semibold">Loading...</span></p>
+            </div>
+            <div class="card">
+                <div class="card-title">Live Prices</div>
+                <div id="live-prices-container">Loading...</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Overall Performance</div>
+                <p>Total Trades: <span id="total-trades" class="font-semibold">Loading...</span></p>
+                <p>Win Rate: <span id="win-rate" class="font-semibold">Loading...</span></p>
+                <p>Total PnL: <span id="total-pnl" class="font-semibold">Loading...</span></p>
+                <p>Max Drawdown: <span id="max-drawdown" class="font-semibold">Loading...</span></p>
+            </div>
+        </div>
+
+        <div class="card mb-8">
+            <div class="card-title">Strategy Performance by Symbol</div>
+            <div class="flex space-x-4 mb-4">
+                <select id="symbol-select" class="bg-gray-700 text-white p-2 rounded"></select>
+                <button id="fetch-performance" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">Fetch Performance</button>
+            </div>
+            <div id="symbol-performance-details">Select a symbol to view performance.</div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Thresholds & Configuration</div>
+            <div id="thresholds-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = '/api/dashboard';
+
+        async function fetchData(endpoint) {
+            const response = await fetch(`${API_BASE_URL}/${endpoint}`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return await response.json();
+        }
+
+        async function updateSystemHealth() {
+            try {
+                const data = await fetchData('system_health');
+                document.getElementById('engine-status').textContent = data.engine_running ? 'Running' : 'Stopped';
+                document.getElementById('engine-status').className = data.engine_running ? 'font-semibold text-green-500' : 'font-semibold text-red-500';
+                document.getElementById('active-coins').textContent = data.active_coins.join(', ') || 'None';
+                document.getElementById('last-data-at').textContent = data.last_data_at ? new Date(data.last_data_at).toLocaleString() : 'N/A';
+                document.getElementById('system-errors').textContent = data.errors;
+                document.getElementById('system-errors').className = data.errors > 0 ? 'font-semibold text-red-500' : 'font-semibold text-green-500';
+
+                // Populate symbol select for strategy performance
+                const symbolSelect = document.getElementById('symbol-select');
+                symbolSelect.innerHTML = '<option value="">Select a symbol</option>';
+                data.active_coins.forEach(symbol => {
+                    const option = document.createElement('option');
+                    option.value = symbol;
+                    option.textContent = symbol;
+                    symbolSelect.appendChild(option);
+                });
+
+            } catch (error) {
+                console.error('Error fetching system health:', error);
+                document.getElementById('engine-status').textContent = 'Error';
+                document.getElementById('active-coins').textContent = 'Error';
+                document.getElementById('last-data-at').textContent = 'Error';
+                document.getElementById('system-errors').textContent = 'Error';
+            }
+        }
+
+        async function updateLivePrices() {
+            try {
+                const activeCoinsText = document.getElementById('active-coins').textContent;
+                const activeCoins = activeCoinsText.split(', ').filter(s => s !== 'None' && s !== 'Error');
+                const livePricesContainer = document.getElementById('live-prices-container');
+                livePricesContainer.innerHTML = '';
+
+                if (activeCoins.length === 0) {
+                    livePricesContainer.textContent = 'No active coins to display live prices.';
+                    return;
+                }
+
+                for (const symbol of activeCoins) {
+                    try {
+                        const data = await fetchData(`live_prices/${symbol}`);
+                        const priceElement = document.createElement('p');
+                        priceElement.innerHTML = `<span class="font-semibold">${data.symbol}:</span> ${data.price.toFixed(2)} <span class="text-gray-400 text-sm">(${new Date(data.timestamp).toLocaleTimeString()})</span>`;
+                        livePricesContainer.appendChild(priceElement);
+                    } catch (error) {
+                        console.warn(`Could not fetch live price for ${symbol}:`, error);
+                        const priceElement = document.createElement('p');
+                        priceElement.innerHTML = `<span class="font-semibold">${symbol}:</span> N/A <span class="text-red-500 text-sm">(Error)</span>`;
+                        livePricesContainer.appendChild(priceElement);
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating live prices:', error);
+                document.getElementById('live-prices-container').textContent = 'Error loading live prices.';
+            }
+        }
+
+        async function updateOverallPerformance() {
+            try {
+                // Assuming an endpoint for overall performance without a symbol, or aggregating from all symbols
+                const data = await fetchData('overall_performance');
+                document.getElementById('total-trades').textContent = data.total_trades;
+                document.getElementById('win-rate').textContent = `${(data.win_rate * 100).toFixed(2)}%`;
+                document.getElementById('total-pnl').textContent = data.total_pnl.toFixed(2);
+                document.getElementById('max-drawdown').textContent = `${data.max_drawdown.toFixed(2)} (${(data.max_drawdown_percent * 100).toFixed(2)}%)`;
+            } catch (error) {
+                console.error('Error fetching overall performance:', error);
+                document.getElementById('overall-performance-container').textContent = 'Error loading overall performance.';
+            }
+        }
+
+        async function updateThresholds() {
+            try {
+                const data = await fetchData('thresholds');
+                const thresholdsContainer = document.getElementById('thresholds-container');
+                thresholdsContainer.innerHTML = '';
+                for (const key in data) {
+                    const div = document.createElement('div');
+                    div.className = 'p-2 bg-gray-700 rounded';
+                    div.innerHTML = `<span class="font-semibold text-blue-300">${key.replace(/_/g, ' ')}:</span> ${data[key]}`;
+                    thresholdsContainer.appendChild(div);
+                }
+            } catch (error) {
+                console.error('Error fetching thresholds:', error);
+                document.getElementById('thresholds-container').textContent = 'Error loading thresholds.';
+            }
+        }
+
+        async function fetchStrategyPerformance() {
+            const symbol = document.getElementById('symbol-select').value;
+            const performanceDetailsDiv = document.getElementById('symbol-performance-details');
+            if (!symbol) {
+                performanceDetailsDiv.innerHTML = 'Please select a symbol.';
+                return;
+            }
+
+            try {
+                const data = await fetchData(`strategy_performance/${symbol}`);
+                performanceDetailsDiv.innerHTML = `
+                    <p><span class="font-semibold">Symbol:</span> ${data.symbol}</p>
+                    <p><span class="font-semibold">Total Trades:</span> ${data.total_trades}</p>
+                    <p><span class="font-semibold">Winning Trades:</span> ${data.winning_trades}</p>
+                    <p><span class="font-semibold">Losing Trades:</span> ${data.losing_trades}</p>
+                    <p><span class="font-semibold">Win Rate:</span> ${data.win_rate}%</p>
+                    <p><span class="font-semibold">Total PnL:</span> ${data.total_pnl.toFixed(2)}</p>
+                    <p><span class="font-semibold">Average PnL:</span> ${data.average_pnl.toFixed(2)}</p>
+                    <p><span class="font-semibold">Max Drawdown:</span> ${data.max_drawdown.toFixed(2)} (${data.max_drawdown_percent.toFixed(2)}%)</p>
+                    <p><span class="font-semibold">Sharpe Ratio:</span> ${data.sharpe_ratio ? data.sharpe_ratio.toFixed(2) : 'N/A'}</p>
+                    <p><span class="font-semibold">Profit Factor:</span> ${data.profit_factor ? data.profit_factor.toFixed(2) : 'N/A'}</p>
+                    <p><span class="font-semibold">Consecutive Wins:</span> ${data.consecutive_wins}</p>
+                    <p><span class="font-semibold">Consecutive Losses:</span> ${data.consecutive_losses}</p>
+                `;
+            } catch (error) {
+                console.error(`Error fetching performance for ${symbol}:`, error);
+                performanceDetailsDiv.innerHTML = `<p class="text-red-500">Error loading performance for ${symbol}.</p>`;
+            }
+        }
+
+        document.getElementById('fetch-performance').addEventListener('click', fetchStrategyPerformance);
+
+        // Initial load and periodic updates
+        updateSystemHealth();
+        updateLivePrices();
+        updateOverallPerformance(); // This needs a proper backend endpoint
+        updateThresholds();
+
+        setInterval(updateSystemHealth, 5000);
+        setInterval(updateLivePrices, 3000);
+        setInterval(updateOverallPerformance, 10000); // Update less frequently
+
+    </script>
+</body>
+</html>
