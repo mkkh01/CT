@@ -913,13 +913,19 @@ class CTApplication:
             return
 
         try:
-            await self._telegram_app.updater.start_polling(
-                allowed_updates=None,
-                drop_pending_updates=False,
-            )
-            # This loop will run indefinitely until the updater is stopped or an error occurs.
-            while True:
-                await asyncio.sleep(1)
+            # Note: start_polling is already called in start(). 
+            # This guard task only needs to monitor if the updater is still running.
+            while self._telegram_app.updater and self._telegram_app.updater.running:
+                await asyncio.sleep(5)
+            
+            if not self._shutdown_started:
+                logger.warning(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="app.main",
+                    error_type="TelegramPollingStopped",
+                    error_message="telegram polling stopped unexpectedly",
+                )
         except asyncio.CancelledError:
             logger.info(
                 "app_shutdown",
