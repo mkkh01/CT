@@ -166,8 +166,18 @@ def log_decision_approved(
     take_profit: float,
     position_size: float,
     execution_time_ms: float,
+    direction: str = "long",
 ) -> None:
     """Log an approved trading decision with entry parameters."""
+    # Correct RR calculation based on direction
+    if entry_price != stop_loss:
+        if direction == "long":
+            rr = (take_profit - entry_price) / (entry_price - stop_loss)
+        else:
+            rr = (entry_price - take_profit) / (stop_loss - entry_price)
+    else:
+        rr = 0
+
     log_workflow_event(
         event_type=WorkflowEventType.DECISION_APPROVED,
         symbol=symbol,
@@ -178,7 +188,7 @@ def log_decision_approved(
             "stop_loss": stop_loss,
             "take_profit": take_profit,
             "position_size": position_size,
-            "risk_reward_ratio": round((take_profit - entry_price) / (entry_price - stop_loss), 2) if entry_price != stop_loss else 0,
+            "risk_reward_ratio": round(rr, 2),
         },
         execution_time_ms=execution_time_ms,
     )

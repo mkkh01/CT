@@ -848,6 +848,33 @@ class CTApplication:
                     self._health_stats["opportunities_found"] += 1
                     self._health_stats["telegram_sent"] += 1
                     self._health_stats["last_success_at"] = datetime.now(timezone.utc)
+                    
+                    # Send Telegram Alert (Section 20)
+                    if self._telegram_app and self._settings.telegram_chat_id and result.entry:
+                        try:
+                            alert_text = self._bot.format_trade_alert(
+                                symbol=result.symbol,
+                                direction=result.entry.direction,
+                                entry_price=result.entry.entry_price,
+                                confidence=result.confidence,
+                                stop_loss=result.entry.stop_loss,
+                                take_profit=result.entry.take_profit,
+                                risk_reward=result.risk.risk_reward_ratio,
+                            )
+                            await self._telegram_app.bot.send_message(
+                                chat_id=self._settings.telegram_chat_id,
+                                text=alert_text,
+                                parse_mode="HTML" if "<" in alert_text else None # Basic detection
+                            )
+                        except Exception as t_exc:
+                            logger.error(
+                                "error",
+                                timestamp=datetime.now(timezone.utc),
+                                module="app.main",
+                                error_type=type(t_exc).__name__,
+                                error_message=f"failed to send telegram alert: {t_exc}",
+                                symbol=candle.symbol,
+                            )
                 else:
                     self._health_stats["opportunities_rejected"] += 1
                     reason = result.rejection_reason or "unknown"

@@ -26,6 +26,7 @@ from contracts.config import SystemConfig
 # ---------------------------------------------------------------------------
 # Telegram Token
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8861445628:AAFVuxfIXmTQGIoKMmcTcPZipdShTKFaewg")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "7052631557")
 
 # Supabase / Postgres (Transaction Pooler IPv4)
 # For asyncpg.create_pool, the DSN must start with postgresql:// NOT postgresql+asyncpg://
@@ -51,6 +52,7 @@ settings = SystemConfig(
     supabase_key=os.environ.get("SUPABASE_KEY", "service_role_key_placeholder"),
     redis_url=REDIS_URL,
     default_timeframes=["15m", "1h", "4h"],
-    max_active_coins=10,
-    simulation_mode=True,
+    max_active_coins: 10,
+    simulation_mode: True,
+    telegram_chat_id: TELEGRAM_CHAT_ID,
 )

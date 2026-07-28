@@ -790,6 +790,7 @@ class Orchestrator:
                     take_profit=entry.take_profit,
                     position_size=risk.max_position_size,
                     execution_time_ms=execution_duration_ms,
+                    direction=entry.direction,
                 )
         else:
             logger.info(

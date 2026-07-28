@@ -69,3 +69,4 @@ class SystemConfig(BaseModel):
     default_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "4h"])
     max_active_coins: int = 10
     simulation_mode: bool = True
+    telegram_chat_id: Optional[str] = None
