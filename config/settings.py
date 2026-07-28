@@ -52,7 +52,7 @@ settings = SystemConfig(
     supabase_key=os.environ.get("SUPABASE_KEY", "service_role_key_placeholder"),
     redis_url=REDIS_URL,
     default_timeframes=["15m", "1h", "4h"],
-    max_active_coins: 10,
-    simulation_mode: True,
-    telegram_chat_id: TELEGRAM_CHAT_ID,
+    max_active_coins=10,
+    simulation_mode=True,
+    telegram_chat_id=TELEGRAM_CHAT_ID,
 )
