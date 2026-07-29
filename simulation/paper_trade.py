@@ -683,6 +683,37 @@ class PaperTrader:
         return closed
 
     # ----------------------- batch closure check ---------------------------
+    async def scan_and_close_open_trades(self) -> list[SimulatedTrade]:
+        """Background task entry point: fetch latest candles and check all open trades.
+        
+        This simplifies the integration with app/main.py by handling the candle 
+        lookup internally.
+        """
+        open_trades = await self._supabase.fetch_open_trades()
+        if not open_trades:
+            # Heartbeat for health manager even when no trades are open
+            await health_manager.update_component(
+                "PaperTrader", HealthStatus.OK, "No open trades to scan"
+            )
+            return []
+
+        # Build a map of symbol -> latest candle
+        current_candles: dict[str, Candle] = {}
+        for trade in open_trades:
+            if trade.symbol not in current_candles:
+                candle = await self._supabase.fetch_latest_candle(trade.symbol, "15m")
+                if candle:
+                    current_candles[trade.symbol] = candle
+
+        closed = await self.check_all_open_trades(current_candles)
+        
+        await health_manager.update_component(
+            "PaperTrader", 
+            HealthStatus.OK, 
+            f"Scanned {len(open_trades)} trades, closed {len(closed)}"
+        )
+        return closed
+
     async def check_all_open_trades(
         self, current_candles: dict[str, Candle]
     ) -> list[SimulatedTrade]:

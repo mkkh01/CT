@@ -309,6 +309,7 @@ def mock_supabase():
     supabase.insert_simulated_trade = AsyncMock(return_value=True)
     supabase.update_simulated_trade_closure = AsyncMock()
     supabase.fetch_closed_candles = AsyncMock(return_value=[])
+    supabase.fetch_latest_candle = AsyncMock(return_value=None)
     supabase.fetch_open_trades = AsyncMock(return_value=[])
     supabase.fetch_recent_trades = AsyncMock(return_value=[])
     supabase.fetch_closed_trades = AsyncMock(return_value=[])

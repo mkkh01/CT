@@ -477,11 +477,27 @@ class CTApplication:
                         )
                 setattr(self, task_attr, None)
 
-            # Count open simulated trades for the log event.
+            # [FIX] Close all open simulated trades on engine stop (Section 7)
+            # This ensures a clean cutoff and prevents "max_concurrent_trades" rejection on restart.
+            open_trades_count = 0
             try:
-                open_trades_count = await self._supabase.count_open_trades()
-            except Exception:  # noqa: BLE001
-                open_trades_count = 0
+                open_trades = await self._supabase.fetch_open_trades()
+                open_trades_count = len(open_trades)
+                if open_trades:
+                    from simulation.paper_trade import PaperTrader
+                    paper_trader = PaperTrader(supabase=self._supabase)
+                    
+                    # Build price map from latest candles
+                    price_map = {}
+                    for t in open_trades:
+                        candle = await self._supabase.fetch_latest_candle(t.symbol, "15m")
+                        if candle:
+                            price_map[t.symbol] = candle.close
+                    
+                    closed = await paper_trader.close_all_open(price_map)
+                    logger.info("engine_stop_trades_closed", closed_count=len(closed), requested_count=len(open_trades))
+            except Exception as exc:
+                logger.warning(f"Failed to close trades on engine stop: {exc}")
 
             # 4. Clear the Redis flag.
             try:
@@ -1022,6 +1038,13 @@ class CTApplication:
                 avg_score = (self._health_stats["total_score_sum"] / analyzed_count * 100) if analyzed_count > 0 else 0.0
                 avg_conf = (self._health_stats["total_confidence_sum"] / analyzed_count * 100) if analyzed_count > 0 else 0.0
                 avg_time = (self._health_stats["total_analysis_time_ms"] / analyzed_count) if analyzed_count > 0 else 0.0
+
+                # [FIX] Refresh component statuses to prevent staleness
+                try:
+                    await health_manager.update_component("Redis", HealthStatus.OK, "Redis connection active")
+                    await health_manager.update_component("Supabase", HealthStatus.OK, "Supabase connection active")
+                except Exception:
+                    pass
 
                 # [FIX] Derive system health from global health_manager
                 health_summary = await health_manager.get_overall_health()

@@ -160,11 +160,11 @@ class TestIdempotencySQL:
         assert "ON CONFLICT" in source.upper()
         assert "(symbol, timeframe, open_time)" in source
 
-    def test_upsert_decision_uses_on_conflict_do_nothing(self):
+    def test_upsert_decision_uses_on_conflict_do_update(self):
         import inspect
         source = inspect.getsource(SupabaseClient.upsert_decision)
         assert "ON CONFLICT" in source.upper()
-        assert "DO NOTHING" in source.upper()
+        assert "DO UPDATE" in source.upper()
 
     def test_insert_simulated_trade_uses_on_conflict(self):
         import inspect

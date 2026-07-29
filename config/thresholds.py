@@ -114,7 +114,7 @@ NY_END_UTC = 21
 MAX_PORTFOLIO_EXPOSURE_PCT = 50.0
 """Maximum total portfolio exposure as % of total capital."""
 
-MAX_POSITION_SIZE_PCT = 10.0
+MAX_POSITION_SIZE_PCT = 25.0
 """Maximum size of a single position as % of coin capital."""
 
 MAX_DAILY_LOSS_PCT = 5.0
