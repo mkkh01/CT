@@ -100,13 +100,14 @@ def _determine_bias(htf_candles: list[Candle]) -> tuple[Literal["bullish", "bear
 # LTF / HTF alignment check
 # ---------------------------------------------------------------------------
 def _check_alignment(
-    ltf_direction: Literal["long", "short"],
+    ltf_direction: Literal["long", "short", "neutral"],
     htf_bias: Literal["bullish", "bearish", "neutral"],
 ) -> tuple[bool, str]:
     """Return ``(alignment, reason)`` for the LTF/HTF pair.
 
       * LTF long  + HTF bullish  -> aligned (True).
       * LTF short + HTF bearish  -> aligned (True).
+      * LTF neutral              -> aligned (True, pass-through).
       * HTF neutral              -> aligned (True, pass-through -- no filter).
       * LTF long  + HTF bearish  -> NOT aligned (False).
       * LTF short + HTF bullish  -> NOT aligned (False).
@@ -114,6 +115,9 @@ def _check_alignment(
     The reason string is human-readable and unique per case so the
     orchestrator can surface it as the rejection_reason.
     """
+    # LTF neutral: the market has no clear direction -- pass through.
+    if ltf_direction == "neutral":
+        return True, "ltf_neutral_pass_through"
     if htf_bias == "neutral":
         return True, "htf_neutral_pass_through"
     if ltf_direction == "long" and htf_bias == "bullish":

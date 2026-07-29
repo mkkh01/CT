@@ -26,7 +26,7 @@ class StrategySignal(BaseModel):
     symbol: str
     timeframe: str
     strategy_name: str
-    direction: Literal["long", "short"]
+    direction: Literal["long", "short", "neutral"]
     raw_score: float = Field(ge=0.0, le=1.0)
     reasons: list[str] = Field(default_factory=list)
     timestamp: datetime

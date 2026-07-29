@@ -88,11 +88,12 @@ def _within_pct(price_a: float, price_b: float, tolerance_pct: float) -> bool:
     return (diff / denom) * 100.0 <= tolerance_pct
 
 
-def _apply_limit_offset(entry_price: float, direction: Literal["long", "short"]) -> float:
+def _apply_limit_offset(entry_price: float, direction: Literal["long", "short", "neutral"]) -> float:
     """Apply ``ENTRY_LIMIT_OFFSET_PCT`` in the favourable direction.
 
     * Long  : ``entry * (1 - offset)`` -- *better* (lower) entry for a buyer.
     * Short : ``entry * (1 + offset)`` -- *better* (higher) entry for a seller.
+    * Neutral: no offset (market entry semantics).
 
     The offset is the fractional form of ``ENTRY_LIMIT_OFFSET_PCT``
     (e.g. ``0.05`` for 5%).
@@ -102,7 +103,8 @@ def _apply_limit_offset(entry_price: float, direction: Literal["long", "short"])
         return entry_price * (1.0 - offset)
     if direction == "short":
         return entry_price * (1.0 + offset)
-    raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
+    # neutral: no directional offset -- just return the price as-is.
+    return entry_price
 
 
 def _nearest_unmitigated_ob(
@@ -177,7 +179,7 @@ def _nearest_unfilled_fvg(
 # Entry type decision
 # ---------------------------------------------------------------------------
 def _decide_entry_type(
-    direction: Literal["long", "short"],
+    direction: Literal["long", "short", "neutral"],
     ob_list: list[OrderBlock],
     fvg_list: list[FairValueGap],
     current_price: float,

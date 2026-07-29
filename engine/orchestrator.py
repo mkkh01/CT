@@ -190,13 +190,13 @@ def _build_strategy_signal(
 ) -> StrategySignal:
     """Build a :class:`StrategySignal` with safe defaults.
 
-    ``direction`` is normalised to ``"long"`` / ``"short"`` -- any other
-    value (e.g. ``"neutral"`` from a trend module) is mapped to ``"long"``
-    with a ``neutral_direction_default`` reason appended.  ``raw_score`` is
-    clamped to ``[0, 1]``.
+    ``direction`` accepts ``"long"``, ``"short"``, or ``"neutral"``.
+    Any other value is mapped to ``"long"`` with a
+    ``neutral_direction_default`` reason appended.
+    ``raw_score`` is clamped to ``[0, 1]``.
     """
     # Normalise direction.
-    if direction not in ("long", "short"):
+    if direction not in ("long", "short", "neutral"):
         direction = "long"
         reasons = list(reasons) + [f"neutral_direction_default({direction})"]
     else:
@@ -1198,7 +1198,9 @@ class Orchestrator:
         elif trend_dir_raw == "bearish":
             trend_dir = "short"
         else:
-            trend_dir = "long"  # neutral -> default long with low score
+            # neutral direction: use a "neutral" signal that the summary
+            # can interpret as sideways / ranging.
+            trend_dir = "neutral"
         trend_score = float(trend.get("strength", 0.0) or 0.0)
         trend_reasons = list(trend.get("reasons", []))
         if not trend_reasons:

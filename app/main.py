@@ -129,6 +129,7 @@ class CTApplication:
         self._health_stats = {
             "scan_cycles": 0,
             "pairs_analyzed": 0,  # Real closed-candle analyses
+            "unique_symbols_seen": set(),  # Track distinct symbols
             "strategies_run": 0,
             "opportunities_found": 0,
             "opportunities_rejected": 0,
@@ -139,7 +140,15 @@ class CTApplication:
             "total_confidence_sum": 0.0,
             "total_analysis_time_ms": 0.0,
             "db_writes": 0,
-            "telegram_sent": 0
+            "telegram_sent": 0,
+            # Direction / regime tracking (replaces regime_True/False hack)
+            "bullish_count": 0,
+            "bearish_count": 0,
+            "sideways_count": 0,
+            "last_known_direction": {},  # symbol -> last known direction
+            # Cooldown tracking: symbol -> last_analysis_timestamp
+            "last_analysis_time": {},
+            "min_analysis_interval": 30.0,  # seconds between analyses per symbol
         }
 
         # Storage -- connected in start().
@@ -414,6 +423,39 @@ class CTApplication:
                 active_coins=len(coins),
                 active_pairs=sum(len(c.timeframes) for c in coins),
             )
+
+    # -----------------------------------------------------------------
+    # Direction determination for the health summary
+    # -----------------------------------------------------------------
+    def _determine_primary_direction(self, result: Any) -> str:
+        """Derive the primary market direction from a DecisionResult.
+
+        Uses component signals to determine the dominant direction:
+          - If the primary signal (trend) is long -> bullish
+          - If the primary signal (trend) is short -> bearish
+          - Otherwise -> neutral/sideways
+
+        Falls back to HTF bias when no component signals are available.
+        """
+        # 1. Look for trend signals first (highest weight)
+        for sig in (result.component_signals or []):
+            if sig.strategy_name == "trend":
+                if sig.direction == "long":
+                    return "long"
+                elif sig.direction == "short":
+                    return "short"
+
+        # 2. Fall back to entry direction (if a trade was approved)
+        if result.entry:
+            return result.entry.direction
+
+        # 3. Fall back to HTF bias signal
+        for sig in (result.component_signals or []):
+            if sig.strategy_name in ("htf_filter", "momentum"):
+                return sig.direction
+
+        # 4. Default to neutral
+        return "neutral"
 
     async def stop_engine(self) -> None:
         """Stop the engine gracefully.
@@ -850,6 +892,23 @@ class CTApplication:
             )
             return
 
+        # Cooldown: skip if the same symbol was analyzed recently.
+        # This prevents low-timeframe pairs (e.g. VTHO 1m) from dominating
+        # the health summary.
+        now_ts = datetime.now(timezone.utc)
+        last_time = self._health_stats["last_analysis_time"].get(candle.symbol)
+        interval = self._health_stats["min_analysis_interval"]
+        if last_time is not None:
+            elapsed = (now_ts - last_time).total_seconds()
+            if elapsed < interval:
+                logger.debug(
+                    "trace_cooling_down",
+                    symbol=candle.symbol,
+                    elapsed_seconds=elapsed,
+                    cooldown_seconds=interval,
+                )
+                return
+
         # Process the candle.
         try:
             # Generate correlation IDs for this analysis cycle
@@ -875,20 +934,31 @@ class CTApplication:
             clear_context()
             
             if result:
+                # Update cooldown timestamp
+                self._health_stats["last_analysis_time"][candle.symbol] = now_ts
+                
                 # Update health stats via health_manager
                 await health_manager.increment_stat("analyses_executed")
                 
                 # Update health stats with more granularity
                 self._health_stats["pairs_analyzed"] += 1
+                # Track unique symbols for the summary
+                self._health_stats["unique_symbols_seen"].add(result.symbol)
                 self._health_stats["strategies_run"] += len(result.component_signals)
                 self._health_stats["total_score_sum"] += result.score
                 self._health_stats["total_confidence_sum"] += result.confidence
                 self._health_stats["total_analysis_time_ms"] += analysis_duration
                 self._health_stats["db_writes"] += 1
                 
-                # Track regime for summary
-                regime_key = f"regime_{result.regime_check_passed}"
-                self._health_stats[regime_key] = self._health_stats.get(regime_key, 0) + 1
+                # Track directional state from component signals
+                direction = self._determine_primary_direction(result)
+                self._health_stats["last_known_direction"][result.symbol] = direction
+                if direction == "long":
+                    self._health_stats["bullish_count"] += 1
+                elif direction == "short":
+                    self._health_stats["bearish_count"] += 1
+                else:
+                    self._health_stats["sideways_count"] += 1
                 
                 if result.final_verdict:
                     await health_manager.increment_stat("signals_emitted")
@@ -1055,11 +1125,14 @@ class CTApplication:
                     HealthStatus.CRITICAL: "CRITICAL"
                 }
 
+                # Use unique symbol count for "Pairs Analyzed" (user-facing)
+                unique_pair_count = len(self._health_stats.get("unique_symbols_seen", set()))
+                
                 summary_block = format_cycle_summary(
-                    pairs_analyzed=analyzed_count,
-                    bullish_count=self._health_stats.get("regime_True", 0),
-                    bearish_count=self._health_stats.get("regime_False", 0),
-                    sideways_count=max(0, analyzed_count - self._health_stats.get("regime_True", 0) - self._health_stats.get("regime_False", 0)),
+                    pairs_analyzed=unique_pair_count,
+                    bullish_count=self._health_stats.get("bullish_count", 0),
+                    bearish_count=self._health_stats.get("bearish_count", 0),
+                    sideways_count=self._health_stats.get("sideways_count", 0),
                     signals_found=self._health_stats["opportunities_found"] + self._health_stats["opportunities_rejected"],
                     approved_count=self._health_stats["opportunities_found"],
                     rejected_count=self._health_stats["opportunities_rejected"],
