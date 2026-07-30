@@ -87,7 +87,7 @@ VOLATILITY_ATR_PERIOD = 14
 VOLATILITY_ATR_MULTIPLIER_SL = 1.5
 """ATR multiplier used to compute the stop-loss distance."""
 
-VOLATILITY_ATR_MULTIPLIER_TP = 3.0
+VOLATILITY_ATR_MULTIPLIER_TP = 4.5
 """ATR multiplier used to compute the take-profit distance."""
 
 VOLATILITY_BB_PERIOD = 20
@@ -114,7 +114,7 @@ NY_END_UTC = 21
 MAX_PORTFOLIO_EXPOSURE_PCT = 50.0
 """Maximum total portfolio exposure as % of total capital."""
 
-MAX_POSITION_SIZE_PCT = 25.0
+MAX_POSITION_SIZE_PCT = 40.0
 """Maximum size of a single position as % of coin capital."""
 
 MAX_DAILY_LOSS_PCT = 5.0

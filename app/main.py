@@ -981,7 +981,19 @@ class CTApplication:
                             await self._telegram_app.bot.send_message(
                                 chat_id=self._settings.telegram_chat_id,
                                 text=alert_text,
-                                parse_mode="HTML" if "<" in alert_text else None # Basic detection
+                                parse_mode="HTML"
+                            )
+                            
+                            # Open trade and send confirmation
+                            from simulation.paper_trade import PaperTrader
+                            trader = PaperTrader(self._supabase)
+                            trade = await trader.open_trade(result)
+                            
+                            opened_text = self._bot.format_trade_opened(trade)
+                            await self._telegram_app.bot.send_message(
+                                chat_id=self._settings.telegram_chat_id,
+                                text=opened_text,
+                                parse_mode="HTML"
                             )
                         except Exception as t_exc:
                             logger.error(
@@ -1024,7 +1036,21 @@ class CTApplication:
 
         try:
             while True:
-                await paper_trader.scan_and_close_open_trades()
+                closed_trades = await paper_trader.scan_and_close_open_trades()
+                
+                # Notify about closed trades
+                if closed_trades and self._telegram_app and self._settings.telegram_chat_id:
+                    for trade in closed_trades:
+                        try:
+                            closed_text = self._bot.format_trade_closed(trade)
+                            await self._telegram_app.bot.send_message(
+                                chat_id=self._settings.telegram_chat_id,
+                                text=closed_text,
+                                parse_mode="HTML"
+                            )
+                        except Exception as n_exc:
+                            logger.warning(f"Failed to send trade closure notification: {n_exc}")
+
                 await asyncio.sleep(PAPER_TRADER_POLL_SECONDS)
         except asyncio.CancelledError:
             raise

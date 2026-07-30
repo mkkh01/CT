@@ -1682,6 +1682,46 @@ class CTTelegramBot:
         return "\n".join(lines).rstrip()
 
     @staticmethod
+    def format_trade_opened(trade: SimulatedTrade) -> str:
+        """Format a trade-opened notification."""
+        direction = trade.direction.upper()
+        entry = CTTelegramBot._fmt_price(trade.entry_price)
+        stop = CTTelegramBot._fmt_price(trade.stop_loss) if trade.stop_loss is not None else "n/a"
+        target = CTTelegramBot._fmt_price(trade.take_profit) if trade.take_profit is not None else "n/a"
+        
+        return (
+            "🚀 <b>Trade Opened!</b>\n\n"
+            f"<b>Coin:</b> {trade.symbol}\n"
+            f"<b>Direction:</b> {direction}\n"
+            f"<b>Entry Price:</b> {entry}\n\n"
+            f"<b>Stop Loss:</b> {stop}\n"
+            f"<b>Target:</b> {target}\n\n"
+            f"<i>{SIM_WARNING_TRADE}</i>"
+        )
+
+    @staticmethod
+    def format_trade_closed(trade: SimulatedTrade) -> str:
+        """Format a trade-closed notification."""
+        direction = trade.direction.upper()
+        entry = CTTelegramBot._fmt_price(trade.entry_price)
+        close = CTTelegramBot._fmt_price(trade.close_price)
+        pnl = trade.pnl if trade.pnl is not None else 0.0
+        reason = (trade.close_reason or "manual").upper()
+        
+        icon = "✅" if pnl > 0 else "❌"
+        
+        return (
+            f"{icon} <b>Trade Closed!</b>\n\n"
+            f"<b>Coin:</b> {trade.symbol}\n"
+            f"<b>Direction:</b> {direction}\n"
+            f"<b>Status:</b> {reason}\n\n"
+            f"<b>Entry Price:</b> {entry}\n"
+            f"<b>Close Price:</b> {close}\n"
+            f"<b>PnL:</b> <code>{pnl:+.4f} USDT</code>\n\n"
+            f"<i>{SIM_WARNING_TRADE}</i>"
+        )
+
+    @staticmethod
     def format_trade_alert(
         symbol: str,
         direction: str,
