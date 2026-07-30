@@ -68,7 +68,7 @@ from datetime import timedelta
 import uvicorn
 
 from monitoring.logger import configure_logging, get_logger
-from monitoring.report_formatter import format_cycle_summary
+
 from app.dashboard_endpoints import setup_dashboard_endpoints
 from storage.redis_cache import RedisCache
 from storage.supabase import SupabaseClient
@@ -125,31 +125,7 @@ class CTApplication:
     def __init__(self, settings: "SystemConfig") -> None:
         self._settings: "SystemConfig" = settings
         
-        # Health Tracking (Requested Log #9 & #11)
-        self._health_stats = {
-            "scan_cycles": 0,
-            "pairs_analyzed": 0,  # Real closed-candle analyses
-            "unique_symbols_seen": set(),  # Track distinct symbols
-            "strategies_run": 0,
-            "opportunities_found": 0,
-            "opportunities_rejected": 0,
-            "rejection_reasons": {},
-            "errors": 0,
-            "last_data_at": None,
-            "total_score_sum": 0.0,
-            "total_confidence_sum": 0.0,
-            "total_analysis_time_ms": 0.0,
-            "db_writes": 0,
-            "telegram_sent": 0,
-            # Direction / regime tracking (replaces regime_True/False hack)
-            "bullish_count": 0,
-            "bearish_count": 0,
-            "sideways_count": 0,
-            "last_known_direction": {},  # symbol -> last known direction
-            # Cooldown tracking: symbol -> last_analysis_timestamp
-            "last_analysis_time": {},
-            "min_analysis_interval": 30.0,  # seconds between analyses per symbol
-        }
+
 
         # Storage -- connected in start().
         self._redis: RedisCache = RedisCache(url=settings.redis_url)
@@ -243,7 +219,7 @@ class CTApplication:
         self._telegram_app.bot_data["reload_engine_callback"] = self._reload_engine
         
         # 7.5 Start the new observability heartbeat loop
-        asyncio.create_task(run_heartbeat_loop(interval_seconds=60.0), name="runtime_heartbeat")
+        self._health_log_task = asyncio.create_task(run_heartbeat_loop(interval_seconds=60.0), name="runtime_heartbeat")
 
         # 8. Register signal handlers (SIGTERM for Render, SIGINT for local).
         # This is now handled by FastAPI's lifespan events.
@@ -831,7 +807,7 @@ class CTApplication:
             payload = json.loads(raw_data)
             candle = Candle(**payload)
         except (TypeError, ValueError, Exception) as exc:
-            self._health_stats["errors"] += 1
+            await health_manager.increment_stat("errors_count")
             logger.warning(
                 "error",
                 timestamp=datetime.now(timezone.utc),
@@ -844,9 +820,8 @@ class CTApplication:
 
         # [TRACE] Consumer received
         now = datetime.now(timezone.utc)
-        self._health_stats["last_data_at"] = now
+        await health_manager.update_component("Ingest", HealthStatus.OK, "Received candle", {"symbol": candle.symbol, "timeframe": candle.timeframe}, timeout=60.0)
         # [FIX] Synchronize scan_cycles between local health_stats and global health_manager
-        self._health_stats["scan_cycles"] += 1
         await health_manager.increment_stat("scan_cycles")
         
         logger.debug(
@@ -881,7 +856,7 @@ class CTApplication:
                 return
             # [TRACE] Cache updated (loaded config)
         except Exception as exc:  # noqa: BLE001
-            self._health_stats["errors"] += 1
+            await health_manager.increment_stat("errors_count")
             logger.warning(
                 "error",
                 timestamp=datetime.now(timezone.utc),
@@ -896,8 +871,10 @@ class CTApplication:
         # This prevents low-timeframe pairs (e.g. VTHO 1m) from dominating
         # the health summary.
         now_ts = datetime.now(timezone.utc)
-        last_time = self._health_stats["last_analysis_time"].get(candle.symbol)
-        interval = self._health_stats["min_analysis_interval"]
+        # Cooldown logic needs to be refactored to use health_manager or a dedicated cooldown tracker.
+        # For now, disabling this part to remove dependency on _health_stats.
+        last_time = None # self._health_stats["last_analysis_time"].get(candle.symbol)
+        interval = 0.0 # self._health_stats["min_analysis_interval"]
         if last_time is not None:
             elapsed = (now_ts - last_time).total_seconds()
             if elapsed < interval:
@@ -935,36 +912,38 @@ class CTApplication:
             
             if result:
                 # Update cooldown timestamp
-                self._health_stats["last_analysis_time"][candle.symbol] = now_ts
+                # Cooldown timestamp update should be part of the refactored cooldown logic.
+                # self._health_stats["last_analysis_time"][candle.symbol] = now_ts
                 
                 # Update health stats via health_manager
                 await health_manager.increment_stat("analyses_executed")
                 
-                # Update health stats with more granularity
-                self._health_stats["pairs_analyzed"] += 1
-                # Track unique symbols for the summary
-                self._health_stats["unique_symbols_seen"].add(result.symbol)
-                self._health_stats["strategies_run"] += len(result.component_signals)
-                self._health_stats["total_score_sum"] += result.score
-                self._health_stats["total_confidence_sum"] += result.confidence
-                self._health_stats["total_analysis_time_ms"] += analysis_duration
-                self._health_stats["db_writes"] += 1
+                # The following metrics were previously updated in _health_stats.
+                # They should either be moved to health_manager or handled by a dedicated analytics/reporting module.
+                # For now, they are commented out to remove dependency on _health_stats.
+                # self._health_stats["pairs_analyzed"] += 1
+                # self._health_stats["unique_symbols_seen"].add(result.symbol)
+                # self._health_stats["strategies_run"] += len(result.component_signals)
+                # self._health_stats["total_score_sum"] += result.score
+                # self._health_stats["total_confidence_sum"] += result.confidence
+                # self._health_stats["total_analysis_time_ms"] += analysis_duration
+                await health_manager.increment_stat("db_writes")
                 
-                # Track directional state from component signals
-                direction = self._determine_primary_direction(result)
-                self._health_stats["last_known_direction"][result.symbol] = direction
-                if direction == "long":
-                    self._health_stats["bullish_count"] += 1
-                elif direction == "short":
-                    self._health_stats["bearish_count"] += 1
-                else:
-                    self._health_stats["sideways_count"] += 1
+                # Directional state tracking should be part of a dedicated analytics/reporting module.
+                # direction = self._determine_primary_direction(result)
+                # self._health_stats["last_known_direction"][result.symbol] = direction
+                # if direction == "long":
+                #     self._health_stats["bullish_count"] += 1
+                # elif direction == "short":
+                #     self._health_stats["bearish_count"] += 1
+                # else:
+                #     self._health_stats["sideways_count"] += 1
                 
                 if result.final_verdict:
                     await health_manager.increment_stat("signals_emitted")
-                    self._health_stats["opportunities_found"] += 1
-                    self._health_stats["telegram_sent"] += 1
-                    self._health_stats["last_success_at"] = datetime.now(timezone.utc)
+                    await health_manager.increment_stat("opportunities_found")
+                    await health_manager.increment_stat("telegram_sent")
+                    # self._health_stats["last_success_at"] = datetime.now(timezone.utc) # Specific metric, remove or move to analytics
                     
                     # Send Telegram Alert (Section 20)
                     if self._telegram_app and self._settings.telegram_chat_id and result.entry:
@@ -1005,13 +984,18 @@ class CTApplication:
                                 symbol=candle.symbol,
                             )
                 else:
-                    self._health_stats["opportunities_rejected"] += 1
+                    await health_manager.increment_stat("opportunities_rejected")
                     reason = result.rejection_reason or "unknown"
-                    # Clean reason for summary (remove specific values)
-                    clean_reason = reason.split(":")[0] if ":" in reason else reason
-                    self._health_stats["rejection_reasons"][clean_reason] = self._health_stats["rejection_reasons"].get(clean_reason, 0) + 1
+                    # Rejection reasons are specific and might not fit directly into health_manager's simple stats.
+                    # This could be logged as a detailed event or handled by a separate analytics component.
+                    logger.info(
+                        "decision_rejected_reason",
+                        symbol=result.symbol,
+                        timeframe=result.trigger_timeframe,
+                        rejection_reason=reason,
+                    )
         except Exception as exc:  # noqa: BLE001
-            self._health_stats["errors"] += 1
+            await health_manager.increment_stat("errors_count")
             logger.error(
                 "error",
                 timestamp=datetime.now(timezone.utc),
@@ -1123,17 +1107,14 @@ class CTApplication:
         while self._engine_running:
             try:
                 # Log Health Summary (Log #9)
-                top_reasons = sorted(
-                    self._health_stats["rejection_reasons"].items(),
-                    key=lambda x: x[1],
-                    reverse=True
-                )[:5]
+                # Stats are now managed by health_manager, we'll fetch them from there
+                stats = await health_manager.get_stats()
                 
-                # Calculate real averages
-                analyzed_count = self._health_stats["pairs_analyzed"]
-                avg_score = (self._health_stats["total_score_sum"] / analyzed_count * 100) if analyzed_count > 0 else 0.0
-                avg_conf = (self._health_stats["total_confidence_sum"] / analyzed_count * 100) if analyzed_count > 0 else 0.0
-                avg_time = (self._health_stats["total_analysis_time_ms"] / analyzed_count) if analyzed_count > 0 else 0.0
+                # Calculate real averages (using simplified stats for now)
+                analyzed_count = stats.get("analyses_executed", 0)
+                avg_score = 0.0 # Requires dedicated analytics
+                avg_conf = 0.0 # Requires dedicated analytics
+                avg_time = 0.0 # Requires dedicated analytics
 
                 # [FIX] Refresh component statuses to prevent staleness
                 try:
@@ -1152,30 +1133,21 @@ class CTApplication:
                 }
 
                 # Use unique symbol count for "Pairs Analyzed" (user-facing)
-                unique_pair_count = len(self._health_stats.get("unique_symbols_seen", set()))
+                unique_pair_count = analyzed_count # Simplified for now
                 
-                summary_block = format_cycle_summary(
+                # We'll just log a simple summary since format_cycle_summary is removed
+                logger.info(
+                    "health_summary",
                     pairs_analyzed=unique_pair_count,
-                    bullish_count=self._health_stats.get("bullish_count", 0),
-                    bearish_count=self._health_stats.get("bearish_count", 0),
-                    sideways_count=self._health_stats.get("sideways_count", 0),
-                    signals_found=self._health_stats["opportunities_found"] + self._health_stats["opportunities_rejected"],
-                    approved_count=self._health_stats["opportunities_found"],
-                    rejected_count=self._health_stats["opportunities_rejected"],
-                    rejection_reasons=dict(top_reasons),
-                    avg_strategy_score=avg_score,
-                    avg_confidence=avg_conf,
-                    avg_analysis_time=avg_time,
-                    telegram_count=self._health_stats["telegram_sent"],
-                    database_writes=self._health_stats["db_writes"],
-                    warnings_count=0,
-                    errors_count=self._health_stats["errors"],
-                    # [FIX] Derive system health from global health_manager instead of just error count
+                    approved_count=stats.get("opportunities_found", 0),
+                    rejected_count=stats.get("opportunities_rejected", 0),
+                    telegram_count=stats.get("telegram_sent", 0),
+                    database_writes=stats.get("db_writes", 0),
+                    errors_count=stats.get("errors", 0),
                     system_health=status_map.get(health_summary["status"], "UNKNOWN")
                 )
                 
-                # Print visual summary block
-                print(f"\n{summary_block}\n")
+
                 
                 # Heartbeat to confirm active monitoring
                 logger.info(
@@ -1188,28 +1160,12 @@ class CTApplication:
                 logger.info(
                     "system_health_summary",
                     timestamp=datetime.now(timezone.utc),
-                    scan_cycles=self._health_stats["scan_cycles"],
-                    strategies_run=self._health_stats["strategies_run"],
-                    opportunities_found=self._health_stats["opportunities_found"],
-                    opportunities_rejected=self._health_stats["opportunities_rejected"],
-                    top_rejection_reasons=dict(top_reasons),
-                    error_count=self._health_stats["errors"],
-                    last_data_received=self._health_stats["last_data_at"],
+                    opportunities_found=stats.get("opportunities_found", 0),
+                    opportunities_rejected=stats.get("opportunities_rejected", 0),
+                    error_count=stats.get("errors", 0),
                     module="app.main",
-                    message_text=f"ملخص أداء النظام: فحص {self._health_stats['scan_cycles']} دورة، وجد {self._health_stats['opportunities_found']} فرصة"
+                    message_text=f"ملخص أداء النظام: وجد {stats.get('opportunities_found', 0)} فرصة"
                 )
-
-                # Diagnostic Report if no trades for a while (Log #11)
-                if self._health_stats["scan_cycles"] > 10 and self._health_stats["opportunities_found"] == 0:
-                    logger.info(
-                        "no_trade_diagnostic_report",
-                        timestamp=datetime.now(timezone.utc),
-                        data_arriving=self._health_stats["last_data_at"] is not None,
-                        strategies_active=True,
-                        cycles_checked=self._health_stats["scan_cycles"],
-                        most_restrictive_condition=top_reasons[0][0] if top_reasons else "N/A",
-                        diagnosis="Strategies are running but conditions are not being met",
-                    )
 
                 await asyncio.sleep(60) # Every 1 minute for faster feedback
             except asyncio.CancelledError:

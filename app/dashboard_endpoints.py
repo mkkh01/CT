@@ -210,8 +210,25 @@ async def get_system_health_endpoint(request: Request) -> SystemHealthResponse:
     if not ct_app_instance:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Application not initialized")
     
-    health_stats = ct_app_instance._health_stats.copy()
-    health_stats["engine_running"] = ct_app_instance._engine_running
+    from monitoring.health_manager import health_manager
+    stats = await health_manager.get_stats()
+    
+    health_stats = {
+        "scan_cycles": stats.get("scan_cycles", 0),
+        "pairs_analyzed": stats.get("analyses_executed", 0),
+        "strategies_run": stats.get("strategies_run", 0),
+        "opportunities_found": stats.get("opportunities_found", 0),
+        "opportunities_rejected": stats.get("opportunities_rejected", 0),
+        "rejection_reasons": {}, # Requires dedicated analytics
+        "errors": stats.get("errors", 0),
+        "last_data_at": None, # Requires dedicated analytics
+        "total_score_sum": 0.0, # Requires dedicated analytics
+        "total_confidence_sum": 0.0, # Requires dedicated analytics
+        "total_analysis_time_ms": 0.0, # Requires dedicated analytics
+        "db_writes": stats.get("db_writes", 0),
+        "telegram_sent": stats.get("telegram_sent", 0),
+        "engine_running": ct_app_instance._engine_running,
+    }
     
     # Fetch active coins for the dashboard
     active_coins = []

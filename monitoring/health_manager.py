@@ -103,11 +103,8 @@ class HealthManager:
             if key in self._stats:
                 self._stats[key] += amount
                 self._stats["last_activity"] = datetime.now(timezone.utc)
-            
-            if key == "errors_count":
-                self._stats["errors_count"] += amount
-            elif key == "warnings_count":
-                self._stats["warnings_count"] += amount
+            # The specific counters errors_count and warnings_count are already handled by the above if statement
+            # No need for separate increment logic for them.
 
     def get_uptime_seconds(self) -> float:
         """Return the system uptime in seconds."""

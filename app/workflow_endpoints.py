@@ -18,6 +18,9 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
+from contracts.decision import Decision
+from contracts.trade import Trade
+from storage.supabase import SupabaseClient # Import SupabaseClient
 
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 
@@ -116,35 +119,37 @@ async def get_workflow_status(
     # Build recent events list
     recent_events: list[WorkflowEventResponse] = []
     
-    for decision in decisions:
-        event_type = "decision_approved" if decision.get("final_verdict") else "decision_rejected"
+    for decision_data in decisions:
+        decision = Decision(**decision_data)
+        event_type = "decision_approved" if decision.final_verdict else "decision_rejected"
         recent_events.append(
             WorkflowEventResponse(
-                timestamp=decision.get("created_at", datetime.now(timezone.utc)),
+                timestamp=decision.created_at,
                 event_type=event_type,
                 symbol=symbol,
                 details={
-                    "score": decision.get("score"),
-                    "confidence": decision.get("confidence"),
-                    "rejection_reason": decision.get("rejection_reason"),
-                    "entry_payload": decision.get("entry_payload"),
+                    "score": decision.score,
+                    "confidence": decision.confidence,
+                    "rejection_reason": decision.rejection_reason,
+                    "entry_payload": decision.entry_payload,
                 },
             )
         )
     
-    for trade in trades:
-        event_type = "trade_opened" if trade.get("status") == "open" else "trade_closed"
+    for trade_data in trades:
+        trade = Trade(**trade_data)
+        event_type = "trade_opened" if trade.status == "open" else "trade_closed"
         recent_events.append(
             WorkflowEventResponse(
-                timestamp=trade.get("opened_at", datetime.now(timezone.utc)),
+                timestamp=trade.opened_at,
                 event_type=event_type,
                 symbol=symbol,
                 details={
-                    "trade_id": str(trade.get("id")),
-                    "direction": trade.get("direction"),
-                    "entry_price": trade.get("entry_price"),
-                    "pnl": trade.get("pnl"),
-                    "close_reason": trade.get("close_reason"),
+                    "trade_id": str(trade.id),
+                    "direction": trade.direction,
+                    "entry_price": trade.entry_price,
+                    "pnl": trade.pnl,
+                    "close_reason": trade.close_reason,
                 },
             )
         )
@@ -153,9 +158,9 @@ async def get_workflow_status(
     recent_events.sort(key=lambda x: x.timestamp, reverse=True)
     
     # Get last times
-    last_analysis_time = decisions[0].get("created_at") if decisions else None
-    last_decision_time = decisions[0].get("created_at") if decisions else None
-    last_trade_time = trades[0].get("opened_at") if trades else None
+    last_analysis_time = decisions[0]["created_at"] if decisions else None
+    last_decision_time = decisions[0]["created_at"] if decisions else None
+    last_trade_time = trades[0]["opened_at"] if trades else None
     
     return WorkflowStatusResponse(
         symbol=symbol,
@@ -205,18 +210,18 @@ async def get_decision_summary(
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     decisions = [
         d for d in decisions
-        if d.get("created_at", datetime.now(timezone.utc)) >= cutoff_time
+        if d["created_at"] >= cutoff_time
     ]
     
     total = len(decisions)
-    approved = sum(1 for d in decisions if d.get("final_verdict"))
+    approved = sum(1 for d in decisions if d["final_verdict"])
     rejected = total - approved
     
     # Count rejection reasons
     rejection_reasons: dict[str, int] = {}
-    for decision in decisions:
-        if not decision.get("final_verdict"):
-            reason = decision.get("rejection_reason", "unknown")
+    for d in decisions:
+        if not d["final_verdict"]:
+            reason = d["rejection_reason"] or "unknown"
             rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
     
     approval_rate = (approved / total * 100) if total > 0 else 0.0
@@ -273,14 +278,14 @@ async def get_trade_summary(
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     trades = [
         t for t in trades
-        if t.get("status") == "closed"
-        and t.get("closed_at", datetime.now(timezone.utc)) >= cutoff_time
+        if t["status"] == "closed"
+        and t["closed_at"] >= cutoff_time
     ]
     
     total = len(trades)
-    winning = sum(1 for t in trades if t.get("pnl", 0) > 0)
+    winning = sum(1 for t in trades if t["pnl"] > 0)
     losing = total - winning
-    total_pnl = sum(t.get("pnl", 0) for t in trades)
+    total_pnl = sum(t["pnl"] for t in trades)
     
     win_rate = (winning / total * 100) if total > 0 else 0.0
     
@@ -301,9 +306,4 @@ def setup_workflow_endpoints(app: Any, supabase_client: Any = None) -> None:
         app: FastAPI application instance.
         supabase_client: Supabase client for database access.
     """
-    # Inject supabase_client into the router
-    @router.get("/health")
-    async def workflow_health():
-        return {"status": "ok", "message": "Workflow endpoints are running"}
-    
     app.include_router(router)
