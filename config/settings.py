@@ -25,9 +25,10 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 REDIS_URL = os.environ.get("REDIS_URL")
 
 # ---------------------------------------------------------------------------
-# Validation
+# Validation & Formatting
 # ---------------------------------------------------------------------------
-def validate_config():
+def validate_and_format():
+    global DATABASE_URL, REDIS_URL
     missing = []
     if not TELEGRAM_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
     if not DATABASE_URL: missing.append("SUPABASE_URL (Postgres DSN)")
@@ -36,18 +37,18 @@ def validate_config():
     
     if missing:
         print(f"CRITICAL CONFIG ERROR: Missing environment variables: {', '.join(missing)}")
-        print("Please set these variables in your environment or Render dashboard.")
-        # We don't exit here to allow the app to try and fail gracefully with its own logging,
-        # but we provide clear console output.
         return False
+
+    # Ensure DATABASE_URL is formatted for asyncpg (must not have +asyncpg prefix in DSN)
+    # But it must have sslmode=require for Supabase Pooler
+    if DATABASE_URL:
+        if "sslmode=" not in DATABASE_URL:
+            separator = "&" if "?" in DATABASE_URL else "?"
+            DATABASE_URL += f"{separator}sslmode=require"
+            
     return True
 
-validate_config()
-
-# Handle SSL for Postgres if using Supabase/Render
-if DATABASE_URL and "ssl=" not in DATABASE_URL:
-    separator = "&" if "?" in DATABASE_URL else "?"
-    DATABASE_URL += f"{separator}sslmode=require"
+validate_and_format()
 
 # ---------------------------------------------------------------------------
 # System Configuration
