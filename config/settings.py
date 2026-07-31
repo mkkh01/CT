@@ -25,12 +25,12 @@ from contracts.config import SystemConfig
 # NEW CREDENTIALS PROVIDED BY USER
 # ---------------------------------------------------------------------------
 # Telegram Token
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8861445628:AAFVuxfIXmTQGIoKMmcTcPZipdShTKFaewg")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "7052631557")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_token_here")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id_here")
 
 # Supabase / Postgres (Transaction Pooler IPv4)
 # For asyncpg.create_pool, the DSN must start with postgresql:// NOT postgresql+asyncpg://
-RAW_DATABASE_URL = "postgresql://postgres.licqbfixgyzrahuscwnh:Mk_03065750@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
+RAW_DATABASE_URL = "postgresql://your_db_url_here"
 # Ensure SSL is required as per Supabase/Render standards
 DATABASE_URL = os.environ.get("SUPABASE_URL", RAW_DATABASE_URL)
 if "ssl=" not in DATABASE_URL:
@@ -38,10 +38,7 @@ if "ssl=" not in DATABASE_URL:
     DATABASE_URL += f"{separator}ssl=require"
 
 # Redis Cloud
-REDIS_HOST = "deft-wonderful-receipt-35081.db.redis.io"
-REDIS_PORT = 18244
-REDIS_PASSWORD = "m4SWGkLu0SogNfODh1sIaHSJvpAICVVM"
-REDIS_URL = os.environ.get("REDIS_URL", f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://your_redis_url_here")
 
 # ---------------------------------------------------------------------------
 # System Configuration
