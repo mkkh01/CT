@@ -147,6 +147,8 @@ def _trade_from_row(row: asyncpg.Record) -> SimulatedTrade:
         highest_price=None if row.get("highest_price") is None else float(row["highest_price"]),
         lowest_price=None if row.get("lowest_price") is None else float(row["lowest_price"]),
         atr_at_entry=None if row.get("atr_at_entry") is None else float(row["atr_at_entry"]),
+        initial_stop_loss=None if row.get("initial_stop_loss") is None else float(row["initial_stop_loss"]),
+        timeframe=row.get("timeframe", "15m"),
     )
 
 
@@ -466,8 +468,9 @@ class SupabaseClient:
                         opened_at, closed_at, pnl, status,
                         close_reason, is_simulated,
                         stop_loss, take_profit,
-                        highest_price, lowest_price, atr_at_entry
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                        highest_price, lowest_price, atr_at_entry,
+                        initial_stop_loss, timeframe
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
                     ON CONFLICT (decision_id) DO NOTHING
                     """,
                     trade.id, trade.decision_id, trade.symbol, trade.direction,
@@ -476,6 +479,7 @@ class SupabaseClient:
                     trade.close_reason, trade.is_simulated,
                     trade.stop_loss, trade.take_profit,
                     trade.highest_price, trade.lowest_price, trade.atr_at_entry,
+                    trade.initial_stop_loss, trade.timeframe,
                 )
                 inserted = True
             except UniqueViolationError:

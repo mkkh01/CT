@@ -508,7 +508,9 @@ class CTApplication:
                     # Build price map from latest candles
                     price_map = {}
                     for t in open_trades:
-                        candle = await self._supabase.fetch_latest_candle(t.symbol, "15m")
+                        # Use trade's timeframe if available, else fallback to 15m
+                        tf = getattr(t, "timeframe", "15m")
+                        candle = await self._supabase.fetch_latest_candle(t.symbol, tf)
                         if candle:
                             price_map[t.symbol] = candle.close
                     

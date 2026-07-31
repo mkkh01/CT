@@ -50,3 +50,7 @@ class SimulatedTrade(BaseModel):
     """Lowest price reached since trade opened (for SHORT positions)."""
     atr_at_entry: Optional[float] = None
     """ATR value at the time of entry, used to calculate trailing stop distance."""
+    initial_stop_loss: Optional[float] = None
+    """Immutable initial stop loss, used for trailing activation threshold."""
+    timeframe: str = "15m"
+    """The timeframe this trade was opened on, used for ATR lookups."""

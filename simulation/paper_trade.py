@@ -338,8 +338,11 @@ class PaperTrader:
         fee = calculate_fee(entry_price, size, is_maker=False)
         slippage = estimate_slippage(entry_price, size, symbol)
 
+        # Extract timeframe from entry signal.
+        timeframe = entry.timeframe if hasattr(entry, "timeframe") else "15m"
+
         # Calculate initial ATR for trailing-stop distance reference.
-        atr_value = await self._compute_atr_async(symbol)
+        atr_value = await self._compute_atr_async(symbol, timeframe)
 
         # Initialise trailing-track fields.
         initial_highest = entry_price if direction == "long" else None
@@ -362,6 +365,8 @@ class PaperTrader:
             highest_price=initial_highest,
             lowest_price=initial_lowest,
             atr_at_entry=atr_value if atr_value > 0 else None,
+            initial_stop_loss=stop_loss,
+            timeframe=timeframe,
         )
 
         # Persist (idempotent on decision_id at the DB level).
@@ -716,12 +721,15 @@ class PaperTrader:
             return []
 
         # Build a map of symbol -> latest candle
-        current_candles: dict[str, Candle] = {}
+        # We use a composite key (symbol, timeframe) because different trades 
+        # might use different timeframes for the same symbol.
+        current_candles: dict[tuple[str, str], Candle] = {}
         for trade in open_trades:
-            if trade.symbol not in current_candles:
-                candle = await self._supabase.fetch_latest_candle(trade.symbol, "15m")
+            key = (trade.symbol, trade.timeframe)
+            if key not in current_candles:
+                candle = await self._supabase.fetch_latest_candle(trade.symbol, trade.timeframe)
                 if candle:
-                    current_candles[trade.symbol] = candle
+                    current_candles[key] = candle
 
         # Update trailing stops before checking for closures.
         if TRAILING_ENABLED:
@@ -737,7 +745,7 @@ class PaperTrader:
         return closed
 
     async def check_all_open_trades(
-        self, current_candles: dict[str, Candle]
+        self, current_candles: dict[tuple[str, str], Candle]
     ) -> list[SimulatedTrade]:
         """Run :meth:`check_trade_closure` for every open simulated trade.
 
@@ -747,9 +755,9 @@ class PaperTrader:
         :meth:`check_trade_closure`.
 
         Args:
-            current_candles: Mapping of ``symbol -> Candle``.  Only *closed*
+            current_candles: Mapping of ``(symbol, timeframe) -> Candle``.  Only *closed*
                 candles should be passed (Section 6 Bug 3 -- the caller is
-                responsible for filtering).  Trades whose symbol is missing
+                responsible for filtering).  Trades whose symbol/timeframe is missing
                 are skipped (warning logged).
 
         Returns:
@@ -759,7 +767,7 @@ class PaperTrader:
         open_trades = await self._supabase.fetch_open_trades()
         closed: list[SimulatedTrade] = []
         for trade in open_trades:
-            candle = current_candles.get(trade.symbol)
+            candle = current_candles.get((trade.symbol, trade.timeframe))
             if candle is None:
                 logger.warning(
                     "check_all_open_missing_candle",
@@ -797,11 +805,11 @@ class PaperTrader:
         return closed
 
     # ----------------------- trailing stop ---------------------------------
-    async def _compute_atr_async(self, symbol: str) -> float:
+    async def _compute_atr_async(self, symbol: str, timeframe: str = "15m") -> float:
         """Async wrapper: fetch closed candles and compute ATR."""
         try:
             candles = await self._supabase.fetch_closed_candles(
-                symbol, "15m", limit=VOLATILITY_ATR_PERIOD + 5
+                symbol, timeframe, limit=VOLATILITY_ATR_PERIOD + 5
             )
             return calculate_atr(candles)
         except Exception as exc:
@@ -960,7 +968,7 @@ class PaperTrader:
 
     async def update_all_trailing_stops(
         self,
-        current_candles: dict[str, Candle],
+        current_candles: dict[tuple[str, str], Candle],
     ) -> None:
         """Run :meth:`update_trailing_stop` for every open trade.
 
@@ -971,7 +979,7 @@ class PaperTrader:
         open_trades = await self._supabase.fetch_open_trades()
         updated_count = 0
         for trade in open_trades:
-            candle = current_candles.get(trade.symbol)
+            candle = current_candles.get((trade.symbol, trade.timeframe))
             if candle is None:
                 continue
             try:
@@ -1002,14 +1010,20 @@ class PaperTrader:
     def _compute_initial_risk(trade: SimulatedTrade) -> Optional[float]:
         """Compute the initial risk amount per unit (price-based).
 
-        For LONG:  ``entry_price - stop_loss``
-        For SHORT: ``stop_loss - entry_price``
+        For LONG:  ``entry_price - initial_stop_loss``
+        For SHORT: ``initial_stop_loss - entry_price``
 
-        Returns ``None`` if the stop_loss is not set.
+        Returns ``None`` if the initial_stop_loss is not set.
         """
-        sl = trade.stop_loss
+        sl = trade.initial_stop_loss
+        if sl is None:
+            # Fallback to current stop_loss if initial_stop_loss is missing
+            # (for trades opened before the schema update).
+            sl = trade.stop_loss
+
         if sl is None:
             return None
+
         ep = trade.entry_price
         if trade.direction == "long":
             risk = ep - sl
