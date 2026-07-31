@@ -144,6 +144,9 @@ def _trade_from_row(row: asyncpg.Record) -> SimulatedTrade:
         is_simulated=bool(row["is_simulated"]),
         stop_loss=None if row.get("stop_loss") is None else float(row["stop_loss"]),
         take_profit=None if row.get("take_profit") is None else float(row["take_profit"]),
+        highest_price=None if row.get("highest_price") is None else float(row["highest_price"]),
+        lowest_price=None if row.get("lowest_price") is None else float(row["lowest_price"]),
+        atr_at_entry=None if row.get("atr_at_entry") is None else float(row["atr_at_entry"]),
     )
 
 
@@ -461,8 +464,10 @@ class SupabaseClient:
                         id, decision_id, symbol, direction,
                         entry_price, size, fee, slippage,
                         opened_at, closed_at, pnl, status,
-                        close_reason, is_simulated, stop_loss, take_profit
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                        close_reason, is_simulated,
+                        stop_loss, take_profit,
+                        highest_price, lowest_price, atr_at_entry
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
                     ON CONFLICT (decision_id) DO NOTHING
                     """,
                     trade.id, trade.decision_id, trade.symbol, trade.direction,
@@ -470,6 +475,7 @@ class SupabaseClient:
                     trade.opened_at, trade.closed_at, trade.pnl, trade.status,
                     trade.close_reason, trade.is_simulated,
                     trade.stop_loss, trade.take_profit,
+                    trade.highest_price, trade.lowest_price, trade.atr_at_entry,
                 )
                 inserted = True
             except UniqueViolationError:
@@ -507,6 +513,41 @@ class SupabaseClient:
             trade_id=str(trade_id),
             pnl=pnl,
             close_reason=close_reason,
+        )
+
+    async def update_simulated_trade_trailing(
+        self,
+        trade_id: UUID,
+        stop_loss: Optional[float],
+        highest_price: Optional[float] = None,
+        lowest_price: Optional[float] = None,
+    ) -> None:
+        """Update an open trade's stop_loss and trailing-track fields.
+
+        Called by ``PaperTrader.update_trailing_stop`` on every candle tick
+        that produces a new high (LONG) or low (SHORT).
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            updates = ["stop_loss = $1"]
+            params: list[Any] = [stop_loss]
+            idx = 2
+            if highest_price is not None:
+                updates.append(f"highest_price = ${idx}")
+                params.append(highest_price)
+                idx += 1
+            if lowest_price is not None:
+                updates.append(f"lowest_price = ${idx}")
+                params.append(lowest_price)
+                idx += 1
+            params.append(trade_id)
+            sql = f"UPDATE simulated_trades SET {', '.join(updates)} WHERE id = ${idx} AND status = 'open'"
+            await conn.execute(sql, *params)
+        logger.info(
+            "simulated_trade_trailing_updated",
+            timestamp=datetime.now(timezone.utc),
+            trade_id=str(trade_id),
+            new_stop_loss=stop_loss,
         )
 
     async def fetch_open_trades(self, symbol: Optional[str] = None) -> list[SimulatedTrade]:

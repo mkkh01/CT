@@ -56,7 +56,15 @@ from uuid import UUID
 
 import numpy as np
 
-from config.thresholds import TAKER_FEE_PCT  # noqa: F401 -- re-exported for tests
+from config.thresholds import TAKER_FEE_PCT, VOLATILITY_ATR_PERIOD  # noqa: F401 -- re-exported for tests
+from config.thresholds import (
+    TRAILING_ENABLED,
+    TRAILING_ACTIVATION_MULTIPLIER,
+    TRAILING_ATR_DISTANCE,
+    TRAILING_MIN_DISTANCE_PCT,
+    TRAILING_MAX_DISTANCE_PCT,
+)
+from market.volatility import calculate_atr
 from contracts.decision import DecisionResult
 from contracts.market import Candle
 from contracts.simulation import SimulatedTrade
@@ -330,6 +338,13 @@ class PaperTrader:
         fee = calculate_fee(entry_price, size, is_maker=False)
         slippage = estimate_slippage(entry_price, size, symbol)
 
+        # Calculate initial ATR for trailing-stop distance reference.
+        atr_value = await self._compute_atr_async(symbol)
+
+        # Initialise trailing-track fields.
+        initial_highest = entry_price if direction == "long" else None
+        initial_lowest = entry_price if direction == "short" else None
+
         trade = SimulatedTrade(
             decision_id=decision.id,
             symbol=symbol,
@@ -344,6 +359,9 @@ class PaperTrader:
             is_simulated=True,  # HARD-CODED -- Section 0 hard-constraint 7.
             stop_loss=stop_loss,
             take_profit=take_profit,
+            highest_price=initial_highest,
+            lowest_price=initial_lowest,
+            atr_at_entry=atr_value if atr_value > 0 else None,
         )
 
         # Persist (idempotent on decision_id at the DB level).
@@ -705,6 +723,10 @@ class PaperTrader:
                 if candle:
                     current_candles[trade.symbol] = candle
 
+        # Update trailing stops before checking for closures.
+        if TRAILING_ENABLED:
+            await self.update_all_trailing_stops(current_candles)
+
         closed = await self.check_all_open_trades(current_candles)
         
         await health_manager.update_component(
@@ -773,6 +795,229 @@ class PaperTrader:
                 is_simulated=True,
             )
         return closed
+
+    # ----------------------- trailing stop ---------------------------------
+    async def _compute_atr_async(self, symbol: str) -> float:
+        """Async wrapper: fetch closed candles and compute ATR."""
+        try:
+            candles = await self._supabase.fetch_closed_candles(
+                symbol, "15m", limit=VOLATILITY_ATR_PERIOD + 5
+            )
+            return calculate_atr(candles)
+        except Exception as exc:
+            logger.warning(
+                "atr_fetch_failed",
+                symbol=symbol,
+                error=str(exc),
+            )
+            return 0.0
+
+    async def update_trailing_stop(
+        self,
+        trade: SimulatedTrade,
+        current_candle: Candle,
+    ) -> Optional[SimulatedTrade]:
+        """Update the trailing stop for an open trade based on current candle.
+
+        Logic:
+
+        1. Update the tracked extreme (highest_price for LONG, lowest_price
+           for SHORT) if the current candle exceeds it.
+        2. Check whether the unrealised profit has reached the activation
+           threshold (initial risk x TRAILING_ACTIVATION_MULTIPLIER).
+        3. If activated, compute a candidate trailing stop:
+           - LONG:  ``highest_price - max(ATR * multiplier, min_pct * price)``
+           - SHORT: ``lowest_price + max(ATR * multiplier, min_pct * price)``
+        4. The candidate must also respect the maximum distance cap and must
+           never move backwards (LONG stop can only rise; SHORT stop can
+           only fall).
+        5. If the candidate is better than the current stop_loss, persist
+           the update.
+
+        Args:
+            trade: An open ``SimulatedTrade``.
+            current_candle: The latest closed candle for the trade's symbol.
+
+        Returns:
+            The updated ``SimulatedTrade`` (in-memory copy) if the stop was
+            moved, or ``None`` if no change was needed.
+        """
+        if not TRAILING_ENABLED:
+            return None
+        if trade.status == "closed":
+            return None
+
+        # --- Step 1: update extreme ---
+        high = _safe_float(current_candle.high)
+        low = _safe_float(current_candle.low)
+        new_highest = trade.highest_price
+        new_lowest = trade.lowest_price
+
+        if trade.direction == "long":
+            if new_highest is not None and high > new_highest:
+                new_highest = high
+            elif new_highest is None:
+                new_highest = high
+        elif trade.direction == "short":
+            if new_lowest is not None and low < new_lowest:
+                new_lowest = low
+            elif new_lowest is None:
+                new_lowest = low
+        else:
+            return None
+
+        # --- Step 2: check activation threshold ---
+        initial_risk = self._compute_initial_risk(trade)
+        if initial_risk is None or initial_risk <= 0:
+            return None
+
+        if trade.direction == "long":
+            current_price = high  # Use candle high for conservative check.
+            unrealised = current_price - trade.entry_price
+        else:
+            current_price = low  # Use candle low for conservative check.
+            unrealised = trade.entry_price - current_price
+
+        activation_threshold = initial_risk * TRAILING_ACTIVATION_MULTIPLIER
+        if unrealised < activation_threshold:
+            return None
+
+        # --- Step 3: compute candidate trailing stop ---
+        atr = trade.atr_at_entry
+        if atr is None or atr <= 0:
+            # Fallback: use a fixed percentage of the current price.
+            atr = trade.entry_price * TRAILING_MIN_DISTANCE_PCT / 100.0
+
+        atr_distance = atr * TRAILING_ATR_DISTANCE
+        pct_distance = (trade.entry_price * TRAILING_MIN_DISTANCE_PCT) / 100.0
+        max_distance = (trade.entry_price * TRAILING_MAX_DISTANCE_PCT) / 100.0
+        candidate_distance = max(atr_distance, pct_distance)
+        # Cap at maximum distance.
+        candidate_distance = min(candidate_distance, max_distance)
+
+        if trade.direction == "long":
+            if new_highest is None:
+                return None
+            candidate_sl = new_highest - candidate_distance
+            # Must not move backwards (stop can only rise for LONG).
+            current_sl = float(trade.stop_loss) if trade.stop_loss is not None else 0.0
+            if candidate_sl <= current_sl:
+                return None
+            # Must not exceed the current high (stop must be below price).
+            if candidate_sl >= new_highest:
+                return None
+        else:  # short
+            if new_lowest is None:
+                return None
+            candidate_sl = new_lowest + candidate_distance
+            current_sl = float(trade.stop_loss) if trade.stop_loss is not None else float('inf')
+            if candidate_sl >= current_sl:
+                return None
+            # Must not be below the current low (stop must be above price).
+            if candidate_sl <= new_lowest:
+                return None
+
+        # --- Step 4: persist ---
+        try:
+            await self._supabase.update_simulated_trade_trailing(
+                trade_id=trade.id,
+                stop_loss=candidate_sl,
+                highest_price=new_highest if trade.direction == "long" else None,
+                lowest_price=new_lowest if trade.direction == "short" else None,
+            )
+        except Exception as exc:
+            logger.error(
+                "trailing_stop_update_failed",
+                trade_id=str(trade.id),
+                symbol=trade.symbol,
+                error=str(exc),
+            )
+            return None
+
+        # Update in-memory object.
+        updated = trade.model_copy(
+            update={
+                "stop_loss": candidate_sl,
+                "highest_price": new_highest,
+                "lowest_price": new_lowest,
+            }
+        )
+
+        logger.info(
+            "simulated_trade_trailing_stop_updated",
+            timestamp=_utcnow(),
+            trade_id=str(trade.id),
+            symbol=trade.symbol,
+            direction=trade.direction,
+            old_stop_loss=trade.stop_loss,
+            new_stop_loss=candidate_sl,
+            highest_price=new_highest,
+            lowest_price=new_lowest,
+            is_simulated=True,
+            label=_SIMULATED_LABEL,
+        )
+        return updated
+
+    async def update_all_trailing_stops(
+        self,
+        current_candles: dict[str, Candle],
+    ) -> None:
+        """Run :meth:`update_trailing_stop` for every open trade.
+
+        This is called from :meth:`scan_and_close_open_trades` before the
+        closure check so that the stop has been moved (if eligible) before
+        we test whether the current candle hits it.
+        """
+        open_trades = await self._supabase.fetch_open_trades()
+        updated_count = 0
+        for trade in open_trades:
+            candle = current_candles.get(trade.symbol)
+            if candle is None:
+                continue
+            try:
+                result = await self.update_trailing_stop(trade, candle)
+                if result is not None:
+                    updated_count += 1
+            except Exception as exc:
+                logger.error(
+                    "trailing_stop_update_error",
+                    timestamp=_utcnow(),
+                    module="simulation.paper_trade",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    trade_id=str(trade.id),
+                    symbol=trade.symbol,
+                )
+                continue
+        if updated_count > 0:
+            logger.info(
+                "trailing_stop_batch_update",
+                timestamp=_utcnow(),
+                updated_count=updated_count,
+                total_open=len(open_trades),
+                is_simulated=True,
+            )
+
+    @staticmethod
+    def _compute_initial_risk(trade: SimulatedTrade) -> Optional[float]:
+        """Compute the initial risk amount per unit (price-based).
+
+        For LONG:  ``entry_price - stop_loss``
+        For SHORT: ``stop_loss - entry_price``
+
+        Returns ``None`` if the stop_loss is not set.
+        """
+        sl = trade.stop_loss
+        if sl is None:
+            return None
+        ep = trade.entry_price
+        if trade.direction == "long":
+            risk = ep - sl
+        elif trade.direction == "short":
+            risk = sl - ep
+        else:
+            return None
+        return risk if risk > 0 else None
 
     # ----------------------- introspection ---------------------------------
     async def list_open_trades(

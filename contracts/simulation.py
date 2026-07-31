@@ -43,3 +43,10 @@ class SimulatedTrade(BaseModel):
     is_simulated: bool = True
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    # Trailing Stop tracking fields (Section 0 hard-constraint 7 compliant).
+    highest_price: Optional[float] = None
+    """Highest price reached since trade opened (for LONG positions)."""
+    lowest_price: Optional[float] = None
+    """Lowest price reached since trade opened (for SHORT positions)."""
+    atr_at_entry: Optional[float] = None
+    """ATR value at the time of entry, used to calculate trailing stop distance."""

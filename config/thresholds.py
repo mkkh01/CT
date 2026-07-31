@@ -160,6 +160,31 @@ MAX_ENTRY_RETRIES = 3
 """Number of times a limit entry may be retried before falling back to market."""
 
 # ---------------------------------------------------------------------------
+# Trailing Stop
+# ---------------------------------------------------------------------------
+TRAILING_ENABLED = True
+"""Global switch to enable / disable trailing-stop logic."""
+
+TRAILING_ACTIVATION_MULTIPLIER = 1.5
+"""Start moving the stop once unrealised profit >= this x initial risk.
+For example, 1.5 means: after profit reaches 1.5x the initial risk, the
+stop begins trailing behind the price."""
+
+TRAILING_ATR_DISTANCE = 1.5
+"""Distance (in ATR multiples) between the current high/low and the
+tailing stop.  A larger value gives the trade more breathing room."""
+
+TRAILING_MIN_DISTANCE_PCT = 0.3
+"""Minimum distance (as % of price) between the trailing stop and the
+current extreme price.  Prevents the stop from hugging the price too
+closely in low-volatility conditions."""
+
+TRAILING_MAX_DISTANCE_PCT = 5.0
+"""Maximum distance (as % of price) between the trailing stop and the
+current extreme price.  Prevents excessively wide stops on very
+volatile coins."""
+
+# ---------------------------------------------------------------------------
 # Simulation
 # ---------------------------------------------------------------------------
 MAKER_FEE_PCT = 0.1
@@ -250,5 +275,7 @@ __all__ = [
     "MAKER_FEE_PCT", "TAKER_FEE_PCT", "SLIPPAGE_PCT",
     "WS_INITIAL_BACKOFF_SECONDS", "WS_MAX_BACKOFF_SECONDS", "WS_STABLE_RESET_SECONDS", "WS_STALE_MULTIPLIER",
     "WS_REST_RETRY_COUNT", "WS_RESUME_PAD_CANDLES",
-    "TIMEFRAME_TO_SECONDS", "VALID_TIMEFRAMES", "timeframe_to_seconds", "resume_window_candles"
+    "TIMEFRAME_TO_SECONDS", "VALID_TIMEFRAMES", "timeframe_to_seconds", "resume_window_candles",
+    "TRAILING_ENABLED", "TRAILING_ACTIVATION_MULTIPLIER", "TRAILING_ATR_DISTANCE",
+    "TRAILING_MIN_DISTANCE_PCT", "TRAILING_MAX_DISTANCE_PCT",
 ]
