@@ -1619,6 +1619,7 @@ class CTTelegramBot:
                 status_line = "Status: open"
 
             lines.append(f"{idx}. {t.symbol} {direction}")
+            lines.append(f"   Quantity: {self._fmt_price(t.size)}")
             lines.append(f"   Entry: {entry}")
             lines.append(f"   Stop Loss: {stop}")
             lines.append(f"   Target: {target}")
@@ -1693,6 +1694,7 @@ class CTTelegramBot:
             "🚀 <b>Trade Opened!</b>\n\n"
             f"<b>Coin:</b> {trade.symbol}\n"
             f"<b>Direction:</b> {direction}\n"
+            f"<b>Quantity:</b> {CTTelegramBot._fmt_price(trade.size)}\n"
             f"<b>Entry Price:</b> {entry}\n\n"
             f"<b>Stop Loss:</b> {stop}\n"
             f"<b>Target:</b> {target}\n\n"
@@ -1742,6 +1744,9 @@ class CTTelegramBot:
             if risk_reward is not None
             else "Risk/Reward: n/a"
         )
+        # Note: In alert phase, the final quantity is not yet calculated 
+        # as it depends on the final risk assessment. 
+        # However, for the alert, we can show it as a pending trade.
         return (
             "New Signal!\n\n"
             f"Coin: {symbol}\n"

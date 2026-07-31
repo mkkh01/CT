@@ -134,9 +134,20 @@ def calculate_position_size(
 
     raw_size = risk_amount / price_risk
     max_size = capital * (thresholds.MAX_POSITION_SIZE_PCT / 100.0) / entry_price
+    
+    # [FIX] Instead of just returning min, we ensure that the trade value 
+    # (size * entry_price) never exceeds the allowed capital exposure.
+    # This makes the system dynamic: it scales the size to fit the capital.
     if max_size <= 0:
         return 0.0
-    return min(raw_size, max_size)
+        
+    final_size = min(raw_size, max_size)
+    
+    # Final safety check: Ensure notional value <= capital
+    if (final_size * entry_price) > (capital + 0.01):
+        final_size = capital / entry_price
+        
+    return final_size
 
 
 # ---------------------------------------------------------------------------
@@ -463,17 +474,33 @@ def assess_risk(
         )
 
     # 3. Exposure check (USDT notional)
-    if not check_exposure(current_exposure, capital, new_trade_value):
-        reason = (
-            f"exposure_limit_exceeded: projected={projected_exposure:.4f} "
-            f"USDT > limit={capital * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100.0):.4f} "
-            f"USDT ({thresholds.MAX_PORTFOLIO_EXPOSURE_PCT:.1f}% of {capital:.4f})"
-        )
-        return _build_rejection(
-            symbol, reason, position_size, risk_amount,
-            stop_loss, take_profit, risk_reward,
-            projected_exposure, projected_drawdown,
-            confidence,
+    # [FIX] If the new trade would exceed exposure, we scale it down to fit the remaining capital
+    # instead of rejecting it, making the system truly dynamic.
+    limit = capital * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100.0)
+    available_exposure = limit - current_exposure
+    
+    if new_trade_value > (available_exposure + 0.01):
+        if available_exposure <= 0:
+            reason = f"no_available_exposure: current={current_exposure:.4f} >= limit={limit:.4f}"
+            return _build_rejection(
+                symbol, reason, position_size, risk_amount,
+                stop_loss, take_profit, risk_reward,
+                projected_exposure, projected_drawdown,
+                confidence,
+            )
+        
+        # Scale down the position size to fit available exposure
+        old_size = position_size
+        position_size = available_exposure / entry_price
+        new_trade_value = position_size * entry_price
+        projected_exposure = current_exposure + new_trade_value
+        
+        logger.info(
+            "risk_position_scaled_to_fit_exposure",
+            symbol=symbol,
+            old_size=old_size,
+            new_size=position_size,
+            available_exposure=available_exposure
         )
 
     # 4. Drawdown check
