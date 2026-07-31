@@ -55,6 +55,19 @@ class HealthManager:
             "trades_simulated": 0,
             "errors_count": 0,
             "warnings_count": 0,
+            "opportunities_found": 0,
+            "opportunities_rejected": 0,
+            "telegram_sent": 0,
+            "db_writes": 0,
+            # Cycle-summary aggregation fields
+            "bullish_count": 0,
+            "bearish_count": 0,
+            "sideways_count": 0,
+            "total_score_sum": 0.0,
+            "total_confidence_sum": 0.0,
+            "total_analysis_time_ms": 0.0,
+            "unique_symbols_seen": set(),
+            "rejection_reasons": {},
             "last_activity": datetime.now(timezone.utc)
         }
 
@@ -103,8 +116,33 @@ class HealthManager:
             if key in self._stats:
                 self._stats[key] += amount
                 self._stats["last_activity"] = datetime.now(timezone.utc)
-            # The specific counters errors_count and warnings_count are already handled by the above if statement
-            # No need for separate increment logic for them.
+
+    async def record_rejection_reason(self, reason: str):
+        """Increment the count for a specific rejection reason."""
+        async with self._lock:
+            reasons = self._stats["rejection_reasons"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+            self._stats["last_activity"] = datetime.now(timezone.utc)
+
+    async def accumulate_analysis(self, score: float, confidence: float, analysis_time_ms: float):
+        """Accumulate score, confidence and analysis time for cycle-summary averages."""
+        async with self._lock:
+            self._stats["total_score_sum"] += score
+            self._stats["total_confidence_sum"] += confidence
+            self._stats["total_analysis_time_ms"] += analysis_time_ms
+            self._stats["last_activity"] = datetime.now(timezone.utc)
+
+    async def record_symbol_direction(self, symbol: str, direction: str):
+        """Track unique symbols and directional counts (bullish/bearish/sideways)."""
+        async with self._lock:
+            self._stats["unique_symbols_seen"].add(symbol)
+            if direction == "long":
+                self._stats["bullish_count"] += 1
+            elif direction == "short":
+                self._stats["bearish_count"] += 1
+            else:
+                self._stats["sideways_count"] += 1
+            self._stats["last_activity"] = datetime.now(timezone.utc)
 
     def get_uptime_seconds(self) -> float:
         """Return the system uptime in seconds."""

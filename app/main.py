@@ -911,33 +911,16 @@ class CTApplication:
             clear_context()
             
             if result:
-                # Update cooldown timestamp
-                # Cooldown timestamp update should be part of the refactored cooldown logic.
-                # self._health_stats["last_analysis_time"][candle.symbol] = now_ts
-                
                 # Update health stats via health_manager
                 await health_manager.increment_stat("analyses_executed")
-                
-                # The following metrics were previously updated in _health_stats.
-                # They should either be moved to health_manager or handled by a dedicated analytics/reporting module.
-                # For now, they are commented out to remove dependency on _health_stats.
-                # self._health_stats["pairs_analyzed"] += 1
-                # self._health_stats["unique_symbols_seen"].add(result.symbol)
-                # self._health_stats["strategies_run"] += len(result.component_signals)
-                # self._health_stats["total_score_sum"] += result.score
-                # self._health_stats["total_confidence_sum"] += result.confidence
-                # self._health_stats["total_analysis_time_ms"] += analysis_duration
+                await health_manager.accumulate_analysis(
+                    result.score, result.confidence, analysis_duration
+                )
+                await health_manager.record_symbol_direction(
+                    result.symbol,
+                    result.entry.direction if result.entry else "neutral",
+                )
                 await health_manager.increment_stat("db_writes")
-                
-                # Directional state tracking should be part of a dedicated analytics/reporting module.
-                # direction = self._determine_primary_direction(result)
-                # self._health_stats["last_known_direction"][result.symbol] = direction
-                # if direction == "long":
-                #     self._health_stats["bullish_count"] += 1
-                # elif direction == "short":
-                #     self._health_stats["bearish_count"] += 1
-                # else:
-                #     self._health_stats["sideways_count"] += 1
                 
                 if result.final_verdict:
                     await health_manager.increment_stat("signals_emitted")
@@ -986,8 +969,7 @@ class CTApplication:
                 else:
                     await health_manager.increment_stat("opportunities_rejected")
                     reason = result.rejection_reason or "unknown"
-                    # Rejection reasons are specific and might not fit directly into health_manager's simple stats.
-                    # This could be logged as a detailed event or handled by a separate analytics component.
+                    await health_manager.record_rejection_reason(reason)
                     logger.info(
                         "decision_rejected_reason",
                         symbol=result.symbol,
@@ -1102,19 +1084,51 @@ class CTApplication:
         await self.stop_engine()
         await self.start_engine()
 
+    # -----------------------------------------------------------------------
+    # Cycle summary formatter (uses format_cycle_summary from report_formatter)
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _format_cycle_summary_from_stats(
+        stats: dict,
+        health_summary: dict,
+        status_map: dict,
+        analyzed_count: int,
+        avg_score: float,
+        avg_conf: float,
+        avg_time: float,
+    ) -> str:
+        from monitoring.report_formatter import format_cycle_summary
+        return format_cycle_summary(
+            pairs_analyzed=len(stats.get("unique_symbols_seen", set())),
+            bullish_count=stats.get("bullish_count", 0),
+            bearish_count=stats.get("bearish_count", 0),
+            sideways_count=stats.get("sideways_count", 0),
+            signals_found=stats.get("signals_emitted", 0),
+            approved_count=stats.get("opportunities_found", 0),
+            rejected_count=stats.get("opportunities_rejected", 0),
+            rejection_reasons=stats.get("rejection_reasons", {}),
+            avg_strategy_score=avg_score,
+            avg_confidence=avg_conf,
+            avg_analysis_time=avg_time,
+            telegram_count=stats.get("telegram_sent", 0),
+            database_writes=stats.get("db_writes", 0),
+            warnings_count=stats.get("warnings_count", 0),
+            errors_count=stats.get("errors_count", 0),
+            system_health=status_map.get(health_summary["status"], "UNKNOWN"),
+        )
+
     async def _run_health_logger_loop(self) -> None:
         """Periodically log health stats and diagnostic reports (Requested Log #9 & #11)."""
         while self._engine_running:
             try:
-                # Log Health Summary (Log #9)
-                # Stats are now managed by health_manager, we'll fetch them from there
                 stats = await health_manager.get_stats()
-                
-                # Calculate real averages (using simplified stats for now)
                 analyzed_count = stats.get("analyses_executed", 0)
-                avg_score = 0.0 # Requires dedicated analytics
-                avg_conf = 0.0 # Requires dedicated analytics
-                avg_time = 0.0 # Requires dedicated analytics
+
+                # Calculate real averages from accumulated sums
+                analyses = max(1, analyzed_count)
+                avg_score = (stats.get("total_score_sum", 0.0) / analyses) * 100.0
+                avg_conf = (stats.get("total_confidence_sum", 0.0) / analyses) * 100.0
+                avg_time = stats.get("total_analysis_time_ms", 0.0) / analyses
 
                 # [FIX] Refresh component statuses to prevent staleness
                 try:
@@ -1123,7 +1137,7 @@ class CTApplication:
                 except Exception:
                     pass
 
-                # [FIX] Derive system health from global health_manager
+                # Derive system health from global health_manager
                 health_summary = await health_manager.get_overall_health()
                 status_map = {
                     HealthStatus.OK: "EXCELLENT",
@@ -1132,10 +1146,15 @@ class CTApplication:
                     HealthStatus.CRITICAL: "CRITICAL"
                 }
 
-                # Use unique symbol count for "Pairs Analyzed" (user-facing)
-                unique_pair_count = analyzed_count # Simplified for now
-                
-                # We'll just log a simple summary since format_cycle_summary is removed
+                # Pairs analyzed = unique symbols seen
+                unique_pair_count = len(stats.get("unique_symbols_seen", set()))
+
+                summary_text = self._format_cycle_summary_from_stats(
+                    stats, health_summary, status_map,
+                    analyzed_count, avg_score, avg_conf, avg_time,
+                )
+
+                # Log the formatted summary as a structured event + raw text
                 logger.info(
                     "health_summary",
                     pairs_analyzed=unique_pair_count,
@@ -1143,31 +1162,22 @@ class CTApplication:
                     rejected_count=stats.get("opportunities_rejected", 0),
                     telegram_count=stats.get("telegram_sent", 0),
                     database_writes=stats.get("db_writes", 0),
-                    errors_count=stats.get("errors", 0),
-                    system_health=status_map.get(health_summary["status"], "UNKNOWN")
+                    errors_count=stats.get("errors_count", 0),
+                    system_health=status_map.get(health_summary["status"], "UNKNOWN"),
+                    message_text=summary_text,
                 )
-                
 
-                
                 # Heartbeat to confirm active monitoring
                 logger.info(
                     "engine_heartbeat",
                     timestamp=datetime.now(timezone.utc),
                     module="app.main",
-                    message_text="[HEARTBEAT] النظام يعمل بكفاءة ويراقب السوق في هذه اللحظة..."
+                    status=status_map.get(health_summary["status"], "UNKNOWN"),
+                    uptime_s=health_manager.get_uptime_seconds(),
+                    message_text=f"[HEARTBEAT] System Status: {status_map.get(health_summary['status'], 'UNKNOWN')} | Uptime: {int(health_manager.get_uptime_seconds())}s"
                 )
 
-                logger.info(
-                    "system_health_summary",
-                    timestamp=datetime.now(timezone.utc),
-                    opportunities_found=stats.get("opportunities_found", 0),
-                    opportunities_rejected=stats.get("opportunities_rejected", 0),
-                    error_count=stats.get("errors", 0),
-                    module="app.main",
-                    message_text=f"ملخص أداء النظام: وجد {stats.get('opportunities_found', 0)} فرصة"
-                )
-
-                await asyncio.sleep(60) # Every 1 minute for faster feedback
+                await asyncio.sleep(60)  # Every 1 minute for faster feedback
             except asyncio.CancelledError:
                 break
             except Exception as exc:
