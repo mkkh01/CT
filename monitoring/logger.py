@@ -94,6 +94,19 @@ def configure_logging(level: int = logging.INFO) -> None:
         event_dict["formatted_message"] = formatted_msg
         return event_dict
 
+    def plain_text_renderer(logger, method_name, event_dict):
+        """Render health_summary events as plain text on stdout (for Render logs).
+        All other events fall through to JSONRenderer below.
+        """
+        event = event_dict.get("event", "")
+        if event == "health_summary":
+            message_text = event_dict.get("message_text", "")
+            if message_text:
+                # Print the formatted block directly — no JSON wrapping
+                print(message_text, flush=True)
+                return None  # Stop processing this event
+        return event_dict  # Pass through to JSONRenderer
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -102,7 +115,8 @@ def configure_logging(level: int = logging.INFO) -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             custom_formatter,
-            # We keep JSONRenderer for Render's structured logging, 
+            plain_text_renderer,
+            # We keep JSONRenderer for Render's structured logging,
             # but we can also use ConsoleRenderer for local debugging if needed.
             structlog.processors.JSONRenderer(),
         ],

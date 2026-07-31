@@ -916,14 +916,29 @@ class CTApplication:
                 await health_manager.accumulate_analysis(
                     result.score, result.confidence, analysis_duration
                 )
+                # Record direction from component signals (not just approved entries).
+                # This ensures bullish/bearish counts reflect actual market analysis,
+                # not just approved trades.
+                primary_direction = "neutral"
+                if result.component_signals:
+                    # Count signal directions to determine primary direction
+                    long_count = sum(1 for s in result.component_signals if s.direction == "long")
+                    short_count = sum(1 for s in result.component_signals if s.direction == "short")
+                    if long_count > short_count:
+                        primary_direction = "long"
+                    elif short_count > long_count:
+                        primary_direction = "short"
                 await health_manager.record_symbol_direction(
                     result.symbol,
-                    result.entry.direction if result.entry else "neutral",
+                    primary_direction,
                 )
                 await health_manager.increment_stat("db_writes")
                 
+                # Count total component signals emitted (not just approved verdicts)
+                signal_count = len(result.component_signals) if result.component_signals else 0
+                await health_manager.increment_stat("signals_emitted", amount=max(signal_count, 0))
+                
                 if result.final_verdict:
-                    await health_manager.increment_stat("signals_emitted")
                     await health_manager.increment_stat("opportunities_found")
                     await health_manager.increment_stat("telegram_sent")
                     # self._health_stats["last_success_at"] = datetime.now(timezone.utc) # Specific metric, remove or move to analytics
@@ -1154,16 +1169,10 @@ class CTApplication:
                     analyzed_count, avg_score, avg_conf, avg_time,
                 )
 
-                # Log the formatted summary as a structured event + raw text
+                # Log ONLY the formatted cycle summary — no extra JSON fields.
+                # Render's log stream will show the pretty block directly.
                 logger.info(
                     "health_summary",
-                    pairs_analyzed=unique_pair_count,
-                    approved_count=stats.get("opportunities_found", 0),
-                    rejected_count=stats.get("opportunities_rejected", 0),
-                    telegram_count=stats.get("telegram_sent", 0),
-                    database_writes=stats.get("db_writes", 0),
-                    errors_count=stats.get("errors_count", 0),
-                    system_health=status_map.get(health_summary["status"], "UNKNOWN"),
                     message_text=summary_text,
                 )
 
