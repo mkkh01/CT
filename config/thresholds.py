@@ -111,7 +111,7 @@ NY_END_UTC = 21
 # ---------------------------------------------------------------------------
 # Risk Management
 # ---------------------------------------------------------------------------
-MAX_PORTFOLIO_EXPOSURE_PCT = 60.0
+MAX_PORTFOLIO_EXPOSURE_PCT = 100.0
 """Maximum total portfolio exposure as % of total capital."""
 
 MAX_POSITION_SIZE_PCT = 100.0
