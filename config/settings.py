@@ -1,55 +1,64 @@
 
 """
 File: config/settings.py
-1. Single Responsibility: Concrete runtime configuration -- plain Python values,
-   NO .env, NO os.environ (per Section 3 policy).
-2. Consumes: nothing.
-3. Produces: A ``SystemConfig`` instance named ``settings``.
-4. Downstream: app/main.py and every module that needs credentials.
-5. New Dependencies: contracts.config.SystemConfig.
-6. Touches Section 6 bugs? No.
-7. Tests: No (not imported by tests; they construct their own SystemConfig).
-8. Logging: No.
-9. Dependency Order: config -> contracts -> ... (this file imports contracts.config).
-
-SECURITY POLICY (Section 3):
-  - This file MUST be listed in .gitignore and never committed.
-  - If accidentally committed, rotate telegram_bot_token / supabase_key immediately.
-  - The file config/settings.example.py is the safe template committed instead.
+Responsibility: Concrete runtime configuration -- plain Python values,
+reading from environment variables with safe fallbacks.
 """
 
 import os
+import sys
 from contracts.config import SystemConfig
 
 # ---------------------------------------------------------------------------
-# NEW CREDENTIALS PROVIDED BY USER
+# CREDENTIALS
 # ---------------------------------------------------------------------------
 # Telegram Token
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_token_here")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id_here")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # Supabase / Postgres (Transaction Pooler IPv4)
-# For asyncpg.create_pool, the DSN must start with postgresql:// NOT postgresql+asyncpg://
-RAW_DATABASE_URL = "postgresql://your_db_url_here"
-# Ensure SSL is required as per Supabase/Render standards
-DATABASE_URL = os.environ.get("SUPABASE_URL", RAW_DATABASE_URL)
-if "ssl=" not in DATABASE_URL:
-    separator = "&" if "?" in DATABASE_URL else "?"
-    DATABASE_URL += f"{separator}ssl=require"
+# For asyncpg.create_pool, the DSN must start with postgresql://
+DATABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 # Redis Cloud
-REDIS_URL = os.environ.get("REDIS_URL", "redis://your_redis_url_here")
+REDIS_URL = os.environ.get("REDIS_URL")
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+def validate_config():
+    missing = []
+    if not TELEGRAM_TOKEN: missing.append("TELEGRAM_BOT_TOKEN")
+    if not DATABASE_URL: missing.append("SUPABASE_URL (Postgres DSN)")
+    if not SUPABASE_KEY: missing.append("SUPABASE_KEY")
+    if not REDIS_URL: missing.append("REDIS_URL")
+    
+    if missing:
+        print(f"CRITICAL CONFIG ERROR: Missing environment variables: {', '.join(missing)}")
+        print("Please set these variables in your environment or Render dashboard.")
+        # We don't exit here to allow the app to try and fail gracefully with its own logging,
+        # but we provide clear console output.
+        return False
+    return True
+
+validate_config()
+
+# Handle SSL for Postgres if using Supabase/Render
+if DATABASE_URL and "ssl=" not in DATABASE_URL:
+    separator = "&" if "?" in DATABASE_URL else "?"
+    DATABASE_URL += f"{separator}sslmode=require"
 
 # ---------------------------------------------------------------------------
 # System Configuration
 # ---------------------------------------------------------------------------
 settings = SystemConfig(
-    telegram_bot_token=TELEGRAM_TOKEN,
-    supabase_url=DATABASE_URL,
-    supabase_key=os.environ.get("SUPABASE_KEY", "service_role_key_placeholder"),
-    redis_url=REDIS_URL,
+    telegram_bot_token=TELEGRAM_TOKEN or "MISSING_TOKEN",
+    supabase_url=DATABASE_URL or "postgresql://localhost/missing_db",
+    supabase_key=SUPABASE_KEY or "MISSING_KEY",
+    redis_url=REDIS_URL or "redis://localhost:6379/0",
     default_timeframes=["15m", "1h", "4h"],
     max_active_coins=10,
     simulation_mode=True,
-    telegram_chat_id=TELEGRAM_CHAT_ID,
+    telegram_chat_id=TELEGRAM_CHAT_ID or "0",
 )
