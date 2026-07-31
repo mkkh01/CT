@@ -146,6 +146,29 @@ class SystemHealthResponse(BaseModel):
     active_coins: list[str]
 
 
+class CycleSummaryResponse(BaseModel):
+    """Dynamic cycle summary derived from health_manager stats."""
+    pairs_analyzed: int
+    bullish: int
+    bearish: int
+    sideways: int
+    signals_found: int
+    approved: int
+    rejected: int
+    rejection_reasons: dict[str, int]
+    avg_strategy_score: float
+    avg_confidence: float
+    avg_analysis_time_ms: float
+    telegram_messages: int
+    database_writes: int
+    warnings: int
+    errors: int
+    system_health: str
+    formatted_text: str
+    analyses_executed: int
+    scan_cycles: int
+
+
 class OverallPerformanceResponse(BaseModel):
     total_trades: int
     winning_trades: int
@@ -202,6 +225,83 @@ async def get_thresholds_endpoint():
         if key.isupper() and not key.startswith("__")
     }
     return ThresholdsResponse(**threshold_values)
+
+
+@router.get("/cycle_summary", response_model=CycleSummaryResponse)
+async def get_cycle_summary_endpoint(request: Request) -> CycleSummaryResponse:
+    """Return a dynamic cycle-summary payload built from health_manager stats.
+
+    The numbers mirror exactly what the Render log stream shows in the
+    ``health_summary`` event (formatted by ``format_cycle_summary``), so the
+    dashboard can display the same information in a visual card.
+    """
+    ct_app_instance = request.app.state.ct_app_instance
+    if not ct_app_instance:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Application not initialized")
+
+    from monitoring.health_manager import health_manager, HealthStatus
+
+    stats = await health_manager.get_stats()
+    analyzed_count = stats.get("analyses_executed", 0)
+
+    # Compute averages from accumulated sums
+    analyses = max(1, analyzed_count)
+    avg_score = (stats.get("total_score_sum", 0.0) / analyses) * 100.0
+    avg_conf = (stats.get("total_confidence_sum", 0.0) / analyses) * 100.0
+    avg_time = stats.get("total_analysis_time_ms", 0.0) / analyses
+
+    # Derive system health
+    health_summary = await health_manager.get_overall_health()
+    status_map = {
+        HealthStatus.OK: "EXCELLENT",
+        HealthStatus.WARNING: "GOOD",
+        HealthStatus.ERROR: "POOR",
+        HealthStatus.CRITICAL: "CRITICAL",
+    }
+    system_health = status_map.get(health_summary["status"], "UNKNOWN")
+
+    # Build formatted text (same formatter used in logs)
+    from monitoring.report_formatter import format_cycle_summary
+    formatted_text = format_cycle_summary(
+        pairs_analyzed=len(stats.get("unique_symbols_seen", set())),
+        bullish_count=stats.get("bullish_count", 0),
+        bearish_count=stats.get("bearish_count", 0),
+        sideways_count=stats.get("sideways_count", 0),
+        signals_found=stats.get("signals_emitted", 0),
+        approved_count=stats.get("opportunities_found", 0),
+        rejected_count=stats.get("opportunities_rejected", 0),
+        rejection_reasons=stats.get("rejection_reasons", {}),
+        avg_strategy_score=avg_score,
+        avg_confidence=avg_conf,
+        avg_analysis_time=avg_time,
+        telegram_count=stats.get("telegram_sent", 0),
+        database_writes=stats.get("db_writes", 0),
+        warnings_count=stats.get("warnings_count", 0),
+        errors_count=stats.get("errors_count", 0),
+        system_health=system_health,
+    )
+
+    return CycleSummaryResponse(
+        pairs_analyzed=len(stats.get("unique_symbols_seen", set())),
+        bullish=stats.get("bullish_count", 0),
+        bearish=stats.get("bearish_count", 0),
+        sideways=stats.get("sideways_count", 0),
+        signals_found=stats.get("signals_emitted", 0),
+        approved=stats.get("opportunities_found", 0),
+        rejected=stats.get("opportunities_rejected", 0),
+        rejection_reasons=stats.get("rejection_reasons", {}),
+        avg_strategy_score=round(avg_score, 1),
+        avg_confidence=round(avg_conf, 1),
+        avg_analysis_time_ms=round(avg_time, 0),
+        telegram_messages=stats.get("telegram_sent", 0),
+        database_writes=stats.get("db_writes", 0),
+        warnings=stats.get("warnings_count", 0),
+        errors=stats.get("errors_count", 0),
+        system_health=system_health,
+        formatted_text=formatted_text,
+        analyses_executed=analyzed_count,
+        scan_cycles=stats.get("scan_cycles", 0),
+    )
 
 
 @router.get("/system_health", response_model=SystemHealthResponse)
