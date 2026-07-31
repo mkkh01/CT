@@ -86,6 +86,8 @@ class DecisionResult(BaseModel):
     final_verdict: bool
     rejection_reason: Optional[str] = None
     component_signals: list[StrategySignal] = Field(default_factory=list)
+    trigger_timeframe: str = ""
+    """Timeframe of the trigger candle that initiated the analysis."""
     timestamp: datetime
 
 

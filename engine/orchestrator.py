@@ -361,6 +361,7 @@ class Orchestrator:
                 htf_bias_aligned=False,
                 risk=RiskAssessment(allowed=False, reason="insufficient_timeframes"),
                 entry=None,
+                trigger_timeframe=candle.timeframe,
             )
 
         ordered_tfs = _order_timeframes(timeframes)
@@ -634,6 +635,7 @@ class Orchestrator:
             final_verdict=final_verdict,
             rejection_reason=rejection_reason,
             component_signals=component_signals,
+            trigger_timeframe=candle.timeframe,
             timestamp=datetime.now(timezone.utc),
         )
 
@@ -1468,6 +1470,7 @@ class Orchestrator:
         htf_bias_aligned: bool,
         risk: RiskAssessment,
         entry: Optional[EntrySignal],
+        trigger_timeframe: str = "",
     ) -> DecisionResult:
         """Build a failure :class:`DecisionResult` and emit a rejection log."""
         decision = DecisionResult(
@@ -1483,6 +1486,7 @@ class Orchestrator:
             final_verdict=False,
             rejection_reason=reason,
             component_signals=component_signals,
+            trigger_timeframe=trigger_timeframe,
             timestamp=datetime.now(timezone.utc),
         )
         logger.info(

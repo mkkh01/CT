@@ -110,6 +110,11 @@ class HealthManager:
         """Return the system uptime in seconds."""
         return (datetime.now(timezone.utc) - self._start_time).total_seconds()
 
+    async def get_stats(self) -> Dict[str, Any]:
+        """Return a snapshot of current stats (alias for heartbeat callers)."""
+        async with self._lock:
+            return self._stats.copy()
+
     async def get_overall_health(self) -> Dict[str, Any]:
         """Return a summary of the overall system health."""
         async with self._lock:
