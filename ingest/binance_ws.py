@@ -962,8 +962,8 @@ class BinanceWSClient:
                         await health_manager.update_component(
                             "WebSocket", 
                             HealthStatus.WARNING, 
-                            f"WebSocket data stale for {symbol} {tf}: {seconds_since:.1f}s",
-                            {"symbol": symbol, "timeframe": tf, "delta": seconds_since}
+                            f"WebSocket data stale for {symbol} {timeframe}: {seconds_since:.1f}s",
+                            {"symbol": symbol, "timeframe": timeframe, "delta": seconds_since}
                         )
         except asyncio.CancelledError:
             return

@@ -768,6 +768,12 @@ class CTApplication:
                             note="orchestrator subscriber heartbeat",
                         )
                         last_heartbeat = now
+                        await health_manager.update_component(
+                            "Orchestrator",
+                            HealthStatus.OK,
+                            "Orchestrator subscriber is active but idle (waiting for candles)",
+                            {"last_activity": now.isoformat()}
+                        )
                     continue
 
                 await self._dispatch_candle_message(message)
@@ -1021,6 +1027,12 @@ class CTApplication:
         try:
             while True:
                 closed_trades = await paper_trader.scan_and_close_open_trades()
+                await health_manager.update_component(
+                    "PaperTrader",
+                    HealthStatus.OK,
+                    "PaperTrader is active and scanning for trade closures",
+                    {"closed_trades_count": len(closed_trades)}
+                )
                 
                 # Notify about closed trades
                 if closed_trades and self._telegram_app and self._settings.telegram_chat_id:
