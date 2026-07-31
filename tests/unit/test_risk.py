@@ -85,8 +85,9 @@ class TestCheckExposure:
         assert check_exposure(4000.0, 10000.0, 500.0) is True
 
     def test_exposure_exceeds_limit_fails(self):
-        # current 4500 + new 600 = 5100 > 5000.
-        assert check_exposure(4500.0, 10000.0, 600.0) is False
+        # Limit is 100% of 10000 = 10000.
+        # current 9500 + new 600 = 10100 > 10000.
+        assert check_exposure(9500.0, 10000.0, 600.0) is False
 
     def test_exposure_at_exactly_limit_passes(self):
         assert check_exposure(4500.0, 10000.0, 500.0) is True
@@ -163,27 +164,33 @@ class TestAssessRisk:
         assert result.take_profit_price is not None
         assert result.risk_reward_ratio is not None
 
-    def test_exposure_rejection(self):
+    def test_exposure_scaling(self):
+        """Verify that a trade exceeding exposure is scaled down instead of rejected."""
         signal = make_signal("long")
+        # Capital = 1000, Exposure Limit = 1000 (100%)
         coin = CoinConfig(
             symbol="BTCUSDT", timeframes=["15m", "1h", "4h"],
-            capital=10000.0, risk_percent=10.0,  # high risk
+            capital=1000.0, risk_percent=10.0,  # Risk amount = 100
         )
-        # Already near the exposure cap.
+        # current_exposure = 950, so only 50 USDT left.
         portfolio_state = {
-            "current_exposure": 4900.0,
+            "current_exposure": 950.0,
             "current_pnl": 0.0,
             "peak_pnl": 0.0,
             "current_price": 100.0,
             "open_trades_count": 0,
         }
+        # price_risk = 1.5 * 2.0 = 3.0
+        # raw_size = 100 / 3.0 = 33.33 units (~3333 USDT)
         result = assess_risk(
             signal=signal, confidence=0.8, coin_config=coin,
             portfolio_state=portfolio_state, atr=2.0,
         )
-        assert result.allowed is False
-        assert result.reason is not None
-        assert len(result.reason) > 0
+        
+        # Should be allowed but scaled down to fit 50 USDT
+        assert result.allowed is True
+        # size * price should be approx 50
+        assert 49.0 < (result.max_position_size * 100.0) < 51.0
 
     def test_drawdown_rejection(self):
         signal = make_signal("long")

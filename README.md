@@ -291,14 +291,20 @@ Closed Candle (from Redis pub/sub)
 
 **Minimum 3 timeframes** per coin is enforced in three places: Pydantic validator, DB constraint, orchestrator logic.
 
-### Position Sizing
+### Position Sizing & Scaling
+
+The system uses a **Dynamic Scaling** approach. If a trade's required notional value exceeds the allocated capital, it scales the size down to fit rather than rejecting the trade.
 
 ```python
 risk_amount   = capital * (risk_percent / 100)
 price_risk    = abs(entry_price - stop_loss_price)
-position_size = risk_amount / price_risk
+raw_size      = risk_amount / price_risk
 max_size      = capital * (MAX_POSITION_SIZE_PCT / 100) / entry_price
-return min(position_size, max_size)
+
+# Scale to fit capital limit
+final_size    = min(raw_size, max_size)
+if (final_size * entry_price) > capital:
+    final_size = capital / entry_price
 ```
 
 ### Stop Loss / Take Profit
