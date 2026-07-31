@@ -144,5 +144,5 @@ class TestGetTradeSummaries:
         ]
         calc = PerformanceCalculator(supabase=mock_supabase)
         summaries = await calc.get_trade_summaries(limit=10)
-        mock_supabase.fetch_recent_trades.assert_called_once_with(10)
+        mock_supabase.fetch_recent_trades.assert_called_once_with(limit=10)
         assert isinstance(summaries, list)

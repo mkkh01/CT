@@ -56,17 +56,6 @@ class TestCoinConfigValidation:
         with pytest.raises(ValidationError) as exc_info:
             CoinConfig(
                 symbol="BTCUSDT",
-                timeframes=["15m", "1h", "2h"],  # '2h' is actually valid... use '17m' instead
-                capital=10000.0,
-                risk_percent=2.0,
-            )
-        # Note: 2h is valid -- this should NOT raise. Adjust the test:
-        # If the test reaches here, the validator accepted 2h correctly.
-
-    def test_truly_invalid_timeframe_rejected(self):
-        with pytest.raises(ValidationError) as exc_info:
-            CoinConfig(
-                symbol="BTCUSDT",
                 timeframes=["15m", "1h", "17m"],  # 17m is not a valid Binance interval
                 capital=10000.0,
                 risk_percent=2.0,

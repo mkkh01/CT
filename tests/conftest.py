@@ -155,23 +155,40 @@ def high_sweep_seq(
     # which closes back below it.
     pre = bullish_seq(n=25, start_price=100.0, step=0.4, symbol=symbol,
                      timeframe=timeframe, base_time=base)
-    # Force the last candle's high to be the swing high.
-    swing_candle = pre[-1].model_copy(update={"high": swing_high_price})
-    pre[-1] = swing_candle
+    # Force a candle near the end (but with padding) to be the swing high.
+    # pre has 25 candles. We'll make index 19 the swing high.
+    # index 19 has 5 candles after it (20, 21, 22, 23, 24).
+    swing_idx = 19
+    swing_candle = pre[swing_idx].model_copy(update={"high": swing_high_price})
+    pre[swing_idx] = swing_candle
+    
+    # Ensure neighbors are lower.
+    for j in range(swing_idx - 5, swing_idx + 6):
+        if j != swing_idx and j < len(pre):
+            pre[j] = pre[j].model_copy(update={"high": swing_high_price - 1.0})
 
     tf_minutes = {"15m": 15, "1h": 60, "4h": 240}.get(timeframe, 15)
     # Sweep candle: wick_high > swing_high_price but close < swing_high_price.
-    sweep_open = swing_candle.close
+    # We place the sweep at the very end.
+    last_candle = pre[-1]
+    # To meet 0.6 strength threshold:
+    # wick_size_factor = upper_wick / range
+    # range = high - low
+    # upper_wick = high - max(open, close)
+    sweep_high = swing_high_price + 2.0
+    sweep_open = swing_high_price - 0.1
     sweep_close = swing_high_price - 1.0
+    sweep_low = sweep_close - 0.1
+    # range = 3.1, upper_wick = 2.1, factor = 2.1/3.1 = 0.67
     sweep = make_candle(
         symbol=symbol,
         timeframe=timeframe,
-        open_time=swing_candle.open_time + timedelta(minutes=tf_minutes),
+        open_time=last_candle.open_time + timedelta(minutes=tf_minutes),
         open=sweep_open,
-        high=swing_high_price + 0.5,  # wick pokes above
-        low=sweep_close - 0.3,
-        close=sweep_close,  # close back below swing high
-        volume=200.0,  # elevated volume
+        high=sweep_high,
+        low=sweep_low,
+        close=sweep_close,
+        volume=500.0,  # Ensure volume factor is 1.0
         timeframe_minutes=tf_minutes,
     )
     return pre + [sweep]
@@ -191,21 +208,36 @@ def low_sweep_seq(
     base = base_time or datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
     pre = bearish_seq(n=25, start_price=100.0, step=0.4, symbol=symbol,
                      timeframe=timeframe, base_time=base)
-    swing_candle = pre[-1].model_copy(update={"low": swing_low_price})
-    pre[-1] = swing_candle
+    # Establish swing low at index 19.
+    swing_idx = 19
+    swing_candle = pre[swing_idx].model_copy(update={"low": swing_low_price})
+    pre[swing_idx] = swing_candle
+    
+    # Ensure neighbors are higher.
+    for j in range(swing_idx - 5, swing_idx + 6):
+        if j != swing_idx and j < len(pre):
+            pre[j] = pre[j].model_copy(update={"low": swing_low_price + 1.0})
 
     tf_minutes = {"15m": 15, "1h": 60, "4h": 240}.get(timeframe, 15)
-    sweep_open = swing_candle.close
+    last_candle = pre[-1]
+    # To meet 0.6 strength threshold:
+    # wick_size_factor = lower_wick / range
+    # range = high - low
+    # lower_wick = min(open, close) - low
+    sweep_low = swing_low_price - 2.0
+    sweep_open = swing_low_price + 0.1
     sweep_close = swing_low_price + 1.0
+    sweep_high = sweep_close + 0.1
+    # range = 3.1, lower_wick = 2.1, factor = 2.1/3.1 = 0.67
     sweep = make_candle(
         symbol=symbol,
         timeframe=timeframe,
-        open_time=swing_candle.open_time + timedelta(minutes=tf_minutes),
+        open_time=last_candle.open_time + timedelta(minutes=tf_minutes),
         open=sweep_open,
-        high=sweep_close + 0.3,
-        low=swing_low_price - 0.5,  # wick pokes below
-        close=sweep_close,  # close back above swing low
-        volume=200.0,
+        high=sweep_high,
+        low=sweep_low,
+        close=sweep_close,
+        volume=500.0,
         timeframe_minutes=tf_minutes,
     )
     return pre + [sweep]
