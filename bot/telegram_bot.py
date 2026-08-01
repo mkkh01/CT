@@ -1602,7 +1602,7 @@ class CTTelegramBot:
         )
 
     def _format_trade_history(self, trades: list[SimulatedTrade]) -> str:
-        """Render the last-N trades per the Section 20 Trade History template.
+        """Render the last-N trades per the Section 20 Trade History template for Spot.
 
         Always appends the mandatory simulation warning -- Section 0 #7.
         """
@@ -1614,7 +1614,6 @@ class CTTelegramBot:
             )
         lines: list[str] = ["Trade History (Last 10)", ""]
         for idx, t in enumerate(trades, start=1):
-            direction = t.direction.upper()
             entry = self._fmt_price(t.entry_price)
             stop = self._fmt_price(t.stop_loss) if t.stop_loss is not None else "n/a"
             target = self._fmt_price(t.take_profit) if t.take_profit is not None else "n/a"
@@ -1626,7 +1625,7 @@ class CTTelegramBot:
                 pnl_line = ""
                 status_line = "Status: open"
 
-            lines.append(f"{idx}. {t.symbol} {direction}")
+            lines.append(f"{idx}. {t.symbol} (SPOT)")
             lines.append(f"   Quantity: {self._fmt_price(t.size)}")
             lines.append(f"   Entry: {entry}")
             lines.append(f"   Stop Loss (Current): {stop}")
@@ -1704,8 +1703,7 @@ class CTTelegramBot:
 
     @staticmethod
     def format_trade_opened(trade: SimulatedTrade, confidence: Optional[float] = None) -> str:
-        """Format a trade-opened notification with confidence and opening time."""
-        direction = trade.direction.upper()
+        """Format a trade-opened notification for Spot."""
         entry = CTTelegramBot._fmt_price(trade.entry_price)
         stop = CTTelegramBot._fmt_price(trade.stop_loss) if trade.stop_loss is not None else "n/a"
         target = CTTelegramBot._fmt_price(trade.take_profit) if trade.take_profit is not None else "n/a"
@@ -1713,9 +1711,8 @@ class CTTelegramBot:
         confidence_str = f"{confidence * 100:.1f}%" if confidence is not None else "n/a"
         
         return (
-            "🚀 <b>Trade Opened!</b>\n\n"
+            "🚀 <b>Spot Trade Opened!</b>\n\n"
             f"<b>Coin:</b> {trade.symbol}\n"
-            f"<b>Direction:</b> {direction}\n"
             f"<b>Quantity:</b> {CTTelegramBot._fmt_price(trade.size)}\n"
             f"<b>Entry Price:</b> {entry}\n"
             f"<b>Confidence:</b> {confidence_str}\n"
@@ -1727,8 +1724,7 @@ class CTTelegramBot:
 
     @staticmethod
     def format_trade_closed(trade: SimulatedTrade) -> str:
-        """Format a trade-closed notification."""
-        direction = trade.direction.upper()
+        """Format a trade-closed notification for Spot."""
         entry = CTTelegramBot._fmt_price(trade.entry_price)
         closed_time = trade.closed_at.strftime('%Y-%m-%d %H:%M:%S UTC') if trade.closed_at else "n/a"
         pnl = trade.pnl if trade.pnl is not None else 0.0
@@ -1747,9 +1743,8 @@ class CTTelegramBot:
         close_price = CTTelegramBot._fmt_price(trade.close_price) if trade.close_price is not None else "n/a"
         
         return (
-            f"{icon} <b>Trade Closed!</b>\n\n"
+            f"{icon} <b>Spot Trade Closed!</b>\n\n"
             f"<b>Coin:</b> {trade.symbol}\n"
-            f"<b>Direction:</b> {direction}\n"
             f"<b>Close Reason:</b> {reason}\n"
             f"<b>Closed At:</b> {closed_time}\n\n"
             f"<b>Entry Price:</b> {entry}\n"
@@ -1769,30 +1764,21 @@ class CTTelegramBot:
         take_profit: Optional[float],
         risk_reward: Optional[float],
     ) -> str:
-        """Format a new-signal push notification per Section 20 'New Trade Alert'.
-
-        Used by ``app/main.py`` (or any other layer that pushes notifications
-        to the user) so every trade alert text in the system is built in one
-        place and the mandatory simulation warning can never be forgotten.
-        """
+        """Format a new-signal push notification for Spot."""
         rr_line = (
             f"Risk/Reward: 1:{risk_reward:.2f}"
             if risk_reward is not None
             else "Risk/Reward: n/a"
         )
-        # Note: In alert phase, the final quantity is not yet calculated 
-        # as it depends on the final risk assessment. 
-        # However, for the alert, we can show it as a pending trade.
         return (
-            "New Signal!\n\n"
-            f"Coin: {symbol}\n"
-            f"Direction: {direction}\n"
-            f"Price: {CTTelegramBot._fmt_price(entry_price)}\n"
-            f"Confidence: {confidence * 100.0:.1f}%\n\n"
-            f"Stop Loss: {CTTelegramBot._fmt_price(stop_loss)}\n"
-            f"Target: {CTTelegramBot._fmt_price(take_profit)}\n"
+            "🚀 <b>New Spot Signal!</b>\n\n"
+            f"<b>Coin:</b> {symbol}\n"
+            f"<b>Price:</b> {CTTelegramBot._fmt_price(entry_price)}\n"
+            f"<b>Confidence:</b> {confidence * 100.0:.1f}%\n\n"
+            f"<b>Stop Loss:</b> {CTTelegramBot._fmt_price(stop_loss)}\n"
+            f"<b>Target:</b> {CTTelegramBot._fmt_price(take_profit)}\n"
             f"{rr_line}\n\n"
-            f"{SIM_WARNING_TRADE}"
+            f"<i>{SIM_WARNING_TRADE}</i>"
         )
 
     # =====================================================================
