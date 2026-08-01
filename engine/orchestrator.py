@@ -1149,7 +1149,8 @@ class Orchestrator:
                 struct_score = 0.7
                 struct_reasons = [f"structure_trend=up (tf={tf})"]
             elif struct.trend_direction == "down":
-                struct_dir = "short"
+                # In Spot-only, bearish structure is neutral (no trade)
+                struct_dir = "neutral"
                 struct_score = 0.7
                 struct_reasons = [f"structure_trend=down (tf={tf})"]
             else:
@@ -1174,7 +1175,8 @@ class Orchestrator:
             last_sweep = sweeps[-1]
             # [FIX] LiquiditySweep is a Pydantic model, not a dict. Access attributes directly.
             # Also normalise direction: 'bullish' sweep (low sweep) -> 'long' signal.
-            smc_dir = "long" if last_sweep.direction == "bullish" else "short"
+            # In Spot-only, bearish sweeps are neutral.
+            smc_dir = "long" if last_sweep.direction == "bullish" else "neutral"
             smc_score = float(last_sweep.strength)
             smc_reasons = [
                 f"smc_sweep: direction={last_sweep.direction}, "

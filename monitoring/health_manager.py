@@ -133,14 +133,13 @@ class HealthManager:
             self._stats["last_activity"] = datetime.now(timezone.utc)
 
     async def record_symbol_direction(self, symbol: str, direction: str):
-        """Track unique symbols and directional counts (bullish/bearish/sideways)."""
+        """Track unique symbols and directional counts (Spot Bullish vs Sideways)."""
         async with self._lock:
             self._stats["unique_symbols_seen"].add(symbol)
             if direction == "long":
                 self._stats["bullish_count"] += 1
-            elif direction == "short":
-                self._stats["bearish_count"] += 1
             else:
+                # In Spot-only, we only track bullish (long) vs everything else (sideways/neutral)
                 self._stats["sideways_count"] += 1
             self._stats["last_activity"] = datetime.now(timezone.utc)
 
