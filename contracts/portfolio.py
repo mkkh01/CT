@@ -26,6 +26,7 @@ class TradeSummary(BaseModel):
     direction: str
     entry_price: float
     stop_loss: Optional[float] = None
+    initial_stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     pnl: Optional[float] = None
     status: str

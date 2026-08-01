@@ -1620,7 +1620,7 @@ class CTTelegramBot:
             target = self._fmt_price(t.take_profit) if t.take_profit is not None else "n/a"
             if t.status == "closed":
                 pnl = t.pnl if t.pnl is not None else 0.0
-                pnl_line = f"PnL: {pnl:+.2f} USDT"
+                pnl_line = f"PnL: {pnl:+.4f} USDT"
                 status_line = f"Status: closed ({t.close_reason or 'manual'})"
             else:
                 pnl_line = ""

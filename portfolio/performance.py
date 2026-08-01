@@ -537,6 +537,7 @@ class PerformanceCalculator:
                     direction=t.direction,
                     entry_price=t.entry_price,
                     stop_loss=t.stop_loss,
+                    initial_stop_loss=t.initial_stop_loss,
                     take_profit=t.take_profit,
                     pnl=t.pnl,
                     status=t.status,
