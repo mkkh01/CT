@@ -952,30 +952,15 @@ class CTApplication:
                     await health_manager.increment_stat("telegram_sent")
                     # self._health_stats["last_success_at"] = datetime.now(timezone.utc) # Specific metric, remove or move to analytics
                     
-                    # Send Telegram Alert (Section 20)
+                    # Send Telegram Notification (Section 20) - Only send trade opened message
                     if self._telegram_app and self._settings.telegram_chat_id and result.entry:
                         try:
-                            alert_text = self._bot.format_trade_alert(
-                                symbol=result.symbol,
-                                direction=result.entry.direction,
-                                entry_price=result.entry.entry_price,
-                                confidence=result.confidence,
-                                stop_loss=result.entry.stop_loss,
-                                take_profit=result.entry.take_profit,
-                                risk_reward=result.risk.risk_reward_ratio,
-                            )
-                            await self._telegram_app.bot.send_message(
-                                chat_id=self._settings.telegram_chat_id,
-                                text=alert_text,
-                                parse_mode="HTML"
-                            )
-                            
-                            # Open trade and send confirmation
+                            # Open trade and send confirmation with confidence
                             from simulation.paper_trade import PaperTrader
                             trader = PaperTrader(self._supabase)
                             trade = await trader.open_trade(result)
                             
-                            opened_text = self._bot.format_trade_opened(trade)
+                            opened_text = self._bot.format_trade_opened(trade, confidence=result.confidence)
                             await self._telegram_app.bot.send_message(
                                 chat_id=self._settings.telegram_chat_id,
                                 text=opened_text,
@@ -1026,6 +1011,10 @@ class CTApplication:
 
         try:
             while True:
+                # Fetch open trades before scanning to detect trailing stop updates
+                open_trades_before = await self._supabase.fetch_open_trades()
+                old_stops = {trade.id: trade.stop_loss for trade in open_trades_before}
+                
                 closed_trades = await paper_trader.scan_and_close_open_trades()
                 await health_manager.update_component(
                     "PaperTrader",
@@ -1033,6 +1022,23 @@ class CTApplication:
                     "PaperTrader is active and scanning for trade closures",
                     {"closed_trades_count": len(closed_trades)}
                 )
+                
+                # Notify about trailing stop updates
+                if self._telegram_app and self._settings.telegram_chat_id:
+                    open_trades_after = await self._supabase.fetch_open_trades()
+                    for trade in open_trades_after:
+                        old_stop = old_stops.get(trade.id)
+                        if old_stop is not None and trade.stop_loss is not None:
+                            if abs(trade.stop_loss - old_stop) > 0.00001:  # Account for floating point precision
+                                try:
+                                    trailing_text = self._bot.format_trailing_stop_update(trade, old_stop)
+                                    await self._telegram_app.bot.send_message(
+                                        chat_id=self._settings.telegram_chat_id,
+                                        text=trailing_text,
+                                        parse_mode="HTML"
+                                    )
+                                except Exception as ts_exc:
+                                    logger.warning(f"Failed to send trailing stop update notification: {ts_exc}")
                 
                 # Notify about closed trades
                 if closed_trades and self._telegram_app and self._settings.telegram_chat_id:

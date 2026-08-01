@@ -1621,7 +1621,12 @@ class CTTelegramBot:
             lines.append(f"{idx}. {t.symbol} {direction}")
             lines.append(f"   Quantity: {self._fmt_price(t.size)}")
             lines.append(f"   Entry: {entry}")
-            lines.append(f"   Stop Loss: {stop}")
+            lines.append(f"   Stop Loss (Current): {stop}")
+            # Show initial stop loss if it differs from current
+            if t.initial_stop_loss is not None:
+                initial_stop = self._fmt_price(t.initial_stop_loss)
+                if t.stop_loss is not None and abs(t.initial_stop_loss - t.stop_loss) > 0.00001:
+                    lines.append(f"   Stop Loss (Initial): {initial_stop}")
             lines.append(f"   Target: {target}")
             lines.append(f"   {status_line}")
             if pnl_line:
@@ -1683,20 +1688,24 @@ class CTTelegramBot:
         return "\n".join(lines).rstrip()
 
     @staticmethod
-    def format_trade_opened(trade: SimulatedTrade) -> str:
-        """Format a trade-opened notification."""
+    def format_trade_opened(trade: SimulatedTrade, confidence: Optional[float] = None) -> str:
+        """Format a trade-opened notification with confidence and opening time."""
         direction = trade.direction.upper()
         entry = CTTelegramBot._fmt_price(trade.entry_price)
         stop = CTTelegramBot._fmt_price(trade.stop_loss) if trade.stop_loss is not None else "n/a"
         target = CTTelegramBot._fmt_price(trade.take_profit) if trade.take_profit is not None else "n/a"
+        opened_time = trade.opened_at.strftime('%Y-%m-%d %H:%M:%S UTC') if trade.opened_at else "n/a"
+        confidence_str = f"{confidence * 100:.1f}%" if confidence is not None else "n/a"
         
         return (
             "🚀 <b>Trade Opened!</b>\n\n"
             f"<b>Coin:</b> {trade.symbol}\n"
             f"<b>Direction:</b> {direction}\n"
             f"<b>Quantity:</b> {CTTelegramBot._fmt_price(trade.size)}\n"
-            f"<b>Entry Price:</b> {entry}\n\n"
-            f"<b>Stop Loss:</b> {stop}\n"
+            f"<b>Entry Price:</b> {entry}\n"
+            f"<b>Confidence:</b> {confidence_str}\n"
+            f"<b>Opened At:</b> {opened_time}\n\n"
+            f"<b>Stop Loss (Initial):</b> {stop}\n"
             f"<b>Target:</b> {target}\n\n"
             f"<i>{SIM_WARNING_TRADE}</i>"
         )
@@ -1706,19 +1715,29 @@ class CTTelegramBot:
         """Format a trade-closed notification."""
         direction = trade.direction.upper()
         entry = CTTelegramBot._fmt_price(trade.entry_price)
-        close = CTTelegramBot._fmt_price(trade.close_price)
+        closed_time = trade.closed_at.strftime('%Y-%m-%d %H:%M:%S UTC') if trade.closed_at else "n/a"
         pnl = trade.pnl if trade.pnl is not None else 0.0
         reason = (trade.close_reason or "manual").upper()
         
-        icon = "✅" if pnl > 0 else "❌"
+        # Display both initial and current stop loss if they differ
+        stop_current = CTTelegramBot._fmt_price(trade.stop_loss) if trade.stop_loss is not None else "n/a"
+        stop_initial = CTTelegramBot._fmt_price(trade.initial_stop_loss) if trade.initial_stop_loss is not None else "n/a"
+        
+        stop_info = f"<b>Stop Loss (Current):</b> {stop_current}\n"
+        if trade.initial_stop_loss is not None and trade.stop_loss is not None:
+            if abs(trade.initial_stop_loss - trade.stop_loss) > 0.00001:  # Account for floating point precision
+                stop_info += f"<b>Stop Loss (Initial):</b> {stop_initial}\n"
+        
+        icon = "✅" if pnl > 0 else "❌" if pnl < 0 else "➖"
         
         return (
             f"{icon} <b>Trade Closed!</b>\n\n"
             f"<b>Coin:</b> {trade.symbol}\n"
             f"<b>Direction:</b> {direction}\n"
-            f"<b>Status:</b> {reason}\n\n"
+            f"<b>Close Reason:</b> {reason}\n"
+            f"<b>Closed At:</b> {closed_time}\n\n"
             f"<b>Entry Price:</b> {entry}\n"
-            f"<b>Close Price:</b> {close}\n"
+            f"{stop_info}"
             f"<b>PnL:</b> <code>{pnl:+.4f} USDT</code>\n\n"
             f"<i>{SIM_WARNING_TRADE}</i>"
         )
@@ -1905,3 +1924,25 @@ def timedelta_days(days: int) -> datetime:
 
 
 __all__ = ["CTTelegramBot"]
+
+    @staticmethod
+    def format_trailing_stop_update(trade: SimulatedTrade, old_stop_loss: float) -> str:
+        """Format a trailing-stop update notification.
+        
+        Shows the new stop loss and compares it with the initial stop loss
+        to demonstrate that the system is protecting profits correctly.
+        """
+        direction = trade.direction.upper()
+        new_stop = CTTelegramBot._fmt_price(trade.stop_loss) if trade.stop_loss is not None else "n/a"
+        old_stop = CTTelegramBot._fmt_price(old_stop_loss)
+        initial_stop = CTTelegramBot._fmt_price(trade.initial_stop_loss) if trade.initial_stop_loss is not None else "n/a"
+        
+        return (
+            f"📍 <b>Trailing Stop Updated!</b>\n\n"
+            f"<b>Coin:</b> {trade.symbol}\n"
+            f"<b>Direction:</b> {direction}\n\n"
+            f"<b>Stop Loss (Initial):</b> {initial_stop}\n"
+            f"<b>Stop Loss (Previous):</b> {old_stop}\n"
+            f"<b>Stop Loss (New):</b> {new_stop}\n\n"
+            f"<i>{SIM_WARNING_TRADE}</i>"
+        )

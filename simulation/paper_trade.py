@@ -969,15 +969,18 @@ class PaperTrader:
     async def update_all_trailing_stops(
         self,
         current_candles: dict[tuple[str, str], Candle],
-    ) -> None:
+    ) -> list[SimulatedTrade]:
         """Run :meth:`update_trailing_stop` for every open trade.
 
         This is called from :meth:`scan_and_close_open_trades` before the
         closure check so that the stop has been moved (if eligible) before
         we test whether the current candle hits it.
+        
+        Returns:
+            List of trades that had their trailing stops updated.
         """
         open_trades = await self._supabase.fetch_open_trades()
-        updated_count = 0
+        updated_trades: list[SimulatedTrade] = []
         for trade in open_trades:
             candle = current_candles.get((trade.symbol, trade.timeframe))
             if candle is None:
@@ -985,7 +988,7 @@ class PaperTrader:
             try:
                 result = await self.update_trailing_stop(trade, candle)
                 if result is not None:
-                    updated_count += 1
+                    updated_trades.append(result)
             except Exception as exc:
                 logger.error(
                     "trailing_stop_update_error",
@@ -997,14 +1000,15 @@ class PaperTrader:
                     symbol=trade.symbol,
                 )
                 continue
-        if updated_count > 0:
+        if len(updated_trades) > 0:
             logger.info(
                 "trailing_stop_batch_update",
                 timestamp=_utcnow(),
-                updated_count=updated_count,
+                updated_count=len(updated_trades),
                 total_open=len(open_trades),
                 is_simulated=True,
             )
+        return updated_trades
 
     @staticmethod
     def _compute_initial_risk(trade: SimulatedTrade) -> Optional[float]:

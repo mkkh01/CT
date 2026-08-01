@@ -45,13 +45,13 @@ class ResultFormatter:
     def format_trade_telegram(trade: SimulatedTrade, decision: Optional[DecisionResult] = None) -> str:
         """Format a trade result for Telegram messages."""
         status_emoji = "🟢" if (trade.pnl or 0) > 0 else "🔴" if trade.status == "closed" else "🔵"
-        pnl_str = f"{trade.pnl:.2f}" if trade.pnl is not None else "قيد التنفيذ"
+        pnl_str = f"{trade.pnl:.4f}" if trade.pnl is not None else "قيد التنفيذ"
         
         msg = (
             f"{status_emoji} *تقرير صفقة: {trade.symbol}*\n"
             f"━━━━━━━━━━━━━━━\n"
             f"🔹 *الاتجاه:* {trade.direction.upper()}\n"
-            f"🔹 *سعر الدخول:* `{trade.entry_price}`\n"
+            f"🔹 *سعر الدخول:* `{trade.entry_price:.6f}`\n"
             f"🔹 *الحالة:* {trade.status}\n"
             f"🔹 *الربح/الخسارة:* `{pnl_str}`\n"
         )
@@ -97,6 +97,7 @@ class ResultFormatter:
             f"━━━━━━━━━━━━━━━\n"
             f"📈 *إجمالي الصفقات:* {total_trades}\n"
             f"✅ *الصفقات الناجحة:* {summary.get('winning_trades', 0)}\n"
+            f"➖ *الصفقات المتعادلة:* {summary.get('neutral_trades', 0)}\n"
             f"❌ *الصفقات الخاسرة:* {summary.get('losing_trades', 0)}\n"
             f"🎯 *نسبة النجاح:* `{win_rate:.2f}%`\n"
             f"💰 *إجمالي الأرباح:* `{total_pnl:.2f}`\n"

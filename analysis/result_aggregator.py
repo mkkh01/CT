@@ -58,20 +58,27 @@ class ResultAggregator:
                 "closed_trades": 0,
                 "winning_trades": 0,
                 "losing_trades": 0,
+                "neutral_trades": 0,
                 "win_rate": 0.0,
                 "total_pnl": 0.0,
                 "avg_pnl": 0.0
             }
 
-        wins = [t for t in closed_trades if (t.pnl or 0) > 0]
+        winning_trades = [t for t in closed_trades if (t.pnl or 0) > 0]
+        losing_trades = [t for t in closed_trades if (t.pnl or 0) < 0]
+        neutral_trades = [t for t in closed_trades if (t.pnl or 0) == 0]
         total_pnl = sum(t.pnl or 0 for t in closed_trades)
+        
+        # Ensure win_rate is calculated correctly based on winning trades only
+        win_rate = (len(winning_trades) / len(closed_trades) * 100) if closed_trades else 0.0
         
         return {
             "total_trades": len(trades),
             "closed_trades": len(closed_trades),
-            "winning_trades": len(wins),
-            "losing_trades": len(closed_trades) - len(wins),
-            "win_rate": len(wins) / len(closed_trades) * 100,
+            "winning_trades": len(winning_trades),
+            "losing_trades": len(losing_trades),
+            "neutral_trades": len(neutral_trades),
+            "win_rate": win_rate,
             "total_pnl": total_pnl,
             "avg_pnl": total_pnl / len(closed_trades)
         }
