@@ -1729,6 +1729,7 @@ class CTTelegramBot:
                 stop_info += f"<b>Stop Loss (Initial):</b> {stop_initial}\n"
         
         icon = "✅" if pnl > 0 else "❌" if pnl < 0 else "➖"
+        close_price = CTTelegramBot._fmt_price(trade.close_price) if trade.close_price is not None else "n/a"
         
         return (
             f"{icon} <b>Trade Closed!</b>\n\n"
@@ -1737,6 +1738,7 @@ class CTTelegramBot:
             f"<b>Close Reason:</b> {reason}\n"
             f"<b>Closed At:</b> {closed_time}\n\n"
             f"<b>Entry Price:</b> {entry}\n"
+            f"<b>Close Price:</b> {close_price}\n"
             f"{stop_info}"
             f"<b>PnL:</b> <code>{pnl:+.4f} USDT</code>\n\n"
             f"<i>{SIM_WARNING_TRADE}</i>"

@@ -40,6 +40,7 @@ class SimulatedTrade(BaseModel):
     pnl: Optional[float] = None
     status: Literal["open", "closed"] = "open"
     close_reason: Optional[Literal["tp", "sl", "time", "manual"]] = None
+    close_price: Optional[float] = None
     is_simulated: bool = True
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None

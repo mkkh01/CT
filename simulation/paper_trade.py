@@ -506,6 +506,7 @@ class PaperTrader:
                 "pnl": pnl,
                 "status": "closed",
                 "close_reason": close_reason,
+                "close_price": close_price,
             }
         )
 
