@@ -337,14 +337,13 @@ class PaperTrader:
         # Calculate initial ATR for trailing-stop distance reference.
         atr_value = await self._compute_atr_async(symbol, timeframe)
 
-        # Initialise trailing-track fields.
-        initial_highest = entry_price if direction == "long" else None
-        initial_lowest = entry_price if direction == "short" else None
+        # Initialise trailing-track fields (Spot-only: only highest is tracked).
+        initial_highest = entry_price
 
         trade = SimulatedTrade(
             decision_id=decision.id,
             symbol=symbol,
-            direction=direction,
+            direction="long", # Force long for Spot
             entry_price=entry_price,
             size=size,
             fee=fee,
@@ -356,7 +355,7 @@ class PaperTrader:
             stop_loss=stop_loss,
             take_profit=take_profit,
             highest_price=initial_highest,
-            lowest_price=initial_lowest,
+            lowest_price=None,
             atr_at_entry=atr_value if atr_value > 0 else None,
             initial_stop_loss=stop_loss,
             timeframe=timeframe,
@@ -592,6 +591,7 @@ class PaperTrader:
                 closed_at=closed_at,
                 pnl=pnl,
                 close_reason=reason,
+                close_price=cp,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(
@@ -613,6 +613,7 @@ class PaperTrader:
                 "pnl": pnl,
                 "status": "closed",
                 "close_reason": reason,
+                "close_price": cp,
             }
         )
 
@@ -663,12 +664,13 @@ class PaperTrader:
             price = current_prices.get(trade.symbol)
             if price is None:
                 logger.warning(
-                    "close_all_open_missing_price",
+                    "close_all_open_missing_price_fallback_to_entry",
                     timestamp=_utcnow(),
                     trade_id=str(trade.id),
                     symbol=trade.symbol,
                 )
-                continue
+                price = trade.entry_price # Fallback to entry price to ensure closure
+
             try:
                 updated = await self.close_trade_manual(
                     trade_id=trade.id,
@@ -1011,12 +1013,11 @@ class PaperTrader:
             return None
 
         ep = trade.entry_price
+        # Spot-only: only long trades are supported.
         if trade.direction == "long":
             risk = ep - sl
-        elif trade.direction == "short":
-            risk = sl - ep
         else:
-            return None
+            risk = 0.0
         return risk if risk > 0 else None
 
     # ----------------------- introspection ---------------------------------

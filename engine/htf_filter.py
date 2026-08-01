@@ -139,7 +139,7 @@ def filter_by_htf(
 
     Args:
         ltf_signal: The candidate signal from the lower timeframe. Its
-            ``direction`` (``"long"`` / ``"short"``) is the only field used
+            ``direction`` (``"long"`` / ``"neutral"``) is the only field used
             for the alignment check.
         htf_candles: Closed-candle history on the higher timeframe (e.g. 4h
             or 1h). Unclosed candles are filtered out internally.

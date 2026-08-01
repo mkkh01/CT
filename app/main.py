@@ -929,11 +929,9 @@ class CTApplication:
                 if result.component_signals:
                     # Count signal directions to determine primary direction
                     long_count = sum(1 for s in result.component_signals if s.direction == "long")
-                    short_count = sum(1 for s in result.component_signals if s.direction == "short")
-                    if long_count > short_count:
+                    # In Spot-only, we only care if long signals dominate.
+                    if long_count > 0:
                         primary_direction = "long"
-                    elif short_count > long_count:
-                        primary_direction = "short"
                 await health_manager.record_symbol_direction(
                     result.symbol,
                     primary_direction,
