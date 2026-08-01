@@ -685,6 +685,16 @@ class PerformanceCalculator:
         )
         return results
 
+    async def get_daily_performance(self) -> PerformanceMetrics:
+        """Compute metrics for the last 24 hours."""
+        now = _utcnow()
+        yesterday = now - timedelta(days=1)
+        return await self.calculate_metrics(period_start=yesterday, period_end=now)
+
+    async def get_per_coin_performance(self, period_start: Optional[datetime] = None, period_end: Optional[datetime] = None) -> dict[str, PerformanceMetrics]:
+        """Compute metrics for each coin separately."""
+        return await self.calculate_for_all_symbols(period_start=period_start, period_end=period_end)
+
     # ----------------------- convenience -----------------------------------
     async def calculate_and_save(
         self,

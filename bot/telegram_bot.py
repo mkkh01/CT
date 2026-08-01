@@ -137,6 +137,7 @@ SIM_WARNING_ENGINE = (
 # store absolute datetimes in code.
 PERF_PERIODS: dict[str, str] = {
     "all": "All-Time",
+    "1d": "Last 24 Hours",
     "7d": "Last 7 Days",
     "30d": "Last 30 Days",
     "90d": "Last 90 Days",
@@ -1450,6 +1451,9 @@ class CTTelegramBot:
             metrics = await self._performance_calc.calculate_metrics(
                 symbol=None, period_start=period_start, period_end=period_end
             )
+            per_coin_metrics = await self._performance_calc.calculate_for_all_symbols(
+                period_start=period_start, period_end=period_end
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",
@@ -1467,7 +1471,11 @@ class CTTelegramBot:
             return
 
         period_label = PERF_PERIODS.get(period_key, "All-Time")
-        body = self._format_performance(metrics, period_label=period_label)
+        body = self._format_performance(
+            metrics, 
+            period_label=period_label,
+            per_coin_metrics=per_coin_metrics
+        )
         await self._reply_safe(update, context, body, reply_markup=self._build_main_menu())
         logger.info(
             "bot_reply",
@@ -1637,29 +1645,36 @@ class CTTelegramBot:
         return "\n".join(lines)
 
     def _format_performance(
-        self, metrics: PerformanceMetrics, period_label: str = "All-Time"
+        self, 
+        metrics: PerformanceMetrics, 
+        period_label: str = "All-Time",
+        per_coin_metrics: Optional[dict[str, PerformanceMetrics]] = None
     ) -> str:
-        """Render the system performance report per Section 20.
-
-        Always appends the mandatory simulation warning -- Section 0 #7.
-        """
+        """Render the system performance report with per-coin breakdown."""
         win_rate_pct = metrics.win_rate * 100.0 if metrics.win_rate else 0.0
-        body = (
-            f"System Performance ({period_label})",
+        lines = [
+            f"📊 <b>System Performance ({period_label})</b>",
+            "━━━━━━━━━━━━━━━",
+            f"📈 <b>Total Trades:</b> {metrics.total_trades}",
+            f"✅ <b>Wins:</b> {metrics.winning_trades} | ❌ <b>Losses:</b> {metrics.losing_trades}",
+            f"🎯 <b>Win Rate:</b> <code>{win_rate_pct:.2f}%</code>",
+            f"💰 <b>Total PnL:</b> <code>{metrics.total_pnl:+.4f} USDT</code>",
+            f"📉 <b>Max Drawdown:</b> <code>{metrics.max_drawdown:.2f} USDT ({metrics.max_drawdown_percent:.2f}%)</code>",
             "",
-            f"Total Trades: {metrics.total_trades}",
-            f"Winning Trades: {metrics.winning_trades}",
-            f"Losing Trades: {metrics.losing_trades}",
-            f"Win Rate: {win_rate_pct:.2f}%",
-            f"Total PnL: {metrics.total_pnl:+.2f} USDT",
-            (
-                f"Max Drawdown: {metrics.max_drawdown:.2f} USDT "
-                f"({metrics.max_drawdown_percent:.2f}%)"
-            ),
-            "",
-            SIM_WARNING_PERF,
-        )
-        return "\n".join(body)
+        ]
+
+        if per_coin_metrics:
+            lines.append("🪙 <b>Per-Coin Breakdown:</b>")
+            lines.append("━━━━━━━━━━━━━━━")
+            for symbol, m in per_coin_metrics.items():
+                wr = m.win_rate * 100.0 if m.win_rate else 0.0
+                lines.append(f"<b>{symbol}:</b>")
+                lines.append(f"  Trades: {m.total_trades} (W:{m.winning_trades}/L:{m.losing_trades})")
+                lines.append(f"  PnL: <code>{m.total_pnl:+.4f}</code> | WR: <code>{wr:.1f}%</code>")
+            lines.append("")
+
+        lines.append(f"<i>{SIM_WARNING_PERF}</i>")
+        return "\n".join(lines)
 
     def _format_live_prices(
         self, prices: dict[str, Optional[tuple[float, datetime]]]
@@ -1891,6 +1906,8 @@ class CTTelegramBot:
         now = datetime.now(timezone.utc)
         if period_key == "all":
             return None, None
+        if period_key == "1d":
+            return now - timedelta_days(1), None
         if period_key == "7d":
             return now - timedelta_days(7), None
         if period_key == "30d":
