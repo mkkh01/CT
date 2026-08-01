@@ -149,6 +149,7 @@ def _trade_from_row(row: asyncpg.Record) -> SimulatedTrade:
         atr_at_entry=None if row.get("atr_at_entry") is None else float(row["atr_at_entry"]),
         initial_stop_loss=None if row.get("initial_stop_loss") is None else float(row["initial_stop_loss"]),
         timeframe=row.get("timeframe", "15m"),
+        close_price=None if row.get("close_price") is None else float(row["close_price"]),
     )
 
 
@@ -500,16 +501,17 @@ class SupabaseClient:
         closed_at: datetime,
         pnl: float,
         close_reason: str,
+        close_price: Optional[float] = None,
     ) -> None:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE simulated_trades
-                SET closed_at = $1, pnl = $2, close_reason = $3, status = 'closed'
-                WHERE id = $4
+                SET closed_at = $1, pnl = $2, close_reason = $3, status = 'closed', close_price = $4
+                WHERE id = $5
                 """,
-                closed_at, pnl, close_reason, trade_id,
+                closed_at, pnl, close_reason, close_price, trade_id,
             )
         logger.info(
             "simulated_trade_closed_db",

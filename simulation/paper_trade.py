@@ -484,6 +484,7 @@ class PaperTrader:
                 closed_at=closed_at,
                 pnl=pnl,
                 close_reason=close_reason,
+                close_price=close_price,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(
