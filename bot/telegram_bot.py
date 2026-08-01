@@ -1927,23 +1927,6 @@ class CTTelegramBot:
         # 8 decimals is enough for crypto (satoshis) and small alt prices.
         return f"{value:.8f}".rstrip("0").rstrip(".")
 
-
-# ---------------------------------------------------------------------------
-# Small helpers kept at module level for testability
-# ---------------------------------------------------------------------------
-def timedelta_days(days: int) -> datetime:
-    """Return ``datetime.now(utc) - timedelta(days=days)``.
-
-    Kept as a tiny helper so the validation tests can monkeypatch it without
-    importing ``datetime`` internals.
-    """
-    from datetime import timedelta
-
-    return datetime.now(timezone.utc) - timedelta(days=days)
-
-
-__all__ = ["CTTelegramBot"]
-
     @staticmethod
     def format_trailing_stop_update(trade: SimulatedTrade, old_stop_loss: float) -> str:
         """Format a trailing-stop update notification.
@@ -1965,3 +1948,20 @@ __all__ = ["CTTelegramBot"]
             f"<b>Stop Loss (New):</b> {new_stop}\n\n"
             f"<i>{SIM_WARNING_TRADE}</i>"
         )
+
+
+# ---------------------------------------------------------------------------
+# Small helpers kept at module level for testability
+# ---------------------------------------------------------------------------
+def timedelta_days(days: int) -> datetime:
+    """Return ``datetime.now(utc) - timedelta(days=days)``.
+
+    Kept as a tiny helper so the validation tests can monkeypatch it without
+    importing ``datetime`` internals.
+    """
+    from datetime import timedelta
+
+    return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+__all__ = ["CTTelegramBot"]
