@@ -199,15 +199,15 @@ def build_session_signal(
     # Clamp to [0,1] just in case the underlying table ever drifts.
     raw_score = max(0.0, min(1.0, float(score)))
 
-    direction: Literal["long", "short"]
+    direction: Literal["long", "neutral"]
     reasons: list[str] = [f"session={session}", f"quality_score={raw_score:.3f}"]
 
     if raw_score >= _FAVOURABLE_SESSION_SCORE:
         direction = "long"
         reasons.append("favourable_session: long bias")
     else:
-        direction = "short"
-        reasons.append("low_quality_session: short bias (will be gated by confidence)")
+        direction = "neutral"
+        reasons.append("low_quality_session: neutral bias (will be gated by confidence)")
 
     # Emit the additional trace event (``classify_and_log`` is not called
     # here because we don't have a guarantee the caller wants the double-log;

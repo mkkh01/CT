@@ -146,11 +146,10 @@ def _compute_pnl(
     s = _safe_float(slippage)
     if direction == "long":
         gross = (cp - ep) * sz
-    elif direction == "short":
-        gross = (ep - cp) * sz
     else:
+        # Spot-only: only long trades are supported.
         logger.warning(
-            "pnl_unknown_direction",
+            "pnl_invalid_direction_for_spot",
             direction=direction,
             entry_price=ep,
             close_price=cp,
@@ -212,16 +211,10 @@ def _resolve_close_price(
         if tp is not None and high >= float(tp):
             return (float(tp), "tp")
         return None
-    elif direction == "short":
-        # Check SL first (conservative for ambiguous wicks).
-        if sl is not None and high >= float(sl):
-            return (float(sl), "sl")
-        if tp is not None and low <= float(tp):
-            return (float(tp), "tp")
-        return None
     else:
+        # Spot-only: only long trades are supported.
         logger.warning(
-            "resolve_close_unknown_direction",
+            "resolve_close_invalid_direction_for_spot",
             trade_id=str(trade.id),
             direction=direction,
         )
@@ -868,12 +861,8 @@ class PaperTrader:
                 new_highest = high
             elif new_highest is None:
                 new_highest = high
-        elif trade.direction == "short":
-            if new_lowest is not None and low < new_lowest:
-                new_lowest = low
-            elif new_lowest is None:
-                new_lowest = low
         else:
+            # Spot-only: only long trades are supported.
             return None
 
         # --- Step 2: check activation threshold ---
@@ -885,8 +874,7 @@ class PaperTrader:
             current_price = high  # Use candle high for conservative check.
             unrealised = current_price - trade.entry_price
         else:
-            current_price = low  # Use candle low for conservative check.
-            unrealised = trade.entry_price - current_price
+            return None
 
         activation_threshold = initial_risk * TRAILING_ACTIVATION_MULTIPLIER
         if unrealised < activation_threshold:
@@ -916,24 +904,16 @@ class PaperTrader:
             # Must not exceed the current high (stop must be below price).
             if candidate_sl >= new_highest:
                 return None
-        else:  # short
-            if new_lowest is None:
-                return None
-            candidate_sl = new_lowest + candidate_distance
-            current_sl = float(trade.stop_loss) if trade.stop_loss is not None else float('inf')
-            if candidate_sl >= current_sl:
-                return None
-            # Must not be below the current low (stop must be above price).
-            if candidate_sl <= new_lowest:
-                return None
+        else:
+            return None
 
         # --- Step 4: persist ---
         try:
             await self._supabase.update_simulated_trade_trailing(
                 trade_id=trade.id,
                 stop_loss=candidate_sl,
-                highest_price=new_highest if trade.direction == "long" else None,
-                lowest_price=new_lowest if trade.direction == "short" else None,
+                highest_price=new_highest,
+                lowest_price=None,
             )
         except Exception as exc:
             logger.error(

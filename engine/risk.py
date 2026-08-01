@@ -258,51 +258,39 @@ def check_drawdown(
 def calculate_stop_loss(
     entry_price: float,
     atr: float,
-    direction: Literal["long", "short"],
+    direction: Literal["long"] = "long",
 ) -> float:
-    """Stop-loss price for ``direction`` using ``thresholds.VOLATILITY_ATR_MULTIPLIER_SL``.
+    """Stop-loss price for Spot (Long only) using ``thresholds.VOLATILITY_ATR_MULTIPLIER_SL``.
 
     * Long  : ``SL = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
-    * Short : ``SL = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
 
-    Returns ``entry_price`` (no stop) if ``atr <= 0`` -- the orchestrator
-    will reject this downstream via the R:R check (price_risk = 0).
+    Returns ``entry_price`` (no stop) if ``atr <= 0``.
     """
     entry_price = _safe_float(entry_price)
     atr = _safe_float(atr)
     if atr <= 0:
         return entry_price
     distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL
-    if direction == "long":
-        return entry_price - distance
-    if direction == "short":
-        return entry_price + distance
-    raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
+    return entry_price - distance
 
 
 def calculate_take_profit(
     entry_price: float,
     atr: float,
-    direction: Literal["long", "short"],
+    direction: Literal["long"] = "long",
 ) -> float:
-    """Take-profit price for ``direction`` using ``thresholds.VOLATILITY_ATR_MULTIPLIER_TP``.
+    """Take-profit price for Spot (Long only) using ``thresholds.VOLATILITY_ATR_MULTIPLIER_TP``.
 
     * Long  : ``TP = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
-    * Short : ``TP = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
 
-    Returns ``entry_price`` (no target) if ``atr <= 0`` -- downstream R:R
-    check will reject.
+    Returns ``entry_price`` (no target) if ``atr <= 0``.
     """
     entry_price = _safe_float(entry_price)
     atr = _safe_float(atr)
     if atr <= 0:
         return entry_price
     distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP
-    if direction == "long":
-        return entry_price + distance
-    if direction == "short":
-        return entry_price - distance
-    raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
+    return entry_price + distance
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +388,14 @@ def assess_risk(
     current_pnl = _portfolio_state_get(portfolio_state, "current_pnl")
     peak_pnl = _portfolio_state_get(portfolio_state, "peak_pnl")
     open_trade_count = _portfolio_state_int(portfolio_state, "open_trade_count")
+
+    # Spot-only: Reject any signal that is not "long".
+    if direction != "long":
+        return _build_rejection(
+            symbol, f"spot_only: direction {direction!r} not allowed",
+            0.0, 0.0, None, None, None,
+            current_exposure, 0.0, confidence
+        )
 
     # Entry price: prefer the current market price; fall back to a sensible
     # default of 0.0 (which will trigger the R:R / exposure rejections below).

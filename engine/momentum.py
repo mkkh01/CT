@@ -432,13 +432,11 @@ def calculate_momentum(candles: list[Candle]) -> dict:
         direction = "long"
         reasons.append(f"aggregated momentum bullish (raw={raw:+.2f})")
     elif raw < 0:
-        direction = "short"
+        direction = "neutral"
         reasons.append(f"aggregated momentum bearish (raw={raw:+.2f})")
     else:
-        # Neutral tie -- default to long with a low-conviction reason so the
-        # downstream orchestrator can still gate it via the confidence threshold.
-        direction = "long"
-        reasons.append("aggregated momentum neutral; defaulting to long")
+        direction = "neutral"
+        reasons.append("aggregated momentum neutral")
 
     logger.info(
         "momentum_calculated",

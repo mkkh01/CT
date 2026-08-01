@@ -30,7 +30,7 @@ class SimulatedTrade(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     decision_id: UUID
     symbol: str
-    direction: Literal["long", "short"]
+    direction: Literal["long"]
     entry_price: float
     size: float
     fee: float

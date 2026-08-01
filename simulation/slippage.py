@@ -221,40 +221,29 @@ def apply_slippage_to_price(
     entry_price: float,
     size: float,
     symbol: str,
-    direction: Literal["long", "short"],
+    direction: Literal["long"] = "long",
     avg_volume: Optional[float] = None,
 ) -> float:
-    """Return the effective fill price after slippage for a market order.
+    """Return the effective fill price after slippage for a Spot market order.
 
     Slippage always moves the fill price *against* the trader:
 
     * **Long:** buyer pays more than the signal price -> fill = price * (1 +
-      slippage_pct/100).  The size-dependent impact term, if enabled, is
-      folded into the *effective* slippage percentage used here.
-    * **Short:** seller receives less than the signal price -> fill = price *
-      (1 - slippage_pct/100).
-
-    The impact model is folded in by computing an *effective* slippage
-    percentage that, when applied to ``entry_price * size``, reproduces
-    :func:`estimate_slippage_with_impact`.  This keeps the price-side and the
-    cost-side slippage estimates consistent.
+      slippage_pct/100).
 
     Args:
         entry_price: Signal / intended entry price.
         size: Order size in base currency.
         symbol: Ticker symbol.
-        direction: ``"long"`` or ``"short"`` -- determines whether the
-            slippage is added to or subtracted from the price.
+        direction: Only ``"long"`` is supported for Spot.
         avg_volume: Optional average traded volume for the impact-aware model.
 
     Returns:
         The effective fill price.  Always a finite non-negative float.
-
-    Raises:
-        ValueError: if ``direction`` is not ``"long"`` or ``"short"``.
     """
-    if direction not in ("long", "short"):
-        raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
+    if direction != "long":
+        # Spot-only: fallback to long fill or return price as-is.
+        logger.warning("slippage_invalid_direction_for_spot", direction=direction)
 
     price = _safe_float(entry_price)
     qty = _safe_float(size)
@@ -282,12 +271,8 @@ def apply_slippage_to_price(
 
     if direction == "long":
         fill_price = price * (1.0 + eff_frac)
-    else:  # short
-        fill_price = price * (1.0 - eff_frac)
-        # Floor at zero -- a negative fill price is meaningless even under
-        # absurd impact inputs.
-        if fill_price < 0.0:
-            fill_price = 0.0
+    else:
+        fill_price = price
 
     if not np.isfinite(fill_price):
         logger.warning(

@@ -1198,10 +1198,8 @@ class Orchestrator:
         if trend_dir_raw == "bullish":
             trend_dir = "long"
         elif trend_dir_raw == "bearish":
-            trend_dir = "short"
+            trend_dir = "neutral"
         else:
-            # neutral direction: use a "neutral" signal that the summary
-            # can interpret as sideways / ranging.
             trend_dir = "neutral"
         trend_score = float(trend.get("strength", 0.0) or 0.0)
         trend_reasons = list(trend.get("reasons", []))
@@ -1221,8 +1219,8 @@ class Orchestrator:
 
         # 4. Momentum signal.
         mom = analysis.momentum or {}
-        mom_dir_raw = mom.get("direction", "long")
-        mom_dir = "long" if mom_dir_raw == "long" else "short"
+        mom_dir_raw = mom.get("direction", "neutral")
+        mom_dir = "long" if mom_dir_raw == "long" else "neutral"
         mom_score = float(mom.get("momentum_score", 0.5) or 0.5)
         mom_reasons = list(mom.get("reasons", []))
         if not mom_reasons:
@@ -1247,9 +1245,9 @@ class Orchestrator:
         if cvd_slope > 0 or delta > 0:
             vol_dir = "long"
         elif cvd_slope < 0 or delta < 0:
-            vol_dir = "short"
+            vol_dir = "neutral"
         else:
-            vol_dir = "long"
+            vol_dir = "neutral"
         # Map |cvd_slope| to [0.4, 0.9] via a soft tanh-like transform.
         vol_score = 0.4 + 0.5 * min(abs(cvd_slope) * 1e-3, 1.0)
         vol_reasons = list(vol.get("reasons", []))

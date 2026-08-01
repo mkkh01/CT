@@ -88,41 +88,28 @@ def _within_pct(price_a: float, price_b: float, tolerance_pct: float) -> bool:
     return (diff / denom) * 100.0 <= tolerance_pct
 
 
-def _apply_limit_offset(entry_price: float, direction: Literal["long", "short", "neutral"]) -> float:
-    """Apply ``ENTRY_LIMIT_OFFSET_PCT`` in the favourable direction.
+def _apply_limit_offset(entry_price: float, direction: Literal["long", "neutral"] = "long") -> float:
+    """Apply ``ENTRY_LIMIT_OFFSET_PCT`` in the favourable direction for Spot.
 
     * Long  : ``entry * (1 - offset)`` -- *better* (lower) entry for a buyer.
-    * Short : ``entry * (1 + offset)`` -- *better* (higher) entry for a seller.
-    * Neutral: no offset (market entry semantics).
-
-    The offset is the fractional form of ``ENTRY_LIMIT_OFFSET_PCT``
-    (e.g. ``0.05`` for 5%).
+    * Neutral: no offset.
     """
     offset = ENTRY_LIMIT_OFFSET_PCT / 100.0
     if direction == "long":
         return entry_price * (1.0 - offset)
-    if direction == "short":
-        return entry_price * (1.0 + offset)
-    # neutral: no directional offset -- just return the price as-is.
     return entry_price
 
 
 def _nearest_unmitigated_ob(
     obs: list[OrderBlock],
-    direction: Literal["long", "short"],
+    direction: Literal["long"],
     current_price: float,
     tolerance_pct: float = _NEAR_OB_FVG_TOLERANCE_PCT,
 ) -> Optional[OrderBlock]:
-    """Return the nearest unmitigated OB whose type matches ``direction``.
-
-    For a *long* entry we look for a *bullish* OB below or near the current
-    price (it acts as demand). For a *short* entry we look for a *bearish* OB
-    above or near the current price (it acts as supply). Returns ``None`` if
-    no qualifying OB exists.
-    """
+    """Return the nearest unmitigated bullish OB for Spot entry."""
     if not obs:
         return None
-    wanted_type = "bullish" if direction == "long" else "bearish"
+    wanted_type = "bullish"
     candidates = [
         ob
         for ob in obs
@@ -146,14 +133,14 @@ def _nearest_unmitigated_ob(
 
 def _nearest_unfilled_fvg(
     fvgs: list[FairValueGap],
-    direction: Literal["long", "short"],
+    direction: Literal["long"],
     current_price: float,
     tolerance_pct: float = _NEAR_OB_FVG_TOLERANCE_PCT,
 ) -> Optional[FairValueGap]:
-    """Return the nearest unfilled FVG whose type matches ``direction``."""
+    """Return the nearest unfilled bullish FVG for Spot entry."""
     if not fvgs:
         return None
-    wanted_type = "bullish" if direction == "long" else "bearish"
+    wanted_type = "bullish"
     candidates = [
         fvg
         for fvg in fvgs
@@ -179,18 +166,17 @@ def _nearest_unfilled_fvg(
 # Entry type decision
 # ---------------------------------------------------------------------------
 def _decide_entry_type(
-    direction: Literal["long", "short", "neutral"],
+    direction: Literal["long", "neutral"],
     ob_list: list[OrderBlock],
     fvg_list: list[FairValueGap],
     current_price: float,
 ) -> tuple[Literal["limit", "market"], list[str], Optional[float]]:
-    """Decide whether to use a limit or market entry.
-
-    Returns ``(entry_type, reasons, level_price)`` where ``level_price`` is
-    the OB mitigation level or FVG edge that triggered the limit decision
-    (``None`` for market entries).
-    """
+    """Decide whether to use a limit or market entry for Spot."""
     reasons: list[str] = []
+    if direction != "long":
+        reasons.append("market_entry: direction is not long")
+        return "market", reasons, None
+
     ob = _nearest_unmitigated_ob(ob_list, direction, current_price)
     if ob is not None:
         if _within_pct(ob.mitigation_level, current_price, _PROXIMITY_TOLERANCE_PCT):
@@ -201,7 +187,7 @@ def _decide_entry_type(
 
     fvg = _nearest_unfilled_fvg(fvg_list, direction, current_price)
     if fvg is not None:
-        edge = fvg.top if direction == "long" else fvg.bottom
+        edge = fvg.top
         if _within_pct(edge, current_price, _PROXIMITY_TOLERANCE_PCT):
             reasons.append(
                 f"limit_at_fvg: type={fvg.type}, edge={edge:.6f}, "

@@ -405,11 +405,10 @@ class CTApplication:
     # Direction determination for the health summary
     # -----------------------------------------------------------------
     def _determine_primary_direction(self, result: Any) -> str:
-        """Derive the primary market direction from a DecisionResult.
+        """Derive the primary market direction from a DecisionResult for Spot.
 
         Uses component signals to determine the dominant direction:
           - If the primary signal (trend) is long -> bullish
-          - If the primary signal (trend) is short -> bearish
           - Otherwise -> neutral/sideways
 
         Falls back to HTF bias when no component signals are available.
@@ -419,8 +418,6 @@ class CTApplication:
             if sig.strategy_name == "trend":
                 if sig.direction == "long":
                     return "long"
-                elif sig.direction == "short":
-                    return "short"
 
         # 2. Fall back to entry direction (if a trade was approved)
         if result.entry:

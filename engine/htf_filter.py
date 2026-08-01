@@ -100,17 +100,15 @@ def _determine_bias(htf_candles: list[Candle]) -> tuple[Literal["bullish", "bear
 # LTF / HTF alignment check
 # ---------------------------------------------------------------------------
 def _check_alignment(
-    ltf_direction: Literal["long", "short", "neutral"],
+    ltf_direction: Literal["long", "neutral"],
     htf_bias: Literal["bullish", "bearish", "neutral"],
 ) -> tuple[bool, str]:
-    """Return ``(alignment, reason)`` for the LTF/HTF pair.
+    """Return ``(alignment, reason)`` for the LTF/HTF pair in Spot mode.
 
       * LTF long  + HTF bullish  -> aligned (True).
-      * LTF short + HTF bearish  -> aligned (True).
       * LTF neutral              -> aligned (True, pass-through).
       * HTF neutral              -> aligned (True, pass-through -- no filter).
       * LTF long  + HTF bearish  -> NOT aligned (False).
-      * LTF short + HTF bullish  -> NOT aligned (False).
 
     The reason string is human-readable and unique per case so the
     orchestrator can surface it as the rejection_reason.
@@ -122,12 +120,8 @@ def _check_alignment(
         return True, "htf_neutral_pass_through"
     if ltf_direction == "long" and htf_bias == "bullish":
         return True, "ltf_long_aligned_with_htf_bullish"
-    if ltf_direction == "short" and htf_bias == "bearish":
-        return True, "ltf_short_aligned_with_htf_bearish"
     if ltf_direction == "long" and htf_bias == "bearish":
         return False, "ltf_long_contradicts_htf_bearish"
-    if ltf_direction == "short" and htf_bias == "bullish":
-        return False, "ltf_short_contradicts_htf_bullish"
     # Defensive default -- should never be reached given the Literal types.
     return False, f"htf_alignment_unknown:{ltf_direction}:{htf_bias}"
 

@@ -26,7 +26,7 @@ class StrategySignal(BaseModel):
     symbol: str
     timeframe: str
     strategy_name: str
-    direction: Literal["long", "short", "neutral"]
+    direction: Literal["long", "neutral"]
     raw_score: float = Field(ge=0.0, le=1.0)
     reasons: list[str] = Field(default_factory=list)
     timestamp: datetime
@@ -54,7 +54,7 @@ class EntrySignal(BaseModel):
     """Refined entry produced by engine/entry_rules.py after risk approval."""
 
     symbol: str
-    direction: Literal["long", "short"]
+    direction: Literal["long"]
     entry_price: float
     entry_type: Literal["limit", "market"]
     timeframe: str
