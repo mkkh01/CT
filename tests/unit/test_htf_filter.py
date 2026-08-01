@@ -46,17 +46,16 @@ class TestHTFFilter:
         assert result.alignment is True
         assert result.bias in ("bullish", "neutral")  # Either passes alignment.
 
-    def test_bullish_contradiction_returns_false(self):
-        """A bearish LTF signal during bullish HTF bias must return alignment=False."""
-        ltf_signal = make_signal("short")
-        htf_candles = bullish_seq(n=30, timeframe="4h")
+    def test_bearish_contradiction_returns_false(self):
+        """A long LTF signal during bearish HTF bias must return alignment=False for Spot."""
+        ltf_signal = make_signal("long")
+        htf_candles = bearish_seq(n=30, timeframe="4h")
         result = filter_by_htf(
             ltf_signal=ltf_signal, htf_candles=htf_candles,
             htf_timeframe="4h", ltf_timeframe="15m",
         )
-        # If HTF bias is bullish (which a strong bullish_seq should produce),
-        # a short LTF signal must NOT align.
-        if result.bias == "bullish":
+        # In Spot-only, we still block longs if the HTF trend is bearish.
+        if result.bias == "bearish":
             assert result.alignment is False
 
     def test_neutral_pass_through_returns_true(self):

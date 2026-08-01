@@ -34,12 +34,9 @@ def make_signal(direction: str = "long", price: float = 100.0) -> StrategySignal
 
 
 def make_risk(direction: str = "long", entry_price: float = 100.0) -> RiskAssessment:
-    if direction == "long":
-        sl = entry_price - 5.0
-        tp = entry_price + 10.0
-    else:
-        sl = entry_price + 5.0
-        tp = entry_price - 10.0
+    # Spot-only: only long risk calculations are relevant.
+    sl = entry_price - 5.0
+    tp = entry_price + 10.0
     return RiskAssessment(
         allowed=True,
         max_position_size=10.0,
@@ -66,18 +63,6 @@ class TestRefineEntry:
         )
         if entry.entry_type == "limit":
             expected = 100.0 * (1 - thresholds.ENTRY_LIMIT_OFFSET_PCT / 100)
-            assert entry.entry_price == pytest.approx(expected, rel=1e-3)
-
-    def test_limit_offset_for_short(self):
-        signal = make_signal("short", 100.0)
-        risk = make_risk("short", 100.0)
-        entry = refine_entry(
-            signal=signal, risk=risk,
-            ob_list=[], fvg_list=[],
-            current_price=100.0,
-        )
-        if entry.entry_type == "limit":
-            expected = 100.0 * (1 + thresholds.ENTRY_LIMIT_OFFSET_PCT / 100)
             assert entry.entry_price == pytest.approx(expected, rel=1e-3)
 
     def test_entry_has_valid_until_in_future(self):

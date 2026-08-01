@@ -114,19 +114,9 @@ class TestStopLossAndTakeProfit:
         expected = 100.0 - 2.0 * thresholds.VOLATILITY_ATR_MULTIPLIER_SL
         assert sl == pytest.approx(expected)
 
-    def test_stop_loss_short(self):
-        sl = calculate_stop_loss(entry_price=100.0, atr=2.0, direction="short")
-        expected = 100.0 + 2.0 * thresholds.VOLATILITY_ATR_MULTIPLIER_SL
-        assert sl == pytest.approx(expected)
-
     def test_take_profit_long(self):
         tp = calculate_take_profit(entry_price=100.0, atr=2.0, direction="long")
         expected = 100.0 + 2.0 * thresholds.VOLATILITY_ATR_MULTIPLIER_TP
-        assert tp == pytest.approx(expected)
-
-    def test_take_profit_short(self):
-        tp = calculate_take_profit(entry_price=100.0, atr=2.0, direction="short")
-        expected = 100.0 - 2.0 * thresholds.VOLATILITY_ATR_MULTIPLIER_TP
         assert tp == pytest.approx(expected)
 
     def test_risk_reward_calculation(self):

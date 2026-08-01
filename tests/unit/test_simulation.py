@@ -29,15 +29,16 @@ from tests.conftest import make_candle, make_dt
 
 
 def make_decision(direction: str = "long", entry_price: float = 100.0) -> DecisionResult:
+    # Spot-only: only long trades are relevant.
     now = datetime.now(timezone.utc)
     risk = RiskAssessment(
         allowed=True, max_position_size=10.0, max_risk_amount=200.0,
-        stop_loss_price=entry_price - 5.0 if direction == "long" else entry_price + 5.0,
-        take_profit_price=entry_price + 10.0 if direction == "long" else entry_price - 10.0,
+        stop_loss_price=entry_price - 5.0,
+        take_profit_price=entry_price + 10.0,
         risk_reward_ratio=2.0,
     )
     entry = EntrySignal(
-        symbol="BTCUSDT", direction=direction,  # type: ignore[arg-type]
+        symbol="BTCUSDT", direction="long",
         entry_price=entry_price, entry_type="market",
         timeframe="15m", confidence=0.85, reasons=["test"],
         stop_loss=risk.stop_loss_price, take_profit=risk.take_profit_price,
@@ -98,13 +99,6 @@ class TestSlippage:
         # Implementation may return either the price with slippage added or
         # the slippage amount. Verify it's a positive float.
         assert isinstance(fill, float)
-
-    def test_apply_slippage_to_price_short(self):
-        fill = apply_slippage_to_price(
-            entry_price=100.0, size=10.0, symbol="BTCUSDT", direction="short",
-        )
-        assert isinstance(fill, float)
-
 
 class TestPaperTraderOpenTrade:
     """Section 0 hard-constraint 7: is_simulated must always be True."""
@@ -190,23 +184,6 @@ class TestPaperTraderClosure:
         )
         result = await trader.check_trade_closure(trade, current)
         assert result is None  # Trade remains open.
-
-    @pytest.mark.asyncio
-    async def test_check_trade_closure_short_tp(self, mock_supabase):
-        """A short trade whose candle low reaches TP must close at TP."""
-        trader = PaperTrader(supabase=mock_supabase)
-        decision = make_decision("short", 100.0)
-        # SL=105, TP=90.
-        trade = await trader.open_trade(decision)
-        # Current candle: low=89 -> TP hit.
-        current = make_candle(
-            open_time=make_dt(0), open=100.0, high=101.0, low=89.0, close=90.0,
-        )
-        result = await trader.check_trade_closure(trade, current)
-        if result is not None:
-            assert result.status == "closed"
-            assert result.close_reason == "tp"
-
 
 class TestPnLCalculation:
     @pytest.mark.asyncio
