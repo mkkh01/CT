@@ -431,14 +431,21 @@ class CTApplication:
         # 4. Default to neutral
         return "neutral"
 
-    async def stop_engine(self) -> None:
+    async def stop_engine(self, close_trades: bool = True) -> None:
         """Stop the engine gracefully.
+
+        Args:
+            close_trades: If True (default), close all open simulated trades
+                with reason="time". If False, leave open trades untouched so
+                they survive a restart/reload (e.g. Render SIGTERM, engine
+                reload from Telegram).
 
         Order (Section 7 Stop Engine flow):
           1. Signal the WebSocket client to stop (flushes checkpoints).
           2. Cancel the orchestrator subscriber task.
           3. Cancel the paper-trader task.
-          4. Clear the Redis engine_running flag.
+          4. Optionally close open trades (controlled by ``close_trades``).
+          5. Clear the Redis engine_running flag.
         """
         async with _ENGINE_STATE_LOCK:
             if not self._engine_running:
@@ -493,29 +500,44 @@ class CTApplication:
                         )
                 setattr(self, task_attr, None)
 
-            # [FIX] Close all open simulated trades on engine stop (Section 7)
-            # This ensures a clean cutoff and prevents "max_concurrent_trades" rejection on restart.
+            # Close open trades only if requested (default True for manual stop).
+            # When close_trades=False (e.g. reload or Render SIGTERM), trades stay
+            # open and resume monitoring after restart.
             open_trades_count = 0
-            try:
-                open_trades = await self._supabase.fetch_open_trades()
-                open_trades_count = len(open_trades)
-                if open_trades:
-                    from simulation.paper_trade import PaperTrader
-                    paper_trader = PaperTrader(supabase=self._supabase)
-                    
-                    # Build price map from latest candles
-                    price_map = {}
-                    for t in open_trades:
-                        # Use trade's timeframe if available, else fallback to 15m
-                        tf = getattr(t, "timeframe", "15m")
-                        candle = await self._supabase.fetch_latest_candle(t.symbol, tf)
-                        if candle:
-                            price_map[t.symbol] = candle.close
-                    
-                    closed = await paper_trader.close_all_open(price_map)
-                    logger.info("engine_stop_trades_closed", closed_count=len(closed), requested_count=len(open_trades))
-            except Exception as exc:
-                logger.warning(f"Failed to close trades on engine stop: {exc}")
+            if close_trades:
+                try:
+                    open_trades = await self._supabase.fetch_open_trades()
+                    open_trades_count = len(open_trades)
+                    if open_trades:
+                        from simulation.paper_trade import PaperTrader
+                        paper_trader = PaperTrader(supabase=self._supabase)
+                        
+                        # Build price map from latest candles
+                        price_map = {}
+                        for t in open_trades:
+                            # Use trade's timeframe if available, else fallback to 15m
+                            tf = getattr(t, "timeframe", "15m")
+                            candle = await self._supabase.fetch_latest_candle(t.symbol, tf)
+                            if candle:
+                                price_map[t.symbol] = candle.close
+                        
+                        closed = await paper_trader.close_all_open(price_map)
+                        logger.info("engine_stop_trades_closed", closed_count=len(closed), requested_count=len(open_trades))
+                    logger.info("engine_stop_closing_trades", action="closing")
+                except Exception as exc:
+                    logger.warning(f"Failed to close trades on engine stop: {exc}")
+            else:
+                try:
+                    open_trades = await self._supabase.fetch_open_trades()
+                    open_trades_count = len(open_trades)
+                except Exception:
+                    open_trades_count = 0
+                if open_trades_count > 0:
+                    logger.info(
+                        "engine_stop_trades_preserved",
+                        preserved_count=open_trades_count,
+                        note="Trades left open — will resume monitoring on next start",
+                    )
 
             # 4. Clear the Redis flag.
             try:
@@ -556,9 +578,11 @@ class CTApplication:
         )
 
         # 1. Stop the engine first so we flush checkpoints before closing
-        # the storage layer.
+        # the storage layer.  Open trades are preserved (close_trades=False)
+        # so they survive SIGTERM from Render (redeploy, cron, scaling) and
+        # resume monitoring on next boot via auto-resume.
         try:
-            await self.stop_engine()
+            await self.stop_engine(close_trades=False)
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",
@@ -1116,12 +1140,26 @@ class CTApplication:
             self._shutdown_event.set()  # Trigger app shutdown on polling crash.
 
     async def _reload_engine(self) -> None:
-        """Stop and restart the engine.
+        """Stop and restart the engine WITHOUT closing open trades.
+
+        This is triggered by Telegram "Edit Coin" / "Add Coin" / "Delete Coin"
+        operations.  Open trades survive the reload so they can continue being
+        monitored by the paper-trader task after restart.
 
         Idempotent: if the engine is already stopped, this is a no-op.
         """
-        await self.stop_engine()
+        logger.info(
+            "engine_reload_start",
+            timestamp=datetime.now(timezone.utc),
+            note="Reloading engine — open trades will be preserved",
+        )
+        await self.stop_engine(close_trades=False)
         await self.start_engine()
+        logger.info(
+            "engine_reload_complete",
+            timestamp=datetime.now(timezone.utc),
+            note="Engine reloaded — open trades resumed",
+        )
 
     # -----------------------------------------------------------------------
     # Cycle summary formatter (uses format_cycle_summary from report_formatter)

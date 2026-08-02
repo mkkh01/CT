@@ -1167,10 +1167,24 @@ class CTTelegramBot:
             ", ".join(sorted(timeframes_set)) if timeframes_set else "(none)"
         )
 
+        # Check for open trades that will resume monitoring.
+        try:
+            open_trades_count = await self._supabase.count_open_trades()
+        except Exception:
+            open_trades_count = 0
+
+        resume_note = ""
+        if open_trades_count > 0:
+            resume_note = (
+                f"\nResumed Monitoring: {open_trades_count} open trade(s)\n"
+                "Previously open trades will continue being monitored.\n"
+            )
+
         body = (
             "Engine Started!\n\n"
             f"Active Coins:\n{active_coins_list}\n\n"
-            f"Monitored Timeframes:\n{timeframes_list}\n\n"
+            f"Monitored Timeframes:\n{timeframes_list}\n"
+            f"{resume_note}"
             f"{SIM_WARNING_ENGINE}"
         )
         await self._reply_safe(update, context, body, reply_markup=self._build_main_menu())
@@ -1275,12 +1289,21 @@ class CTTelegramBot:
         except Exception:  # noqa: BLE001
             open_trades_count = 0
 
-        body = (
-            "Engine Stopped Safely.\n\n"
-            "Checkpoints saved.\n"
-            f"Open Trades: {open_trades_count}\n\n"
-            "You can resume operation later without data loss."
-        )
+        if open_trades_count > 0:
+            body = (
+                "Engine Stopped Safely.\n\n"
+                "Checkpoints saved.\n"
+                f"Open Trades: {open_trades_count} (kept open, monitoring paused)\n\n"
+                "Open trades remain active — they will be monitored again\n"
+                "when the engine resumes. Press Start to resume."
+            )
+        else:
+            body = (
+                "Engine Stopped Safely.\n\n"
+                "Checkpoints saved.\n"
+                "Open Trades: 0\n\n"
+                "You can resume operation later without data loss."
+            )
         await self._reply_safe(update, context, body, reply_markup=self._build_main_menu())
         logger.info(
             "bot_engine_state_change",
