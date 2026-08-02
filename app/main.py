@@ -409,6 +409,7 @@ class CTApplication:
 
         Uses component signals to determine the dominant direction:
           - If the primary signal (trend) is long -> bullish
+          - If the primary signal (trend) is short -> bearish
           - Otherwise -> neutral/sideways
 
         Falls back to HTF bias when no component signals are available.

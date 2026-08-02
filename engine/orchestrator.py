@@ -712,7 +712,7 @@ class Orchestrator:
                 "pos_size": risk.max_position_size
             }
             
-        final_verdict_str = "BUY" if final_verdict and primary_signal.direction == "long" else "SELL" if final_verdict else "REJECT"
+        final_verdict_str = "BUY" if final_verdict else "REJECT"
         reasons_list = [rejection_reason] if rejection_reason else ["All strategy and risk conditions met"]
         
         execution_data = {
