@@ -209,6 +209,7 @@ def refine_entry(
     fvg_list: list[FairValueGap],
     current_price: float,
     confidence: float = 1.0,
+    atr: float = 0.0,
 ) -> EntrySignal:
     """Refine the entry after risk approval.
 
@@ -274,11 +275,22 @@ def refine_entry(
 
     valid_until = datetime.now(timezone.utc) + timedelta(minutes=ENTRY_TIMEOUT_MINUTES)
 
-    # Defensive: if risk didn't populate SL/TP (shouldn't happen for allowed
-    # risk), fall back to deriving them from the entry price (zero ATR-style).
-    stop_loss = risk.stop_loss_price if risk.stop_loss_price is not None else entry_price
-    take_profit = risk.take_profit_price if risk.take_profit_price is not None else entry_price
-    risk_reward = risk.risk_reward_ratio if risk.risk_reward_ratio is not None else 0.0
+    # [FIX] Recalculate SL and TP based on the final entry_price instead of 
+    # copying them from risk. This prevents "SL > Entry" bugs when a limit offset 
+    # is applied.
+    from engine.risk import calculate_stop_loss, calculate_take_profit, calculate_risk_reward
+    
+    # Use the ATR provided or fall back to the distance implied by the risk assessment
+    if atr > 0:
+        stop_loss = calculate_stop_loss(entry_price, atr, direction)
+        take_profit = calculate_take_profit(entry_price, atr, direction)
+    else:
+        # Fallback: if no ATR, preserve the absolute distance from the risk basis
+        # to avoid breaking logic, but this should be rare now.
+        stop_loss = risk.stop_loss_price if risk.stop_loss_price is not None else entry_price
+        take_profit = risk.take_profit_price if risk.take_profit_price is not None else entry_price
+
+    risk_reward = calculate_risk_reward(entry_price, stop_loss, take_profit)
 
     reasons = list(signal.reasons) + decide_reasons
     reasons.append(

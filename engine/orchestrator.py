@@ -590,6 +590,7 @@ class Orchestrator:
                 fvg_list=fvg_list,
                 current_price=current_price,
                 confidence=confidence,
+                atr=atr,
             )
 
             if entry:
