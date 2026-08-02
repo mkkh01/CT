@@ -543,6 +543,7 @@ class PerformanceCalculator:
                     status=t.status,
                     opened_at=t.opened_at,
                     closed_at=t.closed_at,
+                    close_price=t.close_price,
                 )
             )
         logger.info(

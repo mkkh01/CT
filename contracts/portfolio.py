@@ -32,6 +32,7 @@ class TradeSummary(BaseModel):
     status: str
     opened_at: datetime
     closed_at: Optional[datetime] = None
+    close_price: Optional[float] = None
 
 
 class PerformanceMetrics(BaseModel):

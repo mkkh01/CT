@@ -1620,9 +1620,11 @@ class CTTelegramBot:
             if t.status == "closed":
                 pnl = t.pnl if t.pnl is not None else 0.0
                 pnl_line = f"PnL: {pnl:+.4f} USDT"
+                close_price_str = self._fmt_price(t.close_price) if t.close_price is not None else "n/a"
                 status_line = f"Status: closed ({t.close_reason or 'manual'})"
             else:
                 pnl_line = ""
+                close_price_str = "n/a"
                 status_line = "Status: open"
 
             lines.append(f"{idx}. {t.symbol} (SPOT)")
@@ -1635,6 +1637,7 @@ class CTTelegramBot:
                 if t.stop_loss is not None and abs(t.initial_stop_loss - t.stop_loss) > 0.00001:
                     lines.append(f"   Stop Loss (Initial): {initial_stop}")
             lines.append(f"   Target: {target}")
+            lines.append(f"   Close Price: {close_price_str}")
             lines.append(f"   {status_line}")
             if pnl_line:
                 lines.append(f"   {pnl_line}")
@@ -1889,17 +1892,16 @@ class CTTelegramBot:
         is computed against ``datetime.now(utc)``. ``"all"`` returns
         ``(None, None)`` (i.e. no filter).
         """
-        now = datetime.now(timezone.utc)
         if period_key == "all":
             return None, None
         if period_key == "1d":
-            return now - timedelta_days(1), None
+            return timedelta_days(1), None
         if period_key == "7d":
-            return now - timedelta_days(7), None
+            return timedelta_days(7), None
         if period_key == "30d":
-            return now - timedelta_days(30), None
+            return timedelta_days(30), None
         if period_key == "90d":
-            return now - timedelta_days(90), None
+            return timedelta_days(90), None
         # Unknown key -- default to all-time.
         return None, None
 
