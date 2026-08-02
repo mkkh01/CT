@@ -416,8 +416,7 @@ class CTApplication:
         # 1. Look for trend signals first (highest weight)
         for sig in (result.component_signals or []):
             if sig.strategy_name == "trend":
-                if sig.direction == "long":
-                    return "long"
+                return sig.direction
 
         # 2. Fall back to entry direction (if a trade was approved)
         if result.entry:
@@ -930,8 +929,15 @@ class CTApplication:
                     # Count signal directions to determine primary direction
                     long_count = sum(1 for s in result.component_signals if s.direction == "long")
                     # In Spot-only, we only care if long signals dominate.
-                    if long_count > 0:
+                    long_count = sum(1 for s in result.component_signals if s.direction == "long")
+                    short_count = sum(1 for s in result.component_signals if s.direction == "short")
+
+                    if long_count > short_count:
                         primary_direction = "long"
+                    elif short_count > long_count:
+                        primary_direction = "short"
+                    else:
+                        primary_direction = "neutral"
                 await health_manager.record_symbol_direction(
                     result.symbol,
                     primary_direction,
@@ -944,7 +950,7 @@ class CTApplication:
                 
                 if result.final_verdict:
                     await health_manager.increment_stat("opportunities_found")
-                    await health_manager.increment_stat("telegram_sent")
+
                     # self._health_stats["last_success_at"] = datetime.now(timezone.utc) # Specific metric, remove or move to analytics
                     
                     # Send Telegram Notification (Section 20) - Only send trade opened message
@@ -961,6 +967,7 @@ class CTApplication:
                                 text=opened_text,
                                 parse_mode="HTML"
                             )
+                            await health_manager.increment_stat("telegram_sent")
                         except Exception as t_exc:
                             logger.error(
                                 "error",
@@ -1165,6 +1172,9 @@ class CTApplication:
                 try:
                     await health_manager.update_component("Redis", HealthStatus.OK, "Redis connection active")
                     await health_manager.update_component("Supabase", HealthStatus.OK, "Supabase connection active")
+                    # Explicitly update Ingest and PaperTrader to prevent staleness if they are otherwise idle
+                    await health_manager.update_component("Ingest", HealthStatus.OK, "Ingest component is active", timeout=60.0)
+                    await health_manager.update_component("PaperTrader", HealthStatus.OK, "PaperTrader component is active", timeout=60.0)
                 except Exception:
                     pass
 
