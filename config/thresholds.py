@@ -162,7 +162,7 @@ MAX_ENTRY_RETRIES = 2
 # ---------------------------------------------------------------------------
 # Trailing Stop
 # ---------------------------------------------------------------------------
-TRAILING_ENABLED = True
+TRAILING_ENABLED = False
 """Global switch to enable / disable trailing-stop logic."""
 
 TRAILING_ACTIVATION_MULTIPLIER = 1.5
