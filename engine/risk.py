@@ -401,13 +401,29 @@ def assess_risk(
     # default of 0.0 (which will trigger the R:R / exposure rejections below).
     entry_price = current_price if current_price > 0 else 0.0
 
+    # --- NEW: One-trade-per-coin rule ---
+    # If there is already an open trade for this symbol (current_exposure > 0),
+    # reject any new entry for this coin. Only one trade per coin is allowed.
+    if current_exposure > 0:
+        reason = (
+            f"trade_already_open_for_symbol: "
+            f"current_exposure={current_exposure:.4f} USDT. "
+            f"Only one open trade per coin is allowed."
+        )
+        return _build_rejection(
+            symbol, reason, 0.0, 0.0, None, None, None,
+            current_exposure, 0.0, confidence
+        )
+
     stop_loss = calculate_stop_loss(entry_price, atr, direction)
     take_profit = calculate_take_profit(entry_price, atr, direction)
     risk_reward = calculate_risk_reward(entry_price, stop_loss, take_profit)
-    position_size = calculate_position_size(
-        capital, risk_percent, entry_price, stop_loss
-    )
-    risk_amount = capital * (risk_percent / 100.0)
+
+    # --- NEW: Use full capital for position sizing (100%) ---
+    # Instead of using risk_percent to calculate a partial position,
+    # we use the entire capital for the trade.
+    position_size = capital / entry_price if entry_price > 0 else 0.0
+    risk_amount = capital  # Full capital at risk
     new_trade_value = position_size * entry_price
 
     projected_exposure = current_exposure + new_trade_value
@@ -470,8 +486,27 @@ def assess_risk(
         )
 
     # 3. Exposure check (USDT notional)
-    # [FIX] If the new trade would exceed exposure, we scale it down to fit the remaining capital
-    # instead of rejecting it, making the system truly dynamic.
+    # Available capital is the full capital minus any current exposure.
+    # If the trade value is less than MIN_TRADE_VALUE_PCT of available capital,
+    # reject it to prevent opening positions with leftover fragments.
+    available_capital = capital - current_exposure
+    min_trade_value = available_capital * (thresholds.MIN_TRADE_VALUE_PCT / 100.0)
+
+    if new_trade_value < min_trade_value and new_trade_value > 0:
+        reason = (
+            f"trade_value_below_min_threshold: "
+            f"new_trade_value={new_trade_value:.4f} USDT < "
+            f"min_required={min_trade_value:.4f} USDT "
+            f"({thresholds.MIN_TRADE_VALUE_PCT:.1f}% of available {available_capital:.4f}). "
+            f"Leftover fragments are not used for trades."
+        )
+        return _build_rejection(
+            symbol, reason, position_size, risk_amount,
+            stop_loss, take_profit, risk_reward,
+            projected_exposure, projected_drawdown,
+            confidence,
+        )
+
     limit = capital * (thresholds.MAX_PORTFOLIO_EXPOSURE_PCT / 100.0)
     available_exposure = limit - current_exposure
     
@@ -490,6 +525,21 @@ def assess_risk(
         position_size = available_exposure / entry_price
         new_trade_value = position_size * entry_price
         projected_exposure = current_exposure + new_trade_value
+
+        # After scaling, check if the scaled position still meets the minimum threshold
+        if new_trade_value < min_trade_value:
+            reason = (
+                f"scaled_trade_value_below_min: "
+                f"scaled_value={new_trade_value:.4f} < "
+                f"min_required={min_trade_value:.4f}. "
+                f"Not enough capital for a full-size trade."
+            )
+            return _build_rejection(
+                symbol, reason, position_size, risk_amount,
+                stop_loss, take_profit, risk_reward,
+                projected_exposure, projected_drawdown,
+                confidence,
+            )
         
         logger.info(
             "risk_position_scaled_to_fit_exposure",

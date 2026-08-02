@@ -1352,8 +1352,8 @@ class Orchestrator:
         """Fetch the portfolio state required by ``assess_risk``.
 
         Reads from Supabase:
-          * ``open_trade_count`` -- count of open simulated trades (any
-            symbol; the concurrent-trade limit is system-wide).
+          * ``open_trade_count`` -- count of open simulated trades for this
+            specific symbol (one-trade-per-coin rule).
           * ``current_exposure`` -- sum of (entry_price * size) for open
             trades in the same symbol.  Section 8 specifies portfolio-level
             exposure; for simplicity we treat it per-symbol (the orchestrator
@@ -1374,7 +1374,9 @@ class Orchestrator:
         }
 
         try:
-            state["open_trade_count"] = await self._supabase.count_open_trades()
+            # Count open trades for this specific symbol only (one-trade-per-coin)
+            open_trades_for_symbol = await self._supabase.fetch_open_trades(symbol=symbol)
+            state["open_trade_count"] = len(open_trades_for_symbol)
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",

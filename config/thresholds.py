@@ -117,6 +117,9 @@ MAX_PORTFOLIO_EXPOSURE_PCT = 100.0
 MAX_POSITION_SIZE_PCT = 100.0
 """Maximum size of a single position as % of coin capital."""
 
+MIN_TRADE_VALUE_PCT = 95.0
+"""Minimum trade value as % of available capital. Trades below this threshold are rejected to prevent opening positions with leftover fragments."""
+
 MAX_DAILY_LOSS_PCT = 9.0
 """Maximum daily loss as % of peak PnL before new entries are blocked."""
 
