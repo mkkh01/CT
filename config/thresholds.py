@@ -87,7 +87,7 @@ VOLATILITY_ATR_PERIOD = 14
 VOLATILITY_ATR_MULTIPLIER_SL = 1.5
 """ATR multiplier used to compute the stop-loss distance."""
 
-VOLATILITY_ATR_MULTIPLIER_TP = 3.5
+VOLATILITY_ATR_MULTIPLIER_TP = 3.0
 """ATR multiplier used to compute the take-profit distance."""
 
 VOLATILITY_BB_PERIOD = 20
@@ -165,12 +165,12 @@ MAX_ENTRY_RETRIES = 3
 TRAILING_ENABLED = True
 """Global switch to enable / disable trailing-stop logic."""
 
-TRAILING_ACTIVATION_MULTIPLIER = 1.5
+TRAILING_ACTIVATION_MULTIPLIER = 2.0
 """Start moving the stop once unrealised profit >= this x initial risk.
 For example, 1.5 means: after profit reaches 1.5x the initial risk, the
 stop begins trailing behind the price."""
 
-TRAILING_ATR_DISTANCE = 1.5
+TRAILING_ATR_DISTANCE = 2.0
 """Distance (in ATR multiples) between the current high/low and the
 tailing stop.  A larger value gives the trade more breathing room."""
 
