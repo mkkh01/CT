@@ -15,37 +15,37 @@ File: config/thresholds.py
 # ---------------------------------------------------------------------------
 # Market Structure
 # ---------------------------------------------------------------------------
-SWING_LOOKBACK = 5
+SWING_LOOKBACK = 4
 """Number of candles on each side used to confirm a swing high/low (center-window radius)."""
 
-MIN_SWING_SIZE_PCT = 0.15
+MIN_SWING_SIZE_PCT = 0.10
 """Minimum swing size as a percentage of price to qualify as a swing point."""
 
 BOS_CONFIRMATION_CANDLES = 1
 """Number of consecutive candles that must close beyond a swing to confirm BOS."""
 
-CHOCH_CONFIRMATION_CANDLES = 2
+CHOCH_CONFIRMATION_CANDLES = 1
 """Number of consecutive candles that must close beyond the opposite swing to confirm CHOCH."""
 
 # ---------------------------------------------------------------------------
 # Smart Money Concepts
 # ---------------------------------------------------------------------------
-OB_MIN_IMPULSE_PCT = 0.3
+OB_MIN_IMPULSE_PCT = 0.20
 """Minimum candle body (open-close) size as % of price to be considered a strong impulse."""
 
-OB_MAX_CANDLES_BACK = 10
+OB_MAX_CANDLES_BACK = 15
 """Maximum number of candles to look back when finding the order-block candle."""
 
 FVG_MIN_GAP_PCT = 0.05
 """Minimum gap size (as % of price) for a 3-candle sequence to be considered an FVG."""
 
-LIQUIDITY_SWEEP_STRENGTH_THRESHOLD = 0.6
+LIQUIDITY_SWEEP_STRENGTH_THRESHOLD = 0.50
 """Minimum strength (0..1) for a sweep to be considered meaningful."""
 
-LIQUIDITY_CLUSTER_TOLERANCE_PCT = 0.1
+LIQUIDITY_CLUSTER_TOLERANCE_PCT = 0.15
 """Two swing levels within this % distance are clustered as one liquidity level."""
 
-LIQUIDITY_CLUSTER_LOOKBACK = 20
+LIQUIDITY_CLUSTER_LOOKBACK = 30
 """Default lookback in candles when clustering swing points into liquidity levels."""
 
 # ---------------------------------------------------------------------------
@@ -53,13 +53,13 @@ LIQUIDITY_CLUSTER_LOOKBACK = 20
 # ---------------------------------------------------------------------------
 TREND_EMA_FAST = 9
 TREND_EMA_SLOW = 21
-TREND_ADX_THRESHOLD = 25.0
+TREND_ADX_THRESHOLD = 20.0
 """ADX value above which a trend is considered strong."""
 
 TREND_ADX_MODERATE_LOWER = 20.0
 """Lower bound of the moderate-trend ADX band."""
 
-TREND_STRENGTH_THRESHOLD = 0.5
+TREND_STRENGTH_THRESHOLD = 0.40
 """Threshold above which trend strength is considered sufficient."""
 
 ADX_PERIOD = 14
@@ -84,15 +84,15 @@ MOMENTUM_STOCH_OVERSOLD = 20
 # Volatility
 # ---------------------------------------------------------------------------
 VOLATILITY_ATR_PERIOD = 14
-VOLATILITY_ATR_MULTIPLIER_SL = 1.5
+VOLATILITY_ATR_MULTIPLIER_SL = 1.8
 """ATR multiplier used to compute the stop-loss distance."""
 
-VOLATILITY_ATR_MULTIPLIER_TP = 3.5
+VOLATILITY_ATR_MULTIPLIER_TP = 3.2
 """ATR multiplier used to compute the take-profit distance."""
 
 VOLATILITY_BB_PERIOD = 20
 VOLATILITY_BB_STD = 2.0
-HIGH_VOLATILITY_THRESHOLD = 1.5
+HIGH_VOLATILITY_THRESHOLD = 1.8
 """ATR/price ratio (%) above which the market is considered highly volatile."""
 
 VOLATILITY_BB_RANGING_PCT = 0.5
@@ -120,43 +120,43 @@ MAX_POSITION_SIZE_PCT = 100.0
 MAX_DAILY_LOSS_PCT = 9.0
 """Maximum daily loss as % of peak PnL before new entries are blocked."""
 
-MAX_CONCURRENT_TRADES = 5
+MAX_CONCURRENT_TRADES = 10
 """Maximum number of simultaneously open simulated trades."""
 
-MIN_RISK_REWARD_RATIO = 1.5
+MIN_RISK_REWARD_RATIO = 1.4
 """Minimum acceptable reward:risk ratio for any signal."""
 
-RISK_REWARD_TARGET = 2.0
+RISK_REWARD_TARGET = 1.8
 """Target reward:risk ratio used when no other information is available."""
 
 # ---------------------------------------------------------------------------
 # Confidence Scoring
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD = 0.65
+CONFIDENCE_THRESHOLD = 0.60
 """Minimum confidence (0..1) required for a signal to be acted on."""
 
-HTF_ALIGNMENT_WEIGHT = 0.25
+HTF_ALIGNMENT_WEIGHT = 0.20
 STRUCTURE_WEIGHT = 0.30
 MOMENTUM_WEIGHT = 0.20
-LIQUIDITY_WEIGHT = 0.15
-SESSION_WEIGHT = 0.10
+LIQUIDITY_WEIGHT = 0.25
+SESSION_WEIGHT = 0.05
 # Sum of the five weights above MUST equal 1.0 (validated in tests).
 
 REGIME_MODIFIER_TRENDING = 1.0
-REGIME_MODIFIER_RANGING = 0.80
-REGIME_MODIFIER_VOLATILE = 0.70
+REGIME_MODIFIER_RANGING = 0.90
+REGIME_MODIFIER_VOLATILE = 0.85
 """Confidence multipliers applied based on detected market regime."""
 
 # ---------------------------------------------------------------------------
 # Entry Rules
 # ---------------------------------------------------------------------------
-ENTRY_LIMIT_OFFSET_PCT = 0.05
+ENTRY_LIMIT_OFFSET_PCT = 0.03
 """Limit order offset (% of price) in the favourable direction."""
 
-ENTRY_TIMEOUT_MINUTES = 30
+ENTRY_TIMEOUT_MINUTES = 20
 """Number of minutes a limit entry is valid for before being cancelled."""
 
-MAX_ENTRY_RETRIES = 3
+MAX_ENTRY_RETRIES = 2
 """Number of times a limit entry may be retried before falling back to market."""
 
 # ---------------------------------------------------------------------------

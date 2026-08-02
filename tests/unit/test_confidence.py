@@ -121,9 +121,9 @@ class TestCalculateConfidence:
             trend_strength=0.8, momentum_score=0.8,
             volume_confirmation=0.8, session_score=0.8,
         )
-        # RANGING modifier is 0.80 -- ranging_conf should be <= trending_conf * 0.81
+        # RANGING modifier is 0.90 -- ranging_conf should be <= trending_conf * 0.91 + 0.001
         # (allowing some slack for floating-point).
-        assert ranging_conf <= trending_conf * 0.81 + 0.001
+        assert ranging_conf <= trending_conf * 0.91 + 0.001
 
     def test_regime_modifier_volatile_reduces_confidence_more(self):
         signals = [make_signal(0.8, "long")]
@@ -138,8 +138,8 @@ class TestCalculateConfidence:
             trend_strength=0.8, momentum_score=0.8,
             volume_confirmation=0.8, session_score=0.8,
         )
-        # VOLATILE modifier is 0.70 -- volatile_conf should be <= trending_conf * 0.71
-        assert volatile_conf <= trending_conf * 0.71 + 0.001
+        # VOLATILE modifier is 0.85 -- volatile_conf should be <= trending_conf * 0.86 + 0.001
+        assert volatile_conf <= trending_conf * 0.86 + 0.001
         assert volatile_conf < trending_conf
 
 
