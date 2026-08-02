@@ -120,7 +120,7 @@ MAX_POSITION_SIZE_PCT = 100.0
 MAX_DAILY_LOSS_PCT = 9.0
 """Maximum daily loss as % of peak PnL before new entries are blocked."""
 
-MAX_CONCURRENT_TRADES = 10
+MAX_CONCURRENT_TRADES = 15
 """Maximum number of simultaneously open simulated trades."""
 
 MIN_RISK_REWARD_RATIO = 1.4
