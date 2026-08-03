@@ -411,7 +411,7 @@ class CTTelegramBot:
     # ---------------- fixed reply-keyboard dispatcher ----------------
     # Button labels → commands handled here so the user never types /start.
     _FIXED_MENU_DISPATCH = {
-        "📊 Status":           "_handle_status",
+        "📊 Status":           "cmd_status",
         "⚡ Start":            "cmd_start_engine",
         "⛔ Stop":             "cmd_stop_engine",
         "💰 Coins":            "_handle_coins",
@@ -422,12 +422,62 @@ class CTTelegramBot:
         "⚙️ Performance":     "_handle_performance",
     }
 
-    async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Dispatch the fixed ``📊 Status`` button."""
-        from contracts.config import SystemConfig
-        # Delegate to the existing live-prices handler which already shows
-        # engine state + coins; reuse it as a status view.
-        await self.cmd_live_prices(update, context)
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Dispatch the fixed ``📊 Status`` button — engine state + open trades + active coins."""
+        user_id = self._user_id(update)
+        logger.info(
+            "bot_command",
+            timestamp=datetime.now(timezone.utc),
+            user_id=user_id,
+            command="status",
+        )
+
+        # --- Engine state ---
+        try:
+            engine_running = await self._redis.get_engine_running()
+        except Exception:
+            engine_running = False
+        status_icon = "🟢" if engine_running else "🔴"
+        status_text = "Running" if engine_running else "Stopped"
+
+        # --- Active coins ---
+        try:
+            coins = await self._supabase.fetch_all_coins(only_active=True)
+        except Exception:
+            coins = []
+        coin_lines = ", ".join(c.symbol for c in coins) if coins else "(none)"
+
+        # --- Open trades ---
+        try:
+            open_count = await self._supabase.count_open_trades()
+        except Exception:
+            open_count = 0
+
+        # --- Timeframes ---
+        timeframes_set: set[str] = set()
+        for c in coins:
+            timeframes_set.update(c.timeframes)
+        tf_list = ", ".join(sorted(timeframes_set)) if timeframes_set else "(none)"
+
+        body = (
+            f"{status_icon} Engine: {status_text}\n\n"
+            f"Active Coins ({len(coins)}):\n{coin_lines}\n\n"
+            f"Timeframes: {tf_list}\n\n"
+            f"Open Trades: {open_count}\n\n"
+            "Press 📈 Live Prices for current prices."
+        )
+        await self._reply_safe(
+            update, context, body, reply_markup=self._build_main_menu()
+        )
+        logger.info(
+            "bot_reply",
+            timestamp=datetime.now(timezone.utc),
+            user_id=user_id,
+            reply_kind="status",
+            engine_running=engine_running,
+            coin_count=len(coins),
+            open_trades=open_count,
+        )
 
     async def _handle_coins(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Dispatch the fixed ``💰 Coins`` button."""
