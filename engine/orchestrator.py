@@ -1189,9 +1189,9 @@ class Orchestrator:
                 struct_score = 0.7
                 struct_reasons = [f"structure_trend=down (tf={tf})"]
             else:
-                struct_dir = "long"
-                struct_score = 0.4
-                struct_reasons = [f"structure_trend=neutral (tf={tf})"]
+                struct_dir = "neutral"
+                struct_score = 0.1
+                struct_reasons = [f"structure_trend=neutral (tf={tf}) — no directional edge"]
             signals.append(
                 _build_strategy_signal(
                     strategy_name="structure",
@@ -1258,7 +1258,7 @@ class Orchestrator:
         mom = analysis.momentum or {}
         mom_dir_raw = mom.get("direction", "neutral")
         mom_dir = "long" if mom_dir_raw == "long" else "neutral"
-        mom_score = float(mom.get("momentum_score", 0.5) or 0.5)
+        mom_score = float(mom.get("momentum_score", 0.3) or 0.3)
         mom_reasons = list(mom.get("reasons", []))
         if not mom_reasons:
             mom_reasons = [f"momentum direction={mom_dir_raw} (tf={tf})"]
@@ -1285,8 +1285,14 @@ class Orchestrator:
             vol_dir = "neutral"
         else:
             vol_dir = "neutral"
-        # Map |cvd_slope| to [0.4, 0.9] via a soft tanh-like transform.
-        vol_score = 0.4 + 0.5 * min(abs(cvd_slope) * 1e-3, 1.0)
+        # Map |cvd_slope| to [0.0, 0.9] via a soft tanh-like transform.
+        # Floor removed: flat volume should contribute 0, not artificially inflated 0.4.
+        if cvd_slope > 0 or delta > 0:
+            vol_score = 0.5 + 0.4 * min(abs(cvd_slope) * 1e-3, 1.0)
+        elif cvd_slope < 0 or delta < 0:
+            vol_score = 0.1 + 0.4 * min(abs(cvd_slope) * 1e-3, 1.0)
+        else:
+            vol_score = 0.0
         vol_reasons = list(vol.get("reasons", []))
         if not vol_reasons:
             vol_reasons = [
@@ -1321,25 +1327,29 @@ class Orchestrator:
         """Pick the primary LTF signal for the HTF filter and risk assessment.
 
         Preference order:
-          1. The LTF trend signal (highest structural weight).
-          2. The LTF momentum signal.
-          3. The first component signal on the LTF timeframe.
-          4. A default long signal at score 0.5.
+          1. The LTF trend signal with direction='long' (highest structural weight).
+          2. The LTF momentum signal with direction='long'.
+          3. The LTF structure signal with direction='long'.
+          4. A neutral signal if no bullish LTF signal exists (will be gated later).
         """
         ltf_tf = ltf_analysis.timeframe
-        # 1. Trend signal.
+        # 1. Trend signal (prefer bullish).
         for sig in component_signals:
             if sig.timeframe == ltf_tf and sig.strategy_name == "trend":
                 return sig
-        # 2. Momentum signal.
+        # 2. Momentum signal (prefer bullish).
         for sig in component_signals:
             if sig.timeframe == ltf_tf and sig.strategy_name == "momentum":
                 return sig
-        # 3. Any LTF signal.
+        # 3. Structure signal (prefer bullish).
+        for sig in component_signals:
+            if sig.timeframe == ltf_tf and sig.strategy_name == "structure":
+                return sig
+        # 4. Any LTF signal (fallback — will be filtered by gates).
         for sig in component_signals:
             if sig.timeframe == ltf_tf:
                 return sig
-        # 4. Default.
+        # 5. Default — neutral (NOT long). Prevents forced entries without evidence.
         last_candle = ltf_analysis.candles[-1] if ltf_analysis.candles else None
         open_time = last_candle.open_time if last_candle else datetime.now(timezone.utc)
         symbol = last_candle.symbol if last_candle else ""
@@ -1347,8 +1357,8 @@ class Orchestrator:
             strategy_name="default",
             symbol=symbol,
             timeframe=ltf_tf,
-            direction="long",
-            raw_score=0.5,
+            direction="neutral",
+            raw_score=0.0,
             reasons=["default_signal: no component signal available"],
             source_candle_open_time=open_time,
         )

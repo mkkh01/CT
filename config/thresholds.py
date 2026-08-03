@@ -21,10 +21,10 @@ SWING_LOOKBACK = 4
 MIN_SWING_SIZE_PCT = 0.10
 """Minimum swing size as a percentage of price to qualify as a swing point."""
 
-BOS_CONFIRMATION_CANDLES = 1
+BOS_CONFIRMATION_CANDLES = 2
 """Number of consecutive candles that must close beyond a swing to confirm BOS."""
 
-CHOCH_CONFIRMATION_CANDLES = 1
+CHOCH_CONFIRMATION_CANDLES = 2
 """Number of consecutive candles that must close beyond the opposite swing to confirm CHOCH."""
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ RISK_REWARD_TARGET = 1.8
 # ---------------------------------------------------------------------------
 # Confidence Scoring
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD = 0.68
+CONFIDENCE_THRESHOLD = 0.72
 """Minimum confidence (0..1) required for a signal to be acted on."""
 
 HTF_ALIGNMENT_WEIGHT = 0.20
