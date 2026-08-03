@@ -851,11 +851,7 @@ class CTTelegramBot:
 
         Selecting a coin transitions to ``_edit_coin_show_options``.
         """
-        user_id = (
-            update.callback_query.from_user.id
-            if update.callback_query and update.callback_query.from_user
-            else 0
-        )
+        user_id = self._user_id(update)
         logger.info(
             "bot_command",
             timestamp=datetime.now(timezone.utc),
@@ -961,7 +957,7 @@ class CTTelegramBot:
         logger.info(
             "bot_reply",
             timestamp=datetime.now(timezone.utc),
-            user_id=(update.callback_query.from_user.id if update.callback_query and update.callback_query.from_user else 0),
+            user_id=self._user_id(update),
             reply_kind="edit_coin_options",
             symbol=symbol,
         )
@@ -1130,11 +1126,7 @@ class CTTelegramBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, symbol: str
     ) -> None:
         """Actually delete the coin via SupabaseClient."""
-        user_id = (
-            update.callback_query.from_user.id
-            if update.callback_query and update.callback_query.from_user
-            else 0
-        )
+        user_id = self._user_id(update)
         try:
             await self._supabase.delete_coin(symbol)
         except Exception as exc:  # noqa: BLE001
@@ -1176,11 +1168,7 @@ class CTTelegramBot:
     # =====================================================================
     async def cmd_start_engine(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Start Engine button -- sets the Redis flag and calls the app callback."""
-        user_id = (
-            update.callback_query.from_user.id
-            if update.callback_query and update.callback_query.from_user
-            else 0
-        )
+        user_id = self._user_id(update)
         logger.info(
             "bot_command",
             timestamp=datetime.now(timezone.utc),
@@ -1299,11 +1287,7 @@ class CTTelegramBot:
 
     async def cmd_stop_engine(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Stop Engine button -- calls the app callback and clears the Redis flag."""
-        user_id = (
-            update.callback_query.from_user.id
-            if update.callback_query and update.callback_query.from_user
-            else 0
-        )
+        user_id = self._user_id(update)
         logger.info(
             "bot_command",
             timestamp=datetime.now(timezone.utc),
@@ -1422,11 +1406,7 @@ class CTTelegramBot:
 
         Per Section 7: reads from Redis only -- never makes a fresh REST call.
         """
-        user_id = (
-            update.callback_query.from_user.id
-            if update.callback_query and update.callback_query.from_user
-            else 0
-        )
+        user_id = self._user_id(update)
         logger.info(
             "bot_command",
             timestamp=datetime.now(timezone.utc),
@@ -1481,11 +1461,7 @@ class CTTelegramBot:
     # =====================================================================
     async def cmd_trade_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show the last 10 simulated trades with the mandatory warning."""
-        user_id = (
-            update.callback_query.from_user.id
-            if update.callback_query and update.callback_query.from_user
-            else 0
-        )
+        user_id = self._user_id(update)
         logger.info(
             "bot_command",
             timestamp=datetime.now(timezone.utc),
@@ -1551,11 +1527,7 @@ class CTTelegramBot:
         Delegates all number-crunching to ``PerformanceCalculator``. The bot
         only formats the result -- no trading logic here (Section 0 #1).
         """
-        user_id = (
-            update.callback_query.from_user.id
-            if update.callback_query and update.callback_query.from_user
-            else 0
-        )
+        user_id = self._user_id(update)
         logger.info(
             "bot_command",
             timestamp=datetime.now(timezone.utc),
@@ -1699,6 +1671,15 @@ class CTTelegramBot:
     # =====================================================================
     # Helpers -- formatting (Section 20 templates)
     # =====================================================================
+    @staticmethod
+    def _user_id(update: Update) -> int:
+        """Return the user ID from either a callback query or a text message."""
+        if update.callback_query and update.callback_query.from_user:
+            return update.callback_query.from_user.id
+        if update.effective_message and update.effective_message.from_user:
+            return update.effective_message.from_user.id
+        return 0
+
     def _build_main_menu(self) -> ReplyKeyboardMarkup:
         """Return a fixed reply keyboard that stays visible for every message.
 
