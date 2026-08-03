@@ -265,13 +265,12 @@ def refine_entry(
         direction, ob_list, fvg_list, current_price
     )
 
-    # The base price for limit entries is the OB/FVG level when available,
-    # otherwise the current price.  Market entries always use current price.
-    if entry_type == "limit":
-        base_price = level_price if level_price is not None and level_price > 0 else current_price
-        entry_price = _apply_limit_offset(base_price, direction)
-    else:
-        entry_price = current_price
+    # Entry price is always the current (live) price regardless of entry_type.
+    # entry_type ("limit" or "market") remains a descriptor of the signal logic
+    # (whether an OB/FVG triggered it), but the actual entry price reflects what
+    # the market shows at execution time — matching real trading conditions.
+    # SL/TP are recalculated from this price so risk stays constant.
+    entry_price = current_price
 
     valid_until = datetime.now(timezone.utc) + timedelta(minutes=ENTRY_TIMEOUT_MINUTES)
 
