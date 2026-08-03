@@ -1706,7 +1706,6 @@ class CTTelegramBot:
             ],
             resize_keyboard=True,
             one_time_keyboard=False,
-            persistent=True,
         )
 
     def _format_trade_history(self, trades: list[SimulatedTrade]) -> str:
