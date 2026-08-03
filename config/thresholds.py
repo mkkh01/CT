@@ -53,7 +53,7 @@ LIQUIDITY_CLUSTER_LOOKBACK = 30
 # ---------------------------------------------------------------------------
 TREND_EMA_FAST = 9
 TREND_EMA_SLOW = 21
-TREND_ADX_THRESHOLD = 20.0
+TREND_ADX_THRESHOLD = 25.0
 """ADX value above which a trend is considered strong."""
 
 TREND_ADX_MODERATE_LOWER = 20.0
@@ -135,7 +135,7 @@ RISK_REWARD_TARGET = 1.8
 # ---------------------------------------------------------------------------
 # Confidence Scoring
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD = 0.60
+CONFIDENCE_THRESHOLD = 0.68
 """Minimum confidence (0..1) required for a signal to be acted on."""
 
 HTF_ALIGNMENT_WEIGHT = 0.20
@@ -165,15 +165,15 @@ MAX_ENTRY_RETRIES = 2
 # ---------------------------------------------------------------------------
 # Trailing Stop
 # ---------------------------------------------------------------------------
-TRAILING_ENABLED = False
+TRAILING_ENABLED = True
 """Global switch to enable / disable trailing-stop logic."""
 
-TRAILING_ACTIVATION_MULTIPLIER = 1.5
+TRAILING_ACTIVATION_MULTIPLIER = 1.0
 """Start moving the stop once unrealised profit >= this x initial risk.
 For example, 1.5 means: after profit reaches 1.5x the initial risk, the
 stop begins trailing behind the price."""
 
-TRAILING_ATR_DISTANCE = 1.5
+TRAILING_ATR_DISTANCE = 2.0
 """Distance (in ATR multiples) between the current high/low and the
 tailing stop.  A larger value gives the trade more breathing room."""
 
