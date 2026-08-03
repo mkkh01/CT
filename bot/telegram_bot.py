@@ -1651,6 +1651,7 @@ class CTTelegramBot:
                 status_line = "Status: open"
 
             lines.append(f"{idx}. {t.symbol} (SPOT)")
+            lines.append(f"   Timeframe: {t.timeframe}")
             lines.append(f"   Quantity: {self._fmt_price(t.size)}")
             lines.append(f"   Entry: {entry}")
             lines.append(f"   Stop Loss (Current): {stop}")
@@ -1664,6 +1665,12 @@ class CTTelegramBot:
             lines.append(f"   {status_line}")
             if pnl_line:
                 lines.append(f"   {pnl_line}")
+            # Open / close timestamps
+            opened_str = t.opened_at.strftime('%Y-%m-%d %H:%M UTC') if t.opened_at else "n/a"
+            lines.append(f"   Opened: {opened_str}")
+            if t.status == "closed" and t.closed_at:
+                closed_str = t.closed_at.strftime('%Y-%m-%d %H:%M UTC')
+                lines.append(f"   Closed: {closed_str}")
             lines.append("")
 
         lines.append(SIM_WARNING_LIST)
@@ -1739,6 +1746,7 @@ class CTTelegramBot:
         return (
             "🚀 <b>Spot Trade Opened!</b>\n\n"
             f"<b>Coin:</b> {trade.symbol}\n"
+            f"<b>Timeframe:</b> {trade.timeframe}\n"
             f"<b>Quantity:</b> {CTTelegramBot._fmt_price(trade.size)}\n"
             f"<b>Entry Price:</b> {entry}\n"
             f"<b>Confidence:</b> {confidence_str}\n"
@@ -1768,11 +1776,14 @@ class CTTelegramBot:
         icon = "✅" if pnl > 0 else "❌" if pnl < 0 else "➖"
         close_price = CTTelegramBot._fmt_price(trade.close_price) if trade.close_price is not None else "n/a"
         
+        opened_time = trade.opened_at.strftime('%Y-%m-%d %H:%M:%S UTC') if trade.opened_at else "n/a"
         return (
             f"{icon} <b>Spot Trade Closed!</b>\n\n"
             f"<b>Coin:</b> {trade.symbol}\n"
-            f"<b>Close Reason:</b> {reason}\n"
-            f"<b>Closed At:</b> {closed_time}\n\n"
+            f"<b>Timeframe:</b> {trade.timeframe}\n"
+            f"<b>Opened At:</b> {opened_time}\n"
+            f"<b>Closed At:</b> {closed_time}\n"
+            f"<b>Close Reason:</b> {reason}\n\n"
             f"<b>Entry Price:</b> {entry}\n"
             f"<b>Close Price:</b> {close_price}\n"
             f"{stop_info}"

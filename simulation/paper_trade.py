@@ -408,6 +408,7 @@ class PaperTrader:
             slippage=slippage,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            timeframe=timeframe,
             is_simulated=True,  # Section 0 hard-constraint 7.
             label=_SIMULATED_LABEL,
         )
@@ -518,11 +519,12 @@ class PaperTrader:
             pnl=pnl,
             close_reason=close_reason,
             closed_at=closed_at.isoformat(),
+            opened_at=updated.opened_at.isoformat(),
+            timeframe=updated.timeframe,
             is_simulated=True,  # Section 0 hard-constraint 7.
             label=_SIMULATED_LABEL,
         )
         return updated
-
     # ----------------------- manual close ----------------------------------
     async def close_trade_manual(
         self,
@@ -632,6 +634,8 @@ class PaperTrader:
             pnl=pnl,
             close_reason=reason,
             closed_at=closed_at.isoformat(),
+            opened_at=updated.opened_at.isoformat(),
+            timeframe=updated.timeframe,
             is_simulated=True,  # Section 0 hard-constraint 7.
             label=_SIMULATED_LABEL,
         )
