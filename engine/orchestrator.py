@@ -61,6 +61,7 @@ from uuid import UUID
 
 from config.thresholds import (
     CONFIDENCE_THRESHOLD,
+    ENTRY_MAX_PRICE_DRIFT_PCT,
     TIMEFRAME_TO_SECONDS,
     VOLATILITY_ATR_PERIOD,
 )
@@ -571,14 +572,47 @@ class Orchestrator:
             # All gates passed -- refine the entry.
             ob_list = list(ltf_analysis.smc.get("order_blocks", []))
             fvg_list = list(ltf_analysis.smc.get("fvgs", []))
-            current_price = ltf_analysis.candles[-1].close if ltf_analysis.candles else candle.close
-            
+            candle_price = ltf_analysis.candles[-1].close if ltf_analysis.candles else candle.close
+            current_price = candle_price
+
+            # Refresh entry price to live market price if available.
+            # This ensures the entry matches what Binance shows at execution time.
+            # SL/TP are recalculated from the live price in refine_entry() so risk stays constant.
+            try:
+                live_data = await self._redis.get_live_price(symbol)
+                if live_data:
+                    live_price, live_ts = live_data
+                    drift_pct = abs(live_price - candle_price) / candle_price * 100.0 if candle_price > 0 else 0.0
+                    if drift_pct <= ENTRY_MAX_PRICE_DRIFT_PCT:
+                        logger.info(
+                            "entry_price_refreshed_to_live",
+                            timestamp=datetime.now(timezone.utc),
+                            symbol=symbol,
+                            candle_price=candle_price,
+                            live_price=live_price,
+                            drift_pct=round(drift_pct, 2),
+                        )
+                        current_price = live_price
+                    else:
+                        logger.info(
+                            "entry_price_drift_too_large_use_candle",
+                            timestamp=datetime.now(timezone.utc),
+                            symbol=symbol,
+                            candle_price=candle_price,
+                            live_price=live_price,
+                            drift_pct=round(drift_pct, 2),
+                            threshold=ENTRY_MAX_PRICE_DRIFT_PCT,
+                        )
+            except Exception:
+                pass  # Fallback to candle close price
+
             # Log pre-entry parameters (Requested Log #8)
             logger.info(
                 "pre_entry_calculation",
                 timestamp=datetime.now(timezone.utc),
                 symbol=symbol,
                 current_price=current_price,
+                source_price=candle_price,
                 risk_allowed=risk.allowed,
                 risk_reason=risk.reason,
             )

@@ -159,6 +159,12 @@ ENTRY_LIMIT_OFFSET_PCT = 0.03
 ENTRY_TIMEOUT_MINUTES = 20
 """Number of minutes a limit entry is valid for before being cancelled."""
 
+ENTRY_MAX_PRICE_DRIFT_PCT = 5.0
+"""Maximum allowed price drift (%) between the last closed candle close and the
+live market price before falling back to the candle close. If the drift exceeds
+this threshold the system uses the candle close price instead of live price to
+avoid entries during extreme volatility events (news spikes, flash crashes)."""
+
 MAX_ENTRY_RETRIES = 2
 """Number of times a limit entry may be retried before falling back to market."""
 
@@ -274,7 +280,7 @@ __all__ = [
     "MIN_RISK_REWARD_RATIO", "RISK_REWARD_TARGET",
     "CONFIDENCE_THRESHOLD", "HTF_ALIGNMENT_WEIGHT", "STRUCTURE_WEIGHT", "MOMENTUM_WEIGHT", "LIQUIDITY_WEIGHT",
     "SESSION_WEIGHT", "REGIME_MODIFIER_TRENDING", "REGIME_MODIFIER_RANGING", "REGIME_MODIFIER_VOLATILE",
-    "ENTRY_LIMIT_OFFSET_PCT", "ENTRY_TIMEOUT_MINUTES", "MAX_ENTRY_RETRIES",
+    "ENTRY_LIMIT_OFFSET_PCT", "ENTRY_TIMEOUT_MINUTES", "ENTRY_MAX_PRICE_DRIFT_PCT", "MAX_ENTRY_RETRIES",
     "MAKER_FEE_PCT", "TAKER_FEE_PCT", "SLIPPAGE_PCT",
     "WS_INITIAL_BACKOFF_SECONDS", "WS_MAX_BACKOFF_SECONDS", "WS_STABLE_RESET_SECONDS", "WS_STALE_MULTIPLIER",
     "WS_REST_RETRY_COUNT", "WS_RESUME_PAD_CANDLES",
