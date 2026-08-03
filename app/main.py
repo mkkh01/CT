@@ -83,6 +83,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from bot.telegram_bot import CTTelegramBot
     from contracts.config import SystemConfig
+    from contracts.simulation import SimulatedTrade
     from portfolio.performance import PerformanceCalculator
 
 logger = get_logger(__name__)
@@ -1029,6 +1030,12 @@ class CTApplication:
         their stop-loss or take-profit.
 
         Per Section 22 -- a single coin failure must not crash the whole app.
+        
+        Trailing-stop notifications: we detect SL changes by comparing the
+        stop_loss of every trade that was open at the start of the scan cycle,
+        regardless of whether it ended up closed by the end of the cycle. This
+        ensures that a trailing-stop update followed by an SL hit in the same
+        cycle still produces both a trailing-stop alert and a closure alert.
         """
         from simulation.paper_trade import PaperTrader
 
@@ -1038,9 +1045,12 @@ class CTApplication:
 
         try:
             while True:
-                # Fetch open trades before scanning to detect trailing stop updates
+                # Fetch open trades before scanning so we can detect trailing
+                # stop updates even if the trade is subsequently closed.
                 open_trades_before = await self._supabase.fetch_open_trades()
-                old_stops = {trade.id: trade.stop_loss for trade in open_trades_before}
+                old_stops: dict["str", Optional[float]] = {
+                    str(trade.id): trade.stop_loss for trade in open_trades_before
+                }
                 
                 closed_trades = await paper_trader.scan_and_close_open_trades()
                 await health_manager.update_component(
@@ -1050,22 +1060,48 @@ class CTApplication:
                     {"closed_trades_count": len(closed_trades)}
                 )
                 
+                # Build a lookup from closed_trades so we can detect trailing
+                # stop changes on trades that were closed in this cycle.
+                closed_trades_map: dict["str", SimulatedTrade] = {
+                    str(t.id): t for t in (closed_trades or [])
+                }
+                
                 # Notify about trailing stop updates
                 if self._telegram_app and self._settings.telegram_chat_id:
-                    open_trades_after = await self._supabase.fetch_open_trades()
-                    for trade in open_trades_after:
-                        old_stop = old_stops.get(trade.id)
-                        if old_stop is not None and trade.stop_loss is not None:
-                            if abs(trade.stop_loss - old_stop) > 0.00001:  # Account for floating point precision
-                                try:
-                                    trailing_text = self._bot.format_trailing_stop_update(trade, old_stop)
-                                    await self._telegram_app.bot.send_message(
-                                        chat_id=self._settings.telegram_chat_id,
-                                        text=trailing_text,
-                                        parse_mode="HTML"
-                                    )
-                                except Exception as ts_exc:
-                                    logger.warning(f"Failed to send trailing stop update notification: {ts_exc}")
+                    # Check ALL trades that were open before the scan, whether
+                    # they are still open or were closed.
+                    for trade in open_trades_before:
+                        trade_id = str(trade.id)
+                        old_stop = old_stops.get(trade_id)
+                        
+                        # Determine the current (or latest) stop_loss for this trade.
+                        if trade_id in closed_trades_map:
+                            # Trade was closed this cycle -- use the closed trade's stop_loss
+                            # (which reflects the trailing update that happened before closure).
+                            current_trade = closed_trades_map[trade_id]
+                        else:
+                            current_trade = trade
+                        
+                        current_stop = current_trade.stop_loss if current_trade else old_stop
+                        
+                        if (
+                            old_stop is not None
+                            and current_stop is not None
+                            and abs(current_stop - old_stop) > 0.00001
+                        ):
+                            try:
+                                trailing_text = self._bot.format_trailing_stop_update(
+                                    current_trade, old_stop
+                                )
+                                await self._telegram_app.bot.send_message(
+                                    chat_id=self._settings.telegram_chat_id,
+                                    text=trailing_text,
+                                    parse_mode="HTML"
+                                )
+                            except Exception as ts_exc:
+                                logger.warning(
+                                    f"Failed to send trailing stop update notification: {ts_exc}"
+                                )
                 
                 # Notify about closed trades
                 if closed_trades and self._telegram_app and self._settings.telegram_chat_id:
