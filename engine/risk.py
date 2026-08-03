@@ -46,7 +46,9 @@ from datetime import datetime
 from typing import Literal, Optional
 
 import config.thresholds as thresholds
+from config.thresholds_dynamic import resolve_sl_multiplier, resolve_tp_multiplier
 from contracts.config import CoinConfig
+from contracts.market import RegimeState
 from contracts.decision import RiskAssessment, StrategySignal
 from monitoring.logger import get_logger
 
@@ -259,6 +261,7 @@ def calculate_stop_loss(
     entry_price: float,
     atr: float,
     direction: Literal["long"] = "long",
+    regime: Optional[RegimeState] = None,
 ) -> float:
     """Stop-loss price for Spot (Long only) using ``thresholds.VOLATILITY_ATR_MULTIPLIER_SL``.
 
@@ -270,7 +273,8 @@ def calculate_stop_loss(
     atr = _safe_float(atr)
     if atr <= 0:
         return entry_price
-    distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL
+    multiplier = resolve_sl_multiplier(regime.value) if regime else thresholds.VOLATILITY_ATR_MULTIPLIER_SL
+    distance = atr * multiplier
     return entry_price - distance
 
 
@@ -278,6 +282,7 @@ def calculate_take_profit(
     entry_price: float,
     atr: float,
     direction: Literal["long"] = "long",
+    regime: Optional[RegimeState] = None,
 ) -> float:
     """Take-profit price for Spot (Long only) using ``thresholds.VOLATILITY_ATR_MULTIPLIER_TP``.
 
@@ -289,7 +294,8 @@ def calculate_take_profit(
     atr = _safe_float(atr)
     if atr <= 0:
         return entry_price
-    distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP
+    multiplier = resolve_tp_multiplier(regime.value) if regime else thresholds.VOLATILITY_ATR_MULTIPLIER_TP
+    distance = atr * multiplier
     return entry_price + distance
 
 
@@ -330,6 +336,7 @@ def assess_risk(
     coin_config: CoinConfig,
     portfolio_state: dict,
     atr: float,
+    regime: Optional[RegimeState] = None,
 ) -> RiskAssessment:
     """Run every risk check and return a populated :class:`RiskAssessment`.
 
@@ -415,15 +422,18 @@ def assess_risk(
             current_exposure, 0.0, confidence
         )
 
-    stop_loss = calculate_stop_loss(entry_price, atr, direction)
-    take_profit = calculate_take_profit(entry_price, atr, direction)
+    stop_loss = calculate_stop_loss(entry_price, atr, direction, regime=regime)
+    take_profit = calculate_take_profit(entry_price, atr, direction, regime=regime)
     risk_reward = calculate_risk_reward(entry_price, stop_loss, take_profit)
 
-    # --- NEW: Use full capital for position sizing (100%) ---
-    # Instead of using risk_percent to calculate a partial position,
-    # we use the entire capital for the trade.
-    position_size = capital / entry_price if entry_price > 0 else 0.0
-    risk_amount = capital  # Full capital at risk
+    # Calculate position size using the risk-based formula
+    position_size = calculate_position_size(
+        capital=capital,
+        risk_percent=coin_config.risk_percent,
+        entry_price=entry_price,
+        stop_loss_price=stop_loss,
+    )
+    risk_amount = abs(entry_price - stop_loss) * position_size
     new_trade_value = position_size * entry_price
 
     projected_exposure = current_exposure + new_trade_value

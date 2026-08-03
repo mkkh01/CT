@@ -52,11 +52,12 @@ class TestCalculatePositionSize:
 
     def test_basic_sizing(self):
         # risk_amount = 10000 * 2% = 200; price_risk = 10; size = 20.
+        # But capped at MAX_POSITION_SIZE_PCT = 18% -> 18.0
         size = calculate_position_size(
             capital=10000.0, risk_percent=2.0,
             entry_price=100.0, stop_loss_price=90.0,
         )
-        assert size == pytest.approx(20.0, rel=1e-3)
+        assert size == pytest.approx(18.0, rel=1e-3)
 
     def test_zero_price_risk_returns_zero(self):
         size = calculate_position_size(
@@ -180,7 +181,7 @@ class TestAssessRisk:
         assert "trade_already_open_for_symbol" in result.reason
 
     def test_full_capital_trade_allowed(self):
-        """Verify that a trade with no existing exposure uses full capital."""
+        """Verify that a trade with no existing exposure uses allowed capital."""
         signal = make_signal("long")
         # Capital = 1000
         coin = CoinConfig(
@@ -200,10 +201,10 @@ class TestAssessRisk:
             portfolio_state=portfolio_state, atr=2.0,
         )
         
-        # Should be allowed and use full capital
+        # Should be allowed and use allowed capital (18%)
         assert result.allowed is True
-        # position_size * entry_price should be close to full capital (1000)
-        assert result.max_position_size * 100.0 >= 950.0  # at least 95% of capital
+        # position_size * entry_price should be close to MAX_POSITION_SIZE_PCT (18%)
+        assert result.max_position_size * 100.0 >= 170.0  # at least 17% of capital
 
     def test_drawdown_rejection(self):
         signal = make_signal("long")
@@ -246,15 +247,15 @@ class TestAssessRisk:
             "open_trades_count": 0,
         }
 
-        # Lowering MIN_TRADE_VALUE_PCT to 99% should still allow (full capital >= 99%)
-        with patch.object(thresholds, "MIN_TRADE_VALUE_PCT", 99.0):
+        # Lowering MIN_TRADE_VALUE_PCT to 15% should still allow (18% >= 15%)
+        with patch.object(thresholds, "MIN_TRADE_VALUE_PCT", 15.0):
             result_low = assess_risk(
                 signal=signal, confidence=0.8, coin_config=coin,
                 portfolio_state=portfolio_state, atr=2.0,
             )
 
-        # Setting MIN_TRADE_VALUE_PCT to 101% should reject (can't reach 101%)
-        with patch.object(thresholds, "MIN_TRADE_VALUE_PCT", 101.0):
+        # Setting MIN_TRADE_VALUE_PCT to 20% should reject (18% < 20%)
+        with patch.object(thresholds, "MIN_TRADE_VALUE_PCT", 20.0):
             result_high = assess_risk(
                 signal=signal, confidence=0.8, coin_config=coin,
                 portfolio_state=portfolio_state, atr=2.0,

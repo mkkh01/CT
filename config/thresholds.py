@@ -15,7 +15,7 @@ File: config/thresholds.py
 # ---------------------------------------------------------------------------
 # Market Structure
 # ---------------------------------------------------------------------------
-SWING_LOOKBACK = 4
+SWING_LOOKBACK = 5
 """Number of candles on each side used to confirm a swing high/low (center-window radius)."""
 
 MIN_SWING_SIZE_PCT = 0.10
@@ -53,7 +53,7 @@ LIQUIDITY_CLUSTER_LOOKBACK = 30
 # ---------------------------------------------------------------------------
 TREND_EMA_FAST = 9
 TREND_EMA_SLOW = 21
-TREND_ADX_THRESHOLD = 25.0
+TREND_ADX_THRESHOLD = 20.0
 """ADX value above which a trend is considered strong."""
 
 TREND_ADX_MODERATE_LOWER = 20.0
@@ -114,19 +114,19 @@ NY_END_UTC = 21
 MAX_PORTFOLIO_EXPOSURE_PCT = 100.0
 """Maximum total portfolio exposure as % of total capital."""
 
-MAX_POSITION_SIZE_PCT = 100.0
+MAX_POSITION_SIZE_PCT = 18.0
 """Maximum size of a single position as % of coin capital."""
 
-MIN_TRADE_VALUE_PCT = 95.0
+MIN_TRADE_VALUE_PCT = 10.0
 """Minimum trade value as % of available capital. Trades below this threshold are rejected to prevent opening positions with leftover fragments."""
 
 MAX_DAILY_LOSS_PCT = 9.0
 """Maximum daily loss as % of peak PnL before new entries are blocked."""
 
-MAX_CONCURRENT_TRADES = 15
+MAX_CONCURRENT_TRADES = 6
 """Maximum number of simultaneously open simulated trades."""
 
-MIN_RISK_REWARD_RATIO = 1.4
+MIN_RISK_REWARD_RATIO = 1.5
 """Minimum acceptable reward:risk ratio for any signal."""
 
 RISK_REWARD_TARGET = 1.8
@@ -140,14 +140,14 @@ CONFIDENCE_THRESHOLD = 0.72
 
 HTF_ALIGNMENT_WEIGHT = 0.20
 STRUCTURE_WEIGHT = 0.30
-MOMENTUM_WEIGHT = 0.20
+MOMENTUM_WEIGHT = 0.15
 LIQUIDITY_WEIGHT = 0.25
-SESSION_WEIGHT = 0.05
+SESSION_WEIGHT = 0.10
 # Sum of the five weights above MUST equal 1.0 (validated in tests).
 
 REGIME_MODIFIER_TRENDING = 1.0
-REGIME_MODIFIER_RANGING = 0.90
-REGIME_MODIFIER_VOLATILE = 0.85
+REGIME_MODIFIER_RANGING = 0.85
+REGIME_MODIFIER_VOLATILE = 0.75
 """Confidence multipliers applied based on detected market regime."""
 
 # ---------------------------------------------------------------------------

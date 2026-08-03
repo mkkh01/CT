@@ -549,6 +549,7 @@ class Orchestrator:
                 coin_config=coin_config,
                 portfolio_state=portfolio_state,
                 atr=atr,
+                regime=regime,
             )
             log_analysis_step(
                 symbol, "risk_assessment", "success" if risk.allowed else "failed",
@@ -625,6 +626,7 @@ class Orchestrator:
                 current_price=current_price,
                 confidence=confidence,
                 atr=atr,
+                spread_pct=0.05, # Default spread for altcoins
             )
 
             if entry:
@@ -961,9 +963,27 @@ class Orchestrator:
             }
             return analysis
 
+        # --- atr (calculated first for dynamic thresholds) ----------
+        try:
+            analysis.atr = calculate_atr(candles, VOLATILITY_ATR_PERIOD)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "error",
+                timestamp=datetime.utcnow(),
+                module="engine.orchestrator",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                event_kind="calculate_atr_failed",
+                symbol=coin_config.symbol,
+                timeframe=timeframe,
+            )
+            analysis.atr = 0.0
+
+        atr_pct = (analysis.atr / candles[-1].close * 100.0) if candles and candles[-1].close > 0 else 0.0
+
         # --- structure ----------------------------------------------
         try:
-            analysis.structure = analyze_structure(candles)
+            analysis.structure = analyze_structure(candles, atr_pct=atr_pct)
             if analysis.structure:
                 log_analysis_step(
                     coin_config.symbol, f"component_structure_{timeframe}", "success",
@@ -985,11 +1005,11 @@ class Orchestrator:
         # --- smc ----------------------------------------------------
         try:
             swing_points = (
-                detect_swing_points(candles)
+                detect_swing_points(candles, atr_pct=atr_pct)
                 if analysis.structure is not None
                 else []
             )
-            analysis.smc = analyze_smc(candles, swing_points=swing_points)
+            analysis.smc = analyze_smc(candles, swing_points=swing_points, atr_pct=atr_pct)
             if analysis.smc:
                 ob_count = len(analysis.smc.get("order_blocks", []))
                 fvg_count = len(analysis.smc.get("fvgs", []))
@@ -1129,21 +1149,7 @@ class Orchestrator:
             )
             analysis.regime = RegimeState.RANGING
 
-        # --- atr (for risk module) ----------------------------------
-        try:
-            analysis.atr = calculate_atr(candles, VOLATILITY_ATR_PERIOD)
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "error",
-                timestamp=datetime.utcnow(),
-                module="engine.orchestrator",
-                error_type=type(exc).__name__,
-                error_message=str(exc),
-                event_kind="calculate_atr_failed",
-                symbol=coin_config.symbol,
-                timeframe=timeframe,
-            )
-            analysis.atr = 0.0
+        # ATR already calculated at start of function for dynamic thresholds.
 
         return analysis
 
