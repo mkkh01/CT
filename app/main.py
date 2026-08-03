@@ -333,12 +333,17 @@ class CTApplication:
 
             # 1. Load active coins from the database.
             try:
-                coins = await self._supabase.fetch_all_coins(only_active=True)
+                all_coins = await self._supabase.fetch_all_coins(only_active=True)
+                # Enforce the max_active_coins limit from settings (Section 3)
+                coins = all_coins[:self._settings.max_active_coins]
+                
                 logger.info(
                     "config_loaded", 
                     module="app.main", 
                     active_coins_count=len(coins),
-                    message_text=f"تم تحميل الإعدادات: عدد العملات المفعلة {len(coins)}"
+                    total_active_in_db=len(all_coins),
+                    max_allowed=self._settings.max_active_coins,
+                    message_text=f"تم تحميل الإعدادات: متابعة {len(coins)} عملة من أصل {len(all_coins)} مفعلة (الحد الأقصى: {self._settings.max_active_coins})"
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -980,9 +985,11 @@ class CTApplication:
                     # self._health_stats["last_success_at"] = datetime.now(timezone.utc) # Specific metric, remove or move to analytics
                     
                     # Send Telegram Notification (Section 20) - Only send trade opened message
-                    if self._telegram_app and self._settings.telegram_chat_id and result.entry:
+                    if self._telegram_app and self._settings.telegram_chat_id and self._settings.telegram_chat_id != "0" and result.entry:
                         try:
                             # Open trade and send confirmation with confidence
+                            # Note: Trade opening is now centralized here in the app layer
+                            # to ensure notification happens exactly once per trade.
                             from simulation.paper_trade import PaperTrader
                             trader = PaperTrader(self._supabase)
                             trade = await trader.open_trade(result)
@@ -994,6 +1001,7 @@ class CTApplication:
                                 parse_mode="HTML"
                             )
                             await health_manager.increment_stat("telegram_sent")
+                            logger.info("telegram_alert_sent", symbol=result.symbol, type="open")
                         except Exception as t_exc:
                             logger.error(
                                 "error",
@@ -1104,7 +1112,7 @@ class CTApplication:
                                 )
                 
                 # Notify about closed trades
-                if closed_trades and self._telegram_app and self._settings.telegram_chat_id:
+                if closed_trades and self._telegram_app and self._settings.telegram_chat_id and self._settings.telegram_chat_id != "0":
                     for trade in closed_trades:
                         try:
                             closed_text = self._bot.format_trade_closed(trade)
@@ -1113,6 +1121,8 @@ class CTApplication:
                                 text=closed_text,
                                 parse_mode="HTML"
                             )
+                            await health_manager.increment_stat("telegram_sent")
+                            logger.info("telegram_alert_sent", symbol=trade.symbol, type="close")
                         except Exception as n_exc:
                             logger.warning(f"Failed to send trade closure notification: {n_exc}")
 

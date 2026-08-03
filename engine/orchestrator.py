@@ -700,10 +700,11 @@ class Orchestrator:
             )
 
         # -------------------------------------------------------------
-        # 11. If final_verdict: open a simulated trade via paper_trade.
+        # 11. Trade Execution logic (Removed)
         # -------------------------------------------------------------
-        if final_verdict and entry is not None:
-            await self._open_simulated_trade(decision, entry)
+        # Note: Trade opening is now handled by the caller (e.g. app/main.py)
+        # to ensure atomic trade opening and Telegram notification.
+        # This keeps the orchestrator focused on analysis and decision making.
 
         # -------------------------------------------------------------
         # 12. Generate and Log Analysis Report Block
