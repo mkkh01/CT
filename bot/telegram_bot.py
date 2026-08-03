@@ -56,6 +56,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
     Update,
 )
 from telegram.constants import ParseMode
@@ -114,6 +116,16 @@ CB_SYS_PERF_PERIOD = "perf_period:"       # perf_period:<period-key>
 CB_CONFIRM_YES = "confirm_yes"
 CB_CONFIRM_NO = "confirm_no"
 CB_CANCEL = "cancel"
+
+# Fixed reply-keyboard commands (sent as plain text when buttons are tapped).
+CMD_STATUS = "/status"
+CMD_LIVE = "/live"
+CMD_HISTORY = "/history"
+CMD_ADD = "/add"
+CMD_EDIT = "/edit"
+CMD_START = "/start"
+CMD_STOP = "/stop"
+CMD_PERFORMANCE = "/performance"
 
 # Conversation states for the add-coin flow (Section 7).
 SYMBOL, TIMEFRAMES, CAPITAL, RISK, CONFIRM = range(5)
@@ -288,7 +300,7 @@ class CTTelegramBot:
         )
         text = (
             "Welcome to CT -- Simulation-Only Crypto Spot Bot.\n\n"
-            "Pick an action below. All trades produced by this bot are "
+            "The menu is now fixed at the bottom. All trades produced by this bot are "
             "simulated; no real exchange orders are ever placed.\n\n"
             "WARNING: Simulation Mode Only. No real trades are being executed."
         )
@@ -396,13 +408,44 @@ class CTTelegramBot:
                 update, context, "Something went wrong processing that action. Please try again."
             )
 
+    # ---------------- fixed reply-keyboard dispatcher ----------------
+    # Button labels → commands handled here so the user never types /start.
+    _FIXED_MENU_DISPATCH = {
+        "📊 Status":           "_handle_status",
+        "⚡ Start":            "cmd_start_engine",
+        "⛔ Stop":             "cmd_stop_engine",
+        "💰 Coins":            "_handle_coins",
+        "📈 Live Prices":      "cmd_live_prices",
+        "📜 History":          "cmd_trade_history",
+        "🏗️ Add":              "cmd_add_coin",
+        "✏️ Edit":             "cmd_edit_coin",
+        "⚙️ Performance":     "_handle_performance",
+    }
+
+    async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Dispatch the fixed ``📊 Status`` button."""
+        from contracts.config import SystemConfig
+        # Delegate to the existing live-prices handler which already shows
+        # engine state + coins; reuse it as a status view.
+        await self.cmd_live_prices(update, context)
+
+    async def _handle_coins(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Dispatch the fixed ``💰 Coins`` button."""
+        # Same as Edit Coin -- shows the list of coins.
+        await self.cmd_edit_coin(update, context)
+
+    async def _handle_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Dispatch the fixed ``⚙️ Performance`` button."""
+        # Show default 24h performance.
+        await self.cmd_system_performance(update, context, "24h")
+
     # ---------------- free-text message handler ----------------
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle free-text messages.
+        """Handle free-text messages and fixed reply-keyboard button taps.
 
         The add-coin flow's per-state ``MessageHandler`` consumes text inside
-        the conversation. This handler picks up everything else -- typically
-        the user typing outside any conversation.
+        the conversation. This handler picks up everything else -- including
+        reply-keyboard button taps which arrive as plain text.
         """
         if update.effective_user is None or update.effective_chat is None or update.message is None:
             return
@@ -414,6 +457,58 @@ class CTTelegramBot:
             user_id=user_id,
             command=f"message:{text[:40]}",
         )
+
+        # --- Fixed reply-keyboard dispatch ---
+        handler_name = self._FIXED_MENU_DISPATCH.get(text)
+        if handler_name is not None:
+            handler = getattr(self, handler_name, None)
+            if handler is not None:
+                try:
+                    await handler(update, context)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "error",
+                        timestamp=datetime.now(timezone.utc),
+                        module="bot.telegram_bot",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        button_text=text,
+                    )
+                    await self._reply_safe(
+                        update, context, "Something went wrong. Please try again.",
+                        reply_markup=self._build_main_menu(),
+                    )
+                return
+            # handler was None -- fall through to edit-flow check below.
+
+        # --- Text commands (e.g. /status, /live) ---
+        text_cmd = text.strip().split()[0] if text.strip() else ""
+        cmd_to_method = {
+            CMD_STATUS:   self._handle_status,
+            CMD_LIVE:     self.cmd_live_prices,
+            CMD_HISTORY:  self.cmd_trade_history,
+            CMD_START:    self.cmd_start_engine,
+            CMD_STOP:     self.cmd_stop_engine,
+            CMD_ADD:      self.cmd_add_coin,
+            CMD_EDIT:     self.cmd_edit_coin,
+            CMD_PERFORMANCE: self._handle_performance,
+        }
+        if text_cmd in cmd_to_method:
+            try:
+                await cmd_to_method[text_cmd](update, context)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "error",
+                    timestamp=datetime.now(timezone.utc),
+                    module="bot.telegram_bot",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
+                await self._reply_safe(
+                    update, context, "Something went wrong. Please try again.",
+                    reply_markup=self._build_main_menu(),
+                )
+            return
 
         # If we are inside an edit-coin sub-flow (tracked in user_data),
         # route to the right editor.
@@ -1527,7 +1622,7 @@ class CTTelegramBot:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         text: str,
-        reply_markup: Optional[InlineKeyboardMarkup] = None,
+        reply_markup: Optional[InlineKeyboardMarkup | ReplyKeyboardMarkup] = None,
     ) -> None:
         """Send a reply, editing the callback message if possible.
 
@@ -1604,24 +1699,33 @@ class CTTelegramBot:
     # =====================================================================
     # Helpers -- formatting (Section 20 templates)
     # =====================================================================
-    def _build_main_menu(self) -> InlineKeyboardMarkup:
-        """Return the main-menu inline keyboard (Section 7 full menu)."""
-        return InlineKeyboardMarkup(
+    def _build_main_menu(self) -> ReplyKeyboardMarkup:
+        """Return a fixed reply keyboard that stays visible for every message.
+
+        Buttons send plain-text commands (e.g. ``/live``, ``/history``) so the
+        user never needs to type ``/start`` again to see the menu.
+        """
+        return ReplyKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Add Coin", callback_data=CB_ADD_COIN),
-                    InlineKeyboardButton("Edit Coin", callback_data=CB_EDIT_COIN),
+                    KeyboardButton("📊 Status"),
+                    KeyboardButton("⚡ Start"),
+                    KeyboardButton("⛔ Stop"),
                 ],
                 [
-                    InlineKeyboardButton("Start Engine", callback_data=CB_START_ENGINE),
-                    InlineKeyboardButton("Stop Engine", callback_data=CB_STOP_ENGINE),
+                    KeyboardButton("💰 Coins"),
+                    KeyboardButton("📈 Live Prices"),
+                    KeyboardButton("📜 History"),
                 ],
                 [
-                    InlineKeyboardButton("Live Prices", callback_data=CB_LIVE_PRICES),
-                    InlineKeyboardButton("Trade History", callback_data=CB_TRADE_HISTORY),
+                    KeyboardButton("🏗️ Add"),
+                    KeyboardButton("✏️ Edit"),
+                    KeyboardButton("⚙️ Performance"),
                 ],
-                [InlineKeyboardButton("System Performance", callback_data=CB_SYS_PERF)],
-            ]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=False,
+            persistent=True,
         )
 
     def _format_trade_history(self, trades: list[SimulatedTrade]) -> str:
