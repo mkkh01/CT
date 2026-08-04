@@ -58,8 +58,8 @@ class TestHTFFilter:
         if result.bias == "bearish":
             assert result.alignment is False
 
-    def test_neutral_pass_through_returns_true(self):
-        """A neutral HTF bias must return alignment=True (no filtering applied)."""
+    def test_neutral_requires_strong_trend_returns_false(self):
+        """A neutral HTF bias (weak trend) must return alignment=False (tightening)."""
         ltf_signal = make_signal("long")
         # Build a flat HTF sequence (oscillating around a single price) to get neutral bias.
         from tests.conftest import make_candle, make_dt
@@ -80,7 +80,7 @@ class TestHTFFilter:
             htf_timeframe="4h", ltf_timeframe="15m",
         )
         if result.bias == "neutral":
-            assert result.alignment is True
+            assert result.alignment is False
 
     def test_result_contains_reason_string(self):
         ltf_signal = make_signal("long")

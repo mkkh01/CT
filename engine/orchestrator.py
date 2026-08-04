@@ -1112,7 +1112,8 @@ class Orchestrator:
         # --- session ------------------------------------------------
         try:
             last_candle = candles[-1] if candles else trigger_candle
-            analysis.session_signal = build_session_signal(last_candle, coin_config.symbol)
+            vol_ratio = analysis.volume.get("volume_ratio", 1.0) if analysis.volume else 1.0
+            analysis.session_signal = build_session_signal(last_candle, coin_config.symbol, volume_ratio=vol_ratio)
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "error",

@@ -1,3 +1,4 @@
+
 """
 File: engine/session.py
 1. Single Responsibility: Wrap market/session.py with engine-level filtering
@@ -31,7 +32,7 @@ File: engine/session.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Optional
 
 from contracts.decision import StrategySignal
 from contracts.market import Candle
@@ -41,6 +42,7 @@ from market.session import (
     get_current_session,
     session_quality_score as _market_session_quality_score,
 )
+from config.thresholds import LONDON_START_UTC, NY_START_UTC
 from monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,24 +63,24 @@ _MIN_SESSION_QUALITY = 0.40
 # used in reason strings.
 _FAVOURABLE_SESSION_SCORE = 0.70
 
+# Blackout Zone: First 15 minutes of London and NY openings are high-risk due to 
+# opening volatility and potential stop hunts.
+_BLACKOUT_MINUTES = 15
+
 
 # ---------------------------------------------------------------------------
 # Thin wrappers around market/session.py
 # ---------------------------------------------------------------------------
 def classify_session(timestamp: datetime) -> SessionName:
     """Classify the trading session for ``timestamp`` (interpreted as UTC).
-
-    Thin wrapper around :func:`market.session.get_current_session` so callers
-    inside ``engine/`` do not need to reach across package boundaries.
+    Thin wrapper around :func:`market.session.get_current_session`.
     """
     return get_current_session(timestamp)
 
 
 def session_quality_score(session: str, symbol: str) -> float:
     """Return a quality score in ``[0.0, 1.0]`` for ``session`` / ``symbol``.
-
-    Thin wrapper around :func:`market.session.session_quality_score`. Returns
-    ``0.0`` for unknown session names.
+    Thin wrapper around :func:`market.session.session_quality_score`.
     """
     if not session:
         return 0.0
@@ -97,36 +99,39 @@ def filter_by_session(
     symbol: str,
 ) -> tuple[bool, float, str]:
     """Decide whether ``signal`` is allowed to fire in the current session.
-
-    Args:
-        signal: The candidate strategy signal. Only its ``direction`` and
-            ``symbol`` are inspected -- the gate is purely session-based.
-        timestamp: UTC timestamp of the candle that produced the signal.
-        symbol: Trading symbol (used for the quality table lookup).
-
-    Returns:
-        ``(allowed, quality_score, reason)``:
-          * ``allowed`` -- True iff ``quality_score >= _MIN_SESSION_QUALITY``.
-          * ``quality_score`` -- the session quality for this symbol/session.
-          * ``reason`` -- human-readable reason string. Empty when allowed;
-            otherwise ``"low_quality_session:{name}:{score:.3f}"``.
-
-    Edge cases:
-      * Empty timestamp -> allowed=False, score=0.0, reason="missing_timestamp".
-      * Empty symbol -> allowed=False, score=0.0, reason="missing_symbol".
-      * Unknown session -> allowed=False, score=0.0,
-        reason="unknown_session".
+    Includes a Blackout Zone check for session openings.
     """
     if timestamp is None:
         return False, 0.0, "missing_timestamp"
     if not symbol:
         return False, 0.0, "missing_symbol"
 
-    session = classify_session(timestamp)
+    # Normalize to UTC for reliable opening-hour checks
+    if timestamp.tzinfo is not None:
+        ts_utc = timestamp.astimezone(tz=timezone.utc)
+    else:
+        ts_utc = timestamp.replace(tzinfo=timezone.utc)
+
+    # Blackout Zone check: First 15 minutes of London or NY opening
+    hour = ts_utc.hour
+    minute = ts_utc.minute
+    
+    is_london_open = (hour == LONDON_START_UTC and minute < _BLACKOUT_MINUTES)
+    is_ny_open = (hour == NY_START_UTC and minute < _BLACKOUT_MINUTES)
+    
+    if is_london_open or is_ny_open:
+        reason = f"session_blackout_zone: {hour:02d}:{minute:02d} UTC (Opening Volatility)"
+        logger.info(
+            "session_filter_blackout", 
+            symbol=symbol, 
+            timestamp=ts_utc.isoformat(), 
+            reason=reason
+        )
+        return False, 0.0, reason
+
+    session = classify_session(ts_utc)
     score = session_quality_score(session, symbol)
 
-    # Log the classification for traceability (in addition to the
-    # ``session_classified`` event that ``classify_and_log`` emits).
     logger.info(
         "session_filter_result",
         timestamp=datetime.utcnow(),
@@ -153,36 +158,14 @@ def filter_by_session(
 def build_session_signal(
     candle: Candle,
     symbol: str,
+    volume_ratio: float = 1.0,
 ) -> StrategySignal:
     """Construct a ``StrategySignal`` representing the session-quality score.
-
-    Per the task specification:
-      * ``strategy_name`` = ``"session"``
-      * ``direction`` is derived from session quality -- favourable sessions
-        (``score >= _FAVOURABLE_SESSION_SCORE``) -> ``"long"``; lower-quality
-        sessions -> ``"short"``. This is not a directional trade signal in the
-        usual sense -- the raw_score reflects the conviction level and the
-        orchestrator's confidence gate will filter out low-conviction cases.
-      * ``raw_score`` = the session quality score (0-1).
-      * ``reasons`` = human-readable list of session, score, and a note about
-        whether the score is favourable.
-
-    Args:
-        candle: The trigger candle. Its ``open_time`` is used as the
-            classification timestamp; its ``symbol`` and ``timeframe`` are
-            propagated to the signal.
-        symbol: Trading symbol (used for the quality table lookup). Defaults
-            to ``candle.symbol`` if the caller passes an empty string.
-
-    Returns:
-        A populated :class:`StrategySignal`. When ``candle`` has no open_time
-        (defensive), the signal is still returned with a neutral-safe score
-        of 0.5 and a ``"missing_open_time"`` reason.
+    Includes a volume-based dynamic adjustment to the session score.
     """
     sym = symbol or candle.symbol
     timestamp = candle.open_time
     if timestamp is None:
-        # Defensive: contracts guarantee open_time, but we degrade gracefully.
         return StrategySignal(
             symbol=sym,
             timeframe=candle.timeframe,
@@ -195,23 +178,28 @@ def build_session_signal(
         )
 
     session = classify_session(timestamp)
-    score = session_quality_score(session, sym)
-    # Clamp to [0,1] just in case the underlying table ever drifts.
-    raw_score = max(0.0, min(1.0, float(score)))
+    base_score = session_quality_score(session, sym)
+    
+    # Dynamic adjustment: Boost score if volume is above average (volume_ratio > 1.0)
+    # A volume_ratio of 2.0 adds 0.2 to the score; 0.5 subtracts 0.1.
+    volume_mod = (volume_ratio - 1.0) * 0.2
+    raw_score = max(0.0, min(1.0, float(base_score + volume_mod)))
 
     direction: Literal["long", "neutral"]
-    reasons: list[str] = [f"session={session}", f"quality_score={raw_score:.3f}"]
+    reasons: list[str] = [
+        f"session={session}", 
+        f"base_quality={base_score:.3f}",
+        f"volume_ratio={volume_ratio:.2f}",
+        f"final_score={raw_score:.3f}"
+    ]
 
     if raw_score >= _FAVOURABLE_SESSION_SCORE:
         direction = "long"
         reasons.append("favourable_session: long bias")
     else:
         direction = "neutral"
-        reasons.append("low_quality_session: neutral bias (will be gated by confidence)")
+        reasons.append("low_quality_session: neutral bias (gated by confidence)")
 
-    # Emit the additional trace event (``classify_and_log`` is not called
-    # here because we don't have a guarantee the caller wants the double-log;
-    # ``session_filter_result`` above already covers the filter path).
     logger.info(
         "session_signal_built",
         timestamp=datetime.utcnow(),
@@ -234,18 +222,12 @@ def build_session_signal(
     )
 
 
-# ---------------------------------------------------------------------------
-# Convenience: classify + log + score in one call (matches market/session.py)
-# ---------------------------------------------------------------------------
 def classify_and_log_session(
     timestamp: datetime,
     symbol: str,
 ) -> tuple[SessionName, float]:
     """Classify the session, log via ``classify_and_log``, and return the
     (session, quality_score) pair.
-
-    Thin wrapper around :func:`market.session.classify_and_log` for callers
-    that want the engine-level interface.
     """
     session, score = classify_and_log(timestamp, symbol)
     return session, float(score)

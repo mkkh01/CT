@@ -84,7 +84,7 @@ MOMENTUM_STOCH_OVERSOLD = 20
 # Volatility
 # ---------------------------------------------------------------------------
 VOLATILITY_ATR_PERIOD = 14
-VOLATILITY_ATR_MULTIPLIER_SL = 1.8
+VOLATILITY_ATR_MULTIPLIER_SL = 2.2
 """ATR multiplier used to compute the stop-loss distance."""
 
 VOLATILITY_ATR_MULTIPLIER_TP = 3.2
@@ -138,10 +138,10 @@ RISK_REWARD_TARGET = 1.8
 CONFIDENCE_THRESHOLD = 0.72
 """Minimum confidence (0..1) required for a signal to be acted on."""
 
-HTF_ALIGNMENT_WEIGHT = 0.20
-STRUCTURE_WEIGHT = 0.30
-MOMENTUM_WEIGHT = 0.15
-LIQUIDITY_WEIGHT = 0.25
+HTF_ALIGNMENT_WEIGHT = 0.25
+STRUCTURE_WEIGHT = 0.35
+MOMENTUM_WEIGHT = 0.10
+LIQUIDITY_WEIGHT = 0.20
 SESSION_WEIGHT = 0.10
 # Sum of the five weights above MUST equal 1.0 (validated in tests).
 
