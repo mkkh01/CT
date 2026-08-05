@@ -33,8 +33,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from dataclasses import dataclass
+
 from config.thresholds import (
+    BEARISH_HTF_PENALTY,
+    BEARISH_MOMENTUM_PENALTY,
+    BEARISH_STRUCTURE_PENALTY,
     CONFIDENCE_THRESHOLD,
+    CONTRADICTION_PENALTY_MULTIPLIER,
     HTF_ALIGNMENT_WEIGHT,
     LIQUIDITY_WEIGHT,
     MOMENTUM_WEIGHT,
@@ -96,6 +102,36 @@ def _regime_modifier(regime: RegimeState) -> float:
     return _REGIME_MODIFIERS.get(regime, REGIME_MODIFIER_RANGING)
 
 
+@dataclass(frozen=True)
+class ScoreBreakdown:
+    htf: float
+    structure: float
+    momentum: float
+    liquidity: float
+    session: float
+    contradiction_penalty: float
+    final_score: float
+
+
+def directional_contribution(
+    signal_direction: str,
+    trade_direction: str,
+    strength: float,
+    contradiction_penalty: float = CONTRADICTION_PENALTY_MULTIPLIER,
+) -> float:
+    """Calculate the contribution of a signal based on its alignment with the trade."""
+    strength = max(0.0, min(1.0, float(strength)))
+
+    if signal_direction == trade_direction:
+        return strength
+
+    if signal_direction == "neutral":
+        return 0.0
+
+    # Signal contradicts the trade direction
+    return -strength * contradiction_penalty
+
+
 # ---------------------------------------------------------------------------
 # Score aggregation
 # ---------------------------------------------------------------------------
@@ -131,46 +167,16 @@ def calculate_confidence(
     volume_confirmation: float,
     session_score: float,
     symbol: Optional[str] = None,
+    trade_direction: str = "long",
 ) -> float:
-    """Aggregate all component scores into a final confidence value.
+    """Aggregate all component scores into a final confidence (Setup Score).
 
-    Algorithm (Section 15 engine/confidence.py):
-      1. Normalise each component to ``[0, 1]``.
-      2. Weighted average:
-         ``confidence = htf_alignment * HTF_ALIGNMENT_WEIGHT
-                        + trend_strength * STRUCTURE_WEIGHT
-                        + momentum_score * MOMENTUM_WEIGHT
-                        + volume_confirmation * LIQUIDITY_WEIGHT
-                        + session_score * SESSION_WEIGHT``
-      3. Apply regime modifier (TRENDING: 1.0, RANGING: 0.80, VOLATILE: 0.70).
-      4. Clamp to ``[0, 1]``.
-      5. Emit ``confidence_calculated`` log event with all inputs.
-
-    Args:
-        signals: Component signals (used only for the ``symbol`` extraction
-            when ``symbol`` is None and for the ``aggregate_score`` log field;
-            the actual component scores are passed in as separate arguments so
-            the orchestrator can pre-aggregate per-timeframe values if
-            desired).
-        htf_result: Output of :func:`engine.htf_filter.filter_by_htf`. Its
-            ``alignment`` boolean (True=1.0, False=0.0) is the HTF component.
-        regime: Detected market regime.
-        trend_strength: ``[0, 1]`` trend strength from
-            :func:`engine.trend.analyze_trend` (``strength`` field).
-        momentum_score: ``[0, 1]`` momentum score from
-            :func:`engine.momentum.calculate_momentum` (``momentum_score``
-            field).
-        volume_confirmation: ``[0, 1]`` volume confirmation score from
-            :func:`engine.volume.volume_confirmation_score` or
-            :func:`engine.volume.analyze_volume` (use a derived score).
-        session_score: ``[0, 1]`` session quality score from
-            :func:`engine.session.session_quality_score`.
-        symbol: Optional symbol override for logging. Defaults to the symbol
-            of the first signal in ``signals`` (or ``""`` if ``signals`` is
-            empty).
-
-    Returns:
-        Final confidence in ``[0, 1]``.
+    Algorithm (Phase 2):
+      1. Calculate directional contribution for each component.
+      2. Apply contradiction penalties for opposing signals.
+      3. Weighted average.
+      4. Apply regime modifier.
+      5. Clamp to [0, 1].
     """
     # Normalise all components to [0, 1].
     def _norm(x: float) -> float:
@@ -180,58 +186,68 @@ def calculate_confidence(
             v = float(x)
         except (TypeError, ValueError):
             return 0.0
-        if v < 0.0:
-            return 0.0
-        if v > 1.0:
-            return 1.0
-        return v
+        return max(0.0, min(1.0, v))
 
-    htf_component = 1.0 if htf_result.alignment else 0.0
-    trend_component = _norm(trend_strength)
-    momentum_component = _norm(momentum_score)
-    volume_component = _norm(volume_confirmation)
-    session_component = _norm(session_score)
+    # Identify directions for each component from signals
+    # (In a real scenario, we'd extract these more robustly)
+    htf_dir = htf_result.bias if hasattr(htf_result, "bias") else "neutral"
+    
+    # Heuristically find component directions from signals list
+    struct_dir = "neutral"
+    mom_dir = "neutral"
+    for s in signals:
+        if s.strategy_name == "structure" and s.timeframe == htf_result.ltf_timeframe:
+            struct_dir = s.direction
+        if s.strategy_name == "momentum" and s.timeframe == htf_result.ltf_timeframe:
+            mom_dir = s.direction
 
-    raw_confidence = (
-        htf_component * HTF_ALIGNMENT_WEIGHT
-        + trend_component * STRUCTURE_WEIGHT
-        + momentum_component * MOMENTUM_WEIGHT
-        + volume_component * LIQUIDITY_WEIGHT
-        + session_component * SESSION_WEIGHT
+    # 1. Contributions
+    htf_score = 1.0 if htf_result.alignment else 0.0
+    struct_score = _norm(trend_strength)
+    mom_score = _norm(momentum_score)
+    liq_score = _norm(volume_confirmation)
+    sess_score = _norm(session_score)
+
+    # 2. Penalties
+    penalty = 0.0
+    if htf_dir != "neutral" and htf_dir != trade_direction:
+        penalty += BEARISH_HTF_PENALTY
+    if struct_dir != "neutral" and struct_dir != trade_direction:
+        penalty += BEARISH_STRUCTURE_PENALTY
+    if mom_dir != "neutral" and mom_dir != trade_direction:
+        penalty += BEARISH_MOMENTUM_PENALTY
+
+    # 3. Weighted Score
+    raw_score = (
+        htf_score * HTF_ALIGNMENT_WEIGHT
+        + struct_score * STRUCTURE_WEIGHT
+        + mom_score * MOMENTUM_WEIGHT
+        + liq_score * LIQUIDITY_WEIGHT
+        + sess_score * SESSION_WEIGHT
     )
 
+    # 4. Final Score with Penalties and Regime
     modifier = _regime_modifier(regime)
-    confidence = raw_confidence * modifier
-
-    # Final clamp to [0, 1].
-    confidence = max(0.0, min(1.0, float(confidence)))
+    final_score = (raw_score - penalty) * modifier
+    final_score = max(0.0, min(1.0, float(final_score)))
 
     log_symbol = symbol
     if log_symbol is None:
         log_symbol = signals[0].symbol if signals else ""
 
     logger.info(
-        "confidence_calculated",
+        "setup_score_calculated",
         timestamp=datetime.utcnow(),
         symbol=log_symbol,
-        confidence=round(confidence, 6),
-        raw_confidence=round(raw_confidence, 6),
+        setup_score=round(final_score, 6),
+        raw_score=round(raw_score, 6),
+        penalty=round(penalty, 6),
         regime_modifier=modifier,
         regime=regime.value if isinstance(regime, RegimeState) else str(regime),
-        htf_alignment=htf_result.alignment,
-        htf_weight=HTF_ALIGNMENT_WEIGHT,
-        trend_strength=trend_component,
-        structure_weight=STRUCTURE_WEIGHT,
-        momentum_score=momentum_component,
-        momentum_weight=MOMENTUM_WEIGHT,
-        volume_confirmation=volume_component,
-        liquidity_weight=LIQUIDITY_WEIGHT,
-        session_score=session_component,
-        session_weight=SESSION_WEIGHT,
-        aggregate_signal_score=round(aggregate_score(signals), 6),
+        trade_direction=trade_direction,
     )
 
-    return confidence
+    return final_score
 
 
 # ---------------------------------------------------------------------------

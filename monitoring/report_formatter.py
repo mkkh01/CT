@@ -125,7 +125,7 @@ def format_analysis_report(
     lines.append("────────────────────────────────")
     lines.append("")
     lines.append(f"Total Score          : {total_score:.0f} / 100")
-    lines.append(f"Confidence           : {confidence:.0f}%")
+    lines.append(f"Setup Score          : {confidence:.1f}/100")
     lines.append(f"Quality              : {quality:.0f}%")
     lines.append(f"Probability          : {probability:.0f}%")
     lines.append("")
@@ -222,7 +222,7 @@ def format_cycle_summary(
     lines.append("")
     
     lines.append(f"Average Strategy Score   : {avg_strategy_score:.0f}%")
-    lines.append(f"Average Confidence       : {avg_confidence:.0f}%")
+    lines.append(f"Average Setup Score      : {avg_confidence:.1f}/100")
     lines.append(f"Average Analysis Time    : {avg_analysis_time:.0f} ms")
     lines.append("")
     lines.append(f"Telegram Messages        : {telegram_count}")

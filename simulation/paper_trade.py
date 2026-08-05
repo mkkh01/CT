@@ -147,15 +147,8 @@ def _compute_pnl(
     if direction == "long":
         gross = (cp - ep) * sz
     else:
-        # Spot-only: only long trades are supported.
-        logger.warning(
-            "pnl_invalid_direction_for_spot",
-            direction=direction,
-            entry_price=ep,
-            close_price=cp,
-            size=sz,
-        )
-        gross = 0.0
+        # Short support added in Phase 4.
+        gross = (ep - cp) * sz
     pnl = gross - f - s
     if not np.isfinite(pnl):
         logger.warning(
@@ -212,12 +205,11 @@ def _resolve_close_price(
             return (float(tp), "tp")
         return None
     else:
-        # Spot-only: only long trades are supported.
-        logger.warning(
-            "resolve_close_invalid_direction_for_spot",
-            trade_id=str(trade.id),
-            direction=direction,
-        )
+        # Short support added in Phase 4.
+        if sl is not None and high >= float(sl):
+            return (float(sl), "sl")
+        if tp is not None and low <= float(tp):
+            return (float(tp), "tp")
         return None
 
 

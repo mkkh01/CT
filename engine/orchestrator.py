@@ -80,6 +80,7 @@ from engine.confidence import (
 )
 from engine.entry_rules import refine_entry
 from engine.htf_filter import filter_by_htf
+from engine.market_location import get_structural_levels, is_near_resistance
 from engine.momentum import calculate_momentum
 from engine.risk import assess_risk
 from engine.session import build_session_signal
@@ -137,42 +138,56 @@ def _order_timeframes(timeframes: list[str]) -> list[str]:
     return sorted(timeframes, key=_timeframe_seconds)
 
 
+def normalize_direction(value: Any) -> str:
+    """Standardise direction strings to 'long', 'short', or 'neutral'."""
+    if value is None:
+        return "neutral"
+    
+    normalized = str(value).strip().lower()
+
+    if normalized in {"bullish", "up", "long", "buy", "long_bias"}:
+        return "long"
+
+    if normalized in {"bearish", "down", "short", "sell", "short_bias"}:
+        return "short"
+
+    return "neutral"
+
+
 # ---------------------------------------------------------------------------
 # Rejection-reason prioritisation
 # ---------------------------------------------------------------------------
-def _determine_rejection_reason(
-    regime_ok: bool,
-    structure_ok: bool,
-    htf_ok: bool,
-    confidence_ok: bool,
-    risk_ok: bool,
-    risk_reason: Optional[str],
-) -> str:
-    """Return the first failing reason by priority order.
+    def _determine_rejection_reason(
+        regime_ok: bool,
+        structure_ok: bool,
+        htf_ok: bool,
+        confidence_ok: bool,
+        risk_ok: bool,
+        risk_reason: Optional[str],
+        entry_ok: bool = True,
+    ) -> str:
+        """Return the first failing reason by priority order.
 
-    Priority (Section 15 engine/orchestrator.py):
-        regime > risk > structure > confidence > htf
-
-    ``risk_reason`` is included verbatim in the risk-rejection message.
-
-    Returns an empty string when ALL checks pass -- the caller should treat
-    an empty string as "no rejection" and set ``final_verdict = True``.
-    """
-    if not regime_ok:
-        return "regime_check_failed: VOLATILE regime blocks new entries"
-    if not risk_ok:
-        rr = risk_reason or "risk_assessment_rejected"
-        return f"risk_rejected: {rr}"
-    if not structure_ok:
-        return "structure_alignment_failed: no clear trend/BOS/CHOCH on any timeframe"
-    if not confidence_ok:
-        return (
-            f"confidence_below_threshold: "
-            f"{CONFIDENCE_THRESHOLD:.2f} required"
-        )
-    if not htf_ok:
-        return "htf_bias_misaligned: LTF signal contradicts HTF bias"
-    return ""
+        Priority (Section 15 engine/orchestrator.py):
+            regime > risk > entry > structure > confidence > htf
+        """
+        if not regime_ok:
+            return "regime_check_failed: VOLATILE regime blocks new entries"
+        if not risk_ok:
+            rr = risk_reason or "risk_assessment_rejected"
+            return f"risk_rejected: {rr}"
+        if not entry_ok:
+            return "entry_refinement_failed: could not determine a valid entry point"
+        if not structure_ok:
+            return "structure_alignment_failed: no clear trend/BOS/CHOCH on any timeframe"
+        if not confidence_ok:
+            return (
+                f"confidence_below_threshold: "
+                f"{CONFIDENCE_THRESHOLD:.2f} required"
+            )
+        if not htf_ok:
+            return "htf_bias_misaligned: LTF signal contradicts HTF bias"
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -190,17 +205,12 @@ def _build_strategy_signal(
 ) -> StrategySignal:
     """Build a :class:`StrategySignal` with safe defaults.
 
-    ``direction`` accepts ``"long"``, ``"short"``, or ``"neutral"``.
-    Any other value is mapped to ``"long"`` with a
-    ``neutral_direction_default`` reason appended.
+    ``direction`` is normalised via ``normalize_direction``.
     ``raw_score`` is clamped to ``[0, 1]``.
     """
     # Normalise direction.
-    if direction not in ("long", "short", "neutral"):
-        direction = "long"
-        reasons = list(reasons) + [f"neutral_direction_default({direction})"]
-    else:
-        reasons = list(reasons)
+    direction = normalize_direction(direction)
+    reasons = list(reasons)
 
     # Clamp raw_score.
     try:
@@ -425,14 +435,45 @@ class Orchestrator:
             )
 
         # -------------------------------------------------------------
-        # 3. Run htf_filter using the highest timeframe as the HTF.
+        # 3. Primary signal selection & HTF Alignment
         # -------------------------------------------------------------
         ltf_analysis = per_tf[ltf_timeframe]
         htf_analysis = per_tf[htf_timeframe]
-
-        # Pick a primary LTF signal -- prefer the trend module's signal,
-        # fall back to the session signal, then a default.
+        
         primary_signal = self._pick_primary_signal(ltf_analysis, component_signals)
+        
+        if primary_signal is None:
+            return self._build_and_log_failure(
+                symbol=symbol,
+                source_open_time=source_open_time,
+                score=0.0,
+                confidence=0.0,
+                reason="insufficient_directional_evidence",
+                component_signals=component_signals,
+                regime_check_passed=True,
+                structure_alignment_passed=False,
+                htf_bias_aligned=False,
+                risk=RiskAssessment(allowed=False, reason="no_directional_evidence"),
+                entry=None,
+                trigger_timeframe=candle.timeframe,
+            )
+
+        # Spot-only: Reject short signals
+        if primary_signal.direction == "short":
+            return self._build_and_log_failure(
+                symbol=symbol,
+                source_open_time=source_open_time,
+                score=primary_signal.raw_score,
+                confidence=0.0,
+                reason="spot_short_not_supported",
+                component_signals=component_signals,
+                regime_check_passed=True,
+                structure_alignment_passed=True,
+                htf_bias_aligned=True,
+                risk=RiskAssessment(allowed=False, reason="short_direction_not_supported_in_spot"),
+                entry=None,
+                trigger_timeframe=candle.timeframe,
+            )
 
         htf_result: HTFFilterResult = filter_by_htf(
             ltf_signal=primary_signal,
@@ -448,14 +489,17 @@ class Orchestrator:
         )
 
         # -------------------------------------------------------------
-        # 4. Structure alignment: at least one TF has a non-neutral trend
-        #    OR a BOS/CHOCH detected.
+        # 4. Structure alignment: directional check.
         # -------------------------------------------------------------
-        structure_ok = self._structure_alignment_passed(per_tf)
+        structure_ok = self._structure_alignment_passed(
+            per_tf, 
+            trade_direction=primary_signal.direction, 
+            required_timeframes=ordered_tfs
+        )
         log_analysis_step(
             symbol, "structure_check", "success" if structure_ok else "failed",
-            f"فحص بنية السوق: {'متوافقة' if structure_ok else 'غير متوافقة'}",
-            {"structure_ok": structure_ok}
+            f"فحص بنية السوق ({primary_signal.direction}): {'متوافقة' if structure_ok else 'غير متوافقة'}",
+            {"structure_ok": structure_ok, "direction": primary_signal.direction}
         )
 
         # -------------------------------------------------------------
@@ -495,7 +539,8 @@ class Orchestrator:
             htf_bias=htf_result.bias,
         )
 
-        confidence = calculate_confidence(
+        # [PLAN] calculate_confidence now returns the new Setup Score.
+        setup_score = calculate_confidence(
             signals=component_signals,
             htf_result=htf_result,
             regime=regime,
@@ -504,8 +549,28 @@ class Orchestrator:
             volume_confirmation=volume_confirmation,
             session_score=session_score,
             symbol=symbol,
+            trade_direction=primary_signal.direction,
         )
-        confidence_ok = confidence_gate(confidence)
+        
+        # 6b. Market Location Penalty (Resistance Check)
+        # -------------------------------------------------------------
+        levels = get_structural_levels(ltf_analysis)
+        near_resistance = is_near_resistance(
+            current_price=ltf_analysis.candles[-1].close if ltf_analysis.candles else candle.close,
+            levels=levels,
+            direction=primary_signal.direction
+        )
+        if near_resistance:
+            from config.thresholds import NEAR_RESISTANCE_PENALTY
+            setup_score = max(0.0, setup_score - NEAR_RESISTANCE_PENALTY)
+            log_analysis_step(
+                symbol, "market_location", "warning",
+                f"دخول قريب من المقاومة: تم تطبيق خصم {NEAR_RESISTANCE_PENALTY}",
+                {"near_resistance": True, "penalty": NEAR_RESISTANCE_PENALTY}
+            )
+
+        confidence = setup_score
+        confidence_ok = confidence_gate(setup_score)
         score = aggregate_score(component_signals)
         log_analysis_step(
             symbol, "confidence_gate", "success" if confidence_ok else "failed",
@@ -567,6 +632,7 @@ class Orchestrator:
         final_verdict: bool
         rejection_reason: Optional[str]
 
+        entry_ok = True
         if regime_ok and structure_ok and htf_ok and confidence_ok and risk_ok:
             # All gates passed -- refine the entry.
             ob_list = list(ltf_analysis.smc.get("order_blocks", []))
@@ -605,9 +671,12 @@ class Orchestrator:
                     rr_ratio=entry.risk_reward,
                     position_size=risk.max_position_size,
                 )
-
-            final_verdict = True
-            rejection_reason = None
+                final_verdict = True
+                rejection_reason = None
+            else:
+                entry_ok = False
+                final_verdict = False
+                rejection_reason = "entry_refinement_failed"
         else:
             final_verdict = False
             rejection_reason = _determine_rejection_reason(
@@ -617,6 +686,7 @@ class Orchestrator:
                 confidence_ok=confidence_ok,
                 risk_ok=risk_ok,
                 risk_reason=risk.reason,
+                entry_ok=entry_ok,
             )
             entry = None
 
@@ -628,6 +698,7 @@ class Orchestrator:
             source_candle_open_time=source_open_time,
             score=score,
             confidence=confidence,
+            setup_score=setup_score,
             regime_check_passed=regime_ok,
             structure_alignment_passed=structure_ok,
             htf_bias_aligned=htf_ok,
@@ -1145,17 +1216,14 @@ class Orchestrator:
         # 1. Structure signal.
         if analysis.structure is not None:
             struct = analysis.structure
-            if struct.trend_direction == "up":
-                struct_dir = "long"
+            struct_dir = normalize_direction(struct.trend_direction)
+            if struct_dir == "long":
                 struct_score = 0.7
                 struct_reasons = [f"structure_trend=up (tf={tf})"]
-            elif struct.trend_direction == "down":
-                # In Spot-only, bearish structure is neutral (no trade)
-                struct_dir = "neutral"
+            elif struct_dir == "short":
                 struct_score = 0.7
                 struct_reasons = [f"structure_trend=down (tf={tf})"]
             else:
-                struct_dir = "long"
                 struct_score = 0.4
                 struct_reasons = [f"structure_trend=neutral (tf={tf})"]
             signals.append(
@@ -1176,8 +1244,7 @@ class Orchestrator:
             last_sweep = sweeps[-1]
             # [FIX] LiquiditySweep is a Pydantic model, not a dict. Access attributes directly.
             # Also normalise direction: 'bullish' sweep (low sweep) -> 'long' signal.
-            # In Spot-only, bearish sweeps are neutral.
-            smc_dir = "long" if last_sweep.direction == "bullish" else "neutral"
+            smc_dir = "long" if last_sweep.direction == "bullish" else "short"
             smc_score = float(last_sweep.strength)
             smc_reasons = [
                 f"smc_sweep: direction={last_sweep.direction}, "
@@ -1197,13 +1264,7 @@ class Orchestrator:
 
         # 3. Trend signal.
         trend = analysis.trend or {}
-        trend_dir_raw = trend.get("direction", "neutral")
-        if trend_dir_raw == "bullish":
-            trend_dir = "long"
-        elif trend_dir_raw == "bearish":
-            trend_dir = "neutral"
-        else:
-            trend_dir = "neutral"
+        trend_dir = normalize_direction(trend.get("direction", "neutral"))
         trend_score = float(trend.get("strength", 0.0) or 0.0)
         trend_reasons = list(trend.get("reasons", []))
         if not trend_reasons:
@@ -1222,8 +1283,7 @@ class Orchestrator:
 
         # 4. Momentum signal.
         mom = analysis.momentum or {}
-        mom_dir_raw = mom.get("direction", "neutral")
-        mom_dir = "long" if mom_dir_raw == "long" else "neutral"
+        mom_dir = normalize_direction(mom.get("direction", "neutral"))
         mom_score = float(mom.get("momentum_score", 0.5) or 0.5)
         mom_reasons = list(mom.get("reasons", []))
         if not mom_reasons:
@@ -1248,7 +1308,7 @@ class Orchestrator:
         if cvd_slope > 0 or delta > 0:
             vol_dir = "long"
         elif cvd_slope < 0 or delta < 0:
-            vol_dir = "neutral"
+            vol_dir = "short"
         else:
             vol_dir = "neutral"
         # Map |cvd_slope| to [0.4, 0.9] via a soft tanh-like transform.
@@ -1283,41 +1343,42 @@ class Orchestrator:
         self,
         ltf_analysis: _TimeframeAnalysis,
         component_signals: list[StrategySignal],
-    ) -> StrategySignal:
-        """Pick the primary LTF signal for the HTF filter and risk assessment.
+    ) -> StrategySignal | None:
+        """Pick the primary directional signal for the HTF filter and risk assessment.
 
         Preference order:
-          1. The LTF trend signal (highest structural weight).
-          2. The LTF momentum signal.
-          3. The first component signal on the LTF timeframe.
-          4. A default long signal at score 0.5.
+          1. The LTF trend signal (if directional).
+          2. The LTF momentum signal (if directional).
+          3. Any directional signal on the LTF timeframe.
+          4. The strongest directional signal across all timeframes.
+
+        Returns None if no directional evidence is found (Default Long prevention).
         """
         ltf_tf = ltf_analysis.timeframe
-        # 1. Trend signal.
+        
+        # Helper to check if a signal is directional
+        def is_directional(sig: StrategySignal) -> bool:
+            return sig.direction in ("long", "short") and sig.raw_score > 0
+
+        # 1. Trend signal on LTF.
         for sig in component_signals:
-            if sig.timeframe == ltf_tf and sig.strategy_name == "trend":
+            if sig.timeframe == ltf_tf and sig.strategy_name == "trend" and is_directional(sig):
                 return sig
-        # 2. Momentum signal.
+        # 2. Momentum signal on LTF.
         for sig in component_signals:
-            if sig.timeframe == ltf_tf and sig.strategy_name == "momentum":
+            if sig.timeframe == ltf_tf and sig.strategy_name == "momentum" and is_directional(sig):
                 return sig
-        # 3. Any LTF signal.
+        # 3. Any directional LTF signal.
         for sig in component_signals:
-            if sig.timeframe == ltf_tf:
+            if sig.timeframe == ltf_tf and is_directional(sig):
                 return sig
-        # 4. Default.
-        last_candle = ltf_analysis.candles[-1] if ltf_analysis.candles else None
-        open_time = last_candle.open_time if last_candle else datetime.now(timezone.utc)
-        symbol = last_candle.symbol if last_candle else ""
-        return _build_strategy_signal(
-            strategy_name="default",
-            symbol=symbol,
-            timeframe=ltf_tf,
-            direction="long",
-            raw_score=0.5,
-            reasons=["default_signal: no component signal available"],
-            source_candle_open_time=open_time,
-        )
+        
+        # 4. Strongest directional signal overall.
+        directional = [s for s in component_signals if is_directional(s)]
+        if directional:
+            return max(directional, key=lambda s: s.raw_score)
+
+        return None
 
     # -----------------------------------------------------------------
     # Structure alignment check
@@ -1325,21 +1386,46 @@ class Orchestrator:
     def _structure_alignment_passed(
         self,
         per_tf: dict[str, _TimeframeAnalysis],
+        trade_direction: str,
+        required_timeframes: list[str],
     ) -> bool:
-        """True iff at least one timeframe has non-neutral structure.
-
-        "Non-neutral" means the MarketStructure's ``trend_direction`` is
-        ``"up"`` or ``"down"``, OR there is a recent BOS or CHOCH.
+        """Directional structure alignment check.
+        
+        Returns True if:
+        1. At least 2 timeframes show evidence aligned with trade_direction.
+        2. NO timeframe shows evidence contradicting trade_direction.
         """
-        for analysis in per_tf.values():
-            struct = analysis.structure
-            if struct is None:
+        if trade_direction not in ("long", "short"):
+            return False
+
+        aligned_count = 0
+        contradictory_count = 0
+        opposite = "short" if trade_direction == "long" else "long"
+
+        for tf in required_timeframes:
+            analysis = per_tf.get(tf)
+            if not analysis or not analysis.structure:
                 continue
-            if struct.trend_direction in ("up", "down"):
-                return True
-            if struct.last_bos is not None or struct.last_choch is not None:
-                return True
-        return False
+            
+            struct = analysis.structure
+            
+            # Gather evidence from trend, BOS, and CHOCH
+            evidence = {
+                normalize_direction(struct.trend_direction),
+                normalize_direction(struct.bos_direction if hasattr(struct, "bos_direction") else None),
+                normalize_direction(struct.choch_direction if hasattr(struct, "choch_direction") else None)
+            }
+            
+            # Check for alignment
+            if trade_direction in evidence:
+                aligned_count += 1
+            
+            # Check for contradiction
+            if opposite in evidence:
+                contradictory_count += 1
+                
+        # Conservatively require 2 aligned timeframes and zero contradictions
+        return aligned_count >= 2 and contradictory_count == 0
 
     # -----------------------------------------------------------------
     # Portfolio state fetcher

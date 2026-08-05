@@ -226,30 +226,21 @@ def check_drawdown(
     if new_trade_risk < 0:
         new_trade_risk = 0.0
 
-    # No profits to protect yet (Cold Start or Reset).
-    if peak_pnl <= 0:
-        if current_pnl >= 0:
-            # Fresh start -- no profits, no losses. 
-            # We allow the trade as long as the new_trade_risk itself 
-            # doesn't exceed the thresholds.MAX_DAILY_LOSS_PCT of a "virtual" peak.
-            # Since peak_pnl is 0, we can't divide by it. But Section 8 
-            # implies protection of capital. If we don't have capital here,
-            # we allow the first trade.
-            return True
-        
-        # If we are already in a loss (current_pnl < 0) but peak_pnl is 0,
-        # it means we haven't made any profit yet and we are underwater.
-        # We should block new trades if the total loss (abs(current_pnl) + new_trade_risk)
-        # exceeds the allowed daily loss percentage of the initial capital.
-        # However, since we don't have 'initial_capital' passed here directly, 
-        # and Section 8 implies peak_pnl is the baseline, any risk on a 
-        # losing account with zero peak is blocked to prevent "revenge trading" 
-        # or compounding losses on a failing strategy from day 1.
-        return False
-
-    projected_drawdown = peak_pnl - (current_pnl - new_trade_risk)
-    limit = peak_pnl * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
-    return projected_drawdown <= limit
+    # [PLAN] Phase 4: Better Drawdown logic
+    # Peak PnL is the highest EQUITY point (Realized + Unrealized).
+    # Drawdown is (Peak - CurrentEquity) / Peak.
+    # But since PnL starts at 0, we treat Initial Capital as the baseline.
+    
+    # Let's assume a baseline capital if peak_pnl is 0 to avoid division by zero.
+    baseline = max(peak_pnl, 1000.0) # Fallback baseline
+    
+    projected_loss = current_pnl - new_trade_risk
+    drawdown_abs = peak_pnl - projected_loss
+    
+    # Limit is based on MAX_DAILY_LOSS_PCT of the baseline.
+    limit_abs = baseline * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
+    
+    return drawdown_abs <= limit_abs
 
 
 # ---------------------------------------------------------------------------
@@ -258,11 +249,12 @@ def check_drawdown(
 def calculate_stop_loss(
     entry_price: float,
     atr: float,
-    direction: Literal["long"] = "long",
+    direction: str = "long",
 ) -> float:
-    """Stop-loss price for Spot (Long only) using ``thresholds.VOLATILITY_ATR_MULTIPLIER_SL``.
+    """Stop-loss price using ``thresholds.VOLATILITY_ATR_MULTIPLIER_SL``.
 
     * Long  : ``SL = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
+    * Short : ``SL = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
 
     Returns ``entry_price`` (no stop) if ``atr <= 0``.
     """
@@ -271,17 +263,20 @@ def calculate_stop_loss(
     if atr <= 0:
         return entry_price
     distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL
+    if direction == "short":
+        return entry_price + distance
     return entry_price - distance
 
 
 def calculate_take_profit(
     entry_price: float,
     atr: float,
-    direction: Literal["long"] = "long",
+    direction: str = "long",
 ) -> float:
-    """Take-profit price for Spot (Long only) using ``thresholds.VOLATILITY_ATR_MULTIPLIER_TP``.
+    """Take-profit price using ``thresholds.VOLATILITY_ATR_MULTIPLIER_TP``.
 
     * Long  : ``TP = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
+    * Short : ``TP = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
 
     Returns ``entry_price`` (no target) if ``atr <= 0``.
     """
@@ -290,6 +285,8 @@ def calculate_take_profit(
     if atr <= 0:
         return entry_price
     distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP
+    if direction == "short":
+        return entry_price - distance
     return entry_price + distance
 
 
@@ -389,13 +386,8 @@ def assess_risk(
     peak_pnl = _portfolio_state_get(portfolio_state, "peak_pnl")
     open_trade_count = _portfolio_state_int(portfolio_state, "open_trade_count")
 
-    # Spot-only: Reject any signal that is not "long".
-    if direction != "long":
-        return _build_rejection(
-            symbol, f"spot_only: direction {direction!r} not allowed",
-            0.0, 0.0, None, None, None,
-            current_exposure, 0.0, confidence
-        )
+    # [PLAN] Phase 4: Support both long and short directions.
+    # Removed spot-only restriction.
 
     # Entry price: prefer the current market price; fall back to a sensible
     # default of 0.0 (which will trigger the R:R / exposure rejections below).
@@ -501,11 +493,13 @@ def assess_risk(
 
     # 4. Drawdown check
     if not check_drawdown(current_pnl, peak_pnl, risk_amount):
+        baseline = max(peak_pnl, 1000.0)
+        limit_abs = baseline * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
         reason = (
             f"drawdown_limit_exceeded: projected_drawdown="
             f"{projected_drawdown:.4f} USDT > "
-            f"limit={peak_pnl * (thresholds.MAX_DAILY_LOSS_PCT / 100.0):.4f} USDT "
-            f"({thresholds.MAX_DAILY_LOSS_PCT:.1f}% of peak {peak_pnl:.4f})"
+            f"limit={limit_abs:.4f} USDT "
+            f"({thresholds.MAX_DAILY_LOSS_PCT:.1f}% of baseline {baseline:.4f})"
         )
         return _build_rejection(
             symbol, reason, position_size, risk_amount,

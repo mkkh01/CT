@@ -26,7 +26,7 @@ class StrategySignal(BaseModel):
     symbol: str
     timeframe: str
     strategy_name: str
-    direction: Literal["long", "neutral"]
+    direction: Literal["long", "short", "neutral"]
     raw_score: float = Field(ge=0.0, le=1.0)
     reasons: list[str] = Field(default_factory=list)
     timestamp: datetime
@@ -54,7 +54,7 @@ class EntrySignal(BaseModel):
     """Refined entry produced by engine/entry_rules.py after risk approval."""
 
     symbol: str
-    direction: Literal["long"]
+    direction: Literal["long", "short"]
     entry_price: float
     entry_type: Literal["limit", "market"]
     timeframe: str
@@ -78,6 +78,7 @@ class DecisionResult(BaseModel):
     source_candle_open_time: datetime
     score: float = Field(ge=0.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)
+    setup_score: float = Field(default=0.0, ge=0.0, le=1.0)
     regime_check_passed: bool
     structure_alignment_passed: bool
     htf_bias_aligned: bool

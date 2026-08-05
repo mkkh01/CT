@@ -88,28 +88,31 @@ def _within_pct(price_a: float, price_b: float, tolerance_pct: float) -> bool:
     return (diff / denom) * 100.0 <= tolerance_pct
 
 
-def _apply_limit_offset(entry_price: float, direction: Literal["long", "neutral"] = "long") -> float:
-    """Apply ``ENTRY_LIMIT_OFFSET_PCT`` in the favourable direction for Spot.
+def _apply_limit_offset(entry_price: float, direction: str = "long") -> float:
+    """Apply ``ENTRY_LIMIT_OFFSET_PCT`` in the favourable direction.
 
     * Long  : ``entry * (1 - offset)`` -- *better* (lower) entry for a buyer.
+    * Short : ``entry * (1 + offset)`` -- *better* (higher) entry for a seller.
     * Neutral: no offset.
     """
     offset = ENTRY_LIMIT_OFFSET_PCT / 100.0
     if direction == "long":
         return entry_price * (1.0 - offset)
+    if direction == "short":
+        return entry_price * (1.0 + offset)
     return entry_price
 
 
 def _nearest_unmitigated_ob(
     obs: list[OrderBlock],
-    direction: Literal["long"],
+    direction: str,
     current_price: float,
     tolerance_pct: float = _NEAR_OB_FVG_TOLERANCE_PCT,
 ) -> Optional[OrderBlock]:
-    """Return the nearest unmitigated bullish OB for Spot entry."""
+    """Return the nearest unmitigated OB aligned with direction."""
     if not obs:
         return None
-    wanted_type = "bullish"
+    wanted_type = "bullish" if direction == "long" else "bearish"
     candidates = [
         ob
         for ob in obs
@@ -133,14 +136,14 @@ def _nearest_unmitigated_ob(
 
 def _nearest_unfilled_fvg(
     fvgs: list[FairValueGap],
-    direction: Literal["long"],
+    direction: str,
     current_price: float,
     tolerance_pct: float = _NEAR_OB_FVG_TOLERANCE_PCT,
 ) -> Optional[FairValueGap]:
-    """Return the nearest unfilled bullish FVG for Spot entry."""
+    """Return the nearest unfilled FVG aligned with direction."""
     if not fvgs:
         return None
-    wanted_type = "bullish"
+    wanted_type = "bullish" if direction == "long" else "bearish"
     candidates = [
         fvg
         for fvg in fvgs
@@ -166,15 +169,15 @@ def _nearest_unfilled_fvg(
 # Entry type decision
 # ---------------------------------------------------------------------------
 def _decide_entry_type(
-    direction: Literal["long", "neutral"],
+    direction: str,
     ob_list: list[OrderBlock],
     fvg_list: list[FairValueGap],
     current_price: float,
 ) -> tuple[Literal["limit", "market"], list[str], Optional[float]]:
-    """Decide whether to use a limit or market entry for Spot."""
+    """Decide whether to use a limit or market entry."""
     reasons: list[str] = []
-    if direction != "long":
-        reasons.append("market_entry: direction is not long")
+    if direction not in ("long", "short"):
+        reasons.append(f"market_entry: direction is {direction}")
         return "market", reasons, None
 
     ob = _nearest_unmitigated_ob(ob_list, direction, current_price)
@@ -210,55 +213,22 @@ def refine_entry(
     current_price: float,
     confidence: float = 1.0,
     atr: float = 0.0,
-) -> EntrySignal:
+) -> Optional[EntrySignal]:
     """Refine the entry after risk approval.
 
     Algorithm (Section 15 engine/entry_rules.py):
-      1. Decide entry type:
-         * Limit if ``current_price`` is near an unmitigated OB (within
-           ``_PROXIMITY_TOLERANCE_PCT`` of its mitigation level) OR near an
-           unfilled FVG edge.
-         * Market otherwise.
-      2. Compute the limit price:
-         * Limit entry: start from the OB/FVG level (or current_price if no
-           level) and apply ``ENTRY_LIMIT_OFFSET_PCT`` in the favourable
-           direction.
-         * Market entry: use ``current_price`` (no offset).
-      3. Set ``valid_until = now + ENTRY_TIMEOUT_MINUTES`` (UTC).
-      4. Build an :class:`EntrySignal` with all fields populated from
-         ``signal`` + ``risk`` + ``confidence``.
-
-    Args:
-        signal: The candidate strategy signal (provides symbol, direction,
-            timeframe, reasons, source_candle_open_time).
-        risk: The approved :class:`RiskAssessment` (provides stop_loss,
-            take_profit, risk_reward_ratio).  ``risk.allowed`` MUST be True
-            -- if False, this function still constructs an EntrySignal for
-            traceability but logs a warning (the orchestrator should not
-            call it on a rejected risk).
-        ob_list: Order blocks detected on the entry timeframe (used for the
-            limit-entry decision).
-        fvg_list: Fair value gaps detected on the entry timeframe.
-        current_price: Current market price of the symbol.
-        confidence: Pre-computed confidence in [0, 1] from the orchestrator
-            pipeline.  Defaults to ``1.0`` for callers that do not pass it
-            (e.g. back-testers).  MUST NOT be derived from risk / money
-            management fields -- it reflects the quality of the signal.
-
-    Returns:
-        :class:`EntrySignal` with all fields populated.
+      1. Decide entry type: Limit if near OB/FVG, Market otherwise.
+      2. Compute the limit price with offset.
+      3. Set validity timeout.
+      4. Build and return EntrySignal, or None if invalid.
     """
     if not risk.allowed:
-        logger.warning(
-            "entry_refined",
-            timestamp=datetime.utcnow(),
-            symbol=signal.symbol,
-            entry_type="market",
-            entry_price=_safe_float(current_price),
-            event_kind="risk_not_allowed",
-        )
+        return None
 
     current_price = _safe_float(current_price)
+    if current_price <= 0:
+        return None
+
     direction = signal.direction
 
     entry_type, decide_reasons, level_price = _decide_entry_type(
@@ -273,11 +243,12 @@ def refine_entry(
     else:
         entry_price = current_price
 
+    if entry_price <= 0:
+        return None
+
     valid_until = datetime.now(timezone.utc) + timedelta(minutes=ENTRY_TIMEOUT_MINUTES)
 
-    # [FIX] Recalculate SL and TP based on the final entry_price instead of 
-    # copying them from risk. This prevents "SL > Entry" bugs when a limit offset 
-    # is applied.
+    # [FIX] Recalculate SL and TP based on the final entry_price
     from engine.risk import calculate_stop_loss, calculate_take_profit, calculate_risk_reward
     
     # Use the ATR provided or fall back to the distance implied by the risk assessment
@@ -285,10 +256,14 @@ def refine_entry(
         stop_loss = calculate_stop_loss(entry_price, atr, direction)
         take_profit = calculate_take_profit(entry_price, atr, direction)
     else:
-        # Fallback: if no ATR, preserve the absolute distance from the risk basis
-        # to avoid breaking logic, but this should be rare now.
         stop_loss = risk.stop_loss_price if risk.stop_loss_price is not None else entry_price
         take_profit = risk.take_profit_price if risk.take_profit_price is not None else entry_price
+
+    # Validation: SL must be below Entry for Long, above for Short
+    if direction == "long" and stop_loss >= entry_price:
+        return None
+    if direction == "short" and stop_loss <= entry_price:
+        return None
 
     risk_reward = calculate_risk_reward(entry_price, stop_loss, take_profit)
 
@@ -300,11 +275,11 @@ def refine_entry(
 
     entry = EntrySignal(
         symbol=signal.symbol,
-        direction=direction,
+        direction=direction,  # type: ignore[arg-type]
         entry_price=entry_price,
         entry_type=entry_type,
         timeframe=signal.timeframe,
-        confidence=_safe_float(confidence),  # signal-derived confidence, not money
+        confidence=_safe_float(confidence),
         reasons=reasons,
         stop_loss=stop_loss,
         take_profit=take_profit,

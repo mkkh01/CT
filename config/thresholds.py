@@ -279,3 +279,20 @@ __all__ = [
     "TRAILING_ENABLED", "TRAILING_ACTIVATION_MULTIPLIER", "TRAILING_ATR_DISTANCE",
     "TRAILING_MIN_DISTANCE_PCT", "TRAILING_MAX_DISTANCE_PCT",
 ]
+
+# ---------------------------------------------------------------------------
+# Setup Score Penalties
+# ---------------------------------------------------------------------------
+BEARISH_HTF_PENALTY = 0.35
+BEARISH_STRUCTURE_PENALTY = 0.30
+BEARISH_MOMENTUM_PENALTY = 0.20
+NEAR_RESISTANCE_PENALTY = 0.15
+LOW_VOLUME_PENALTY = 0.10
+EXTENDED_ENTRY_PENALTY = 0.10
+CONTRADICTION_PENALTY_MULTIPLIER = 1.0
+
+# ---------------------------------------------------------------------------
+# Market Location
+# ---------------------------------------------------------------------------
+RESISTANCE_PROXIMITY_THRESHOLD = 0.50
+"""Percentage distance to resistance below which entry is penalized or blocked."""
