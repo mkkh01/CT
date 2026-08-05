@@ -58,6 +58,13 @@ from monitoring.health_manager import health_manager, HealthStatus
 logger = get_logger(__name__)
 
 
+class BinanceIPBanError(Exception):
+    """Raised when Binance returns a 418 IP Ban status."""
+    def __init__(self, message: str, wait_time: int) -> None:
+        self.wait_time = wait_time
+        super().__init__(message)
+
+
 # ---------------------------------------------------------------------------
 # Module-local constants (ingest-specific, not engine thresholds)
 # ---------------------------------------------------------------------------
@@ -176,6 +183,18 @@ class BinanceWSClient:
         self._health_task = asyncio.create_task(
             self._health_check_loop(), name="binance_ws_health_check"
         )
+
+        # 1. Initial gap-fill before the first connection (Section 4 #2).
+        try:
+            await self._refill_all_gaps()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "error",
+                timestamp=datetime.now(timezone.utc),
+                module="ingest.binance_ws",
+                error_type=type(exc).__name__,
+                error_message=f"initial gap-fill failed: {exc}",
+            )
 
         try:
             while self._running:
@@ -327,7 +346,19 @@ class BinanceWSClient:
         
         # CORRECT: Binance uses '/' for combined streams
         stream_query = "/".join(streams)
-        return f"{BINANCE_WS_BASE_URL}?streams={stream_query}"
+        url = f"{BINANCE_WS_BASE_URL}?streams={stream_query}"
+        
+        # [FIX] Check for URL length limit (approx 2048 chars for most servers/Binance)
+        if len(url) > 2048:
+            logger.warning(
+                "ws_url_too_long",
+                timestamp=datetime.now(timezone.utc),
+                url_length=len(url),
+                note="WebSocket URL exceeds 2048 characters. This may cause connection failure.",
+                module="ingest.binance_ws"
+            )
+            
+        return url
 
     async def _connect(self) -> None:
         """Open the WebSocket connection and log the ws_connect event."""
@@ -364,9 +395,6 @@ class BinanceWSClient:
         if self._ws is None:
             return
 
-        # 1. On every connect, load fresh checkpoints and gap-fill (Section 4 #2).
-        await self._refill_all_gaps()
-
         while self._running:
             try:
                 # recv() blocks until a message arrives or a ping timeout occurs.
@@ -391,7 +419,8 @@ class BinanceWSClient:
         
         [TRACE] WebSocket received
         """
-        logger.debug("trace_websocket_received", raw_len=len(raw_message))
+        # [FIX] Log all messages at info level temporarily to diagnose silent connection
+        logger.info("ws_raw_message_received", raw_len=len(raw_message))
 
         receive_time = datetime.now(timezone.utc)
         if isinstance(raw_message, (bytes, bytearray)):
@@ -412,6 +441,11 @@ class BinanceWSClient:
                 f"unparseable_json: {exc}",
                 details={"raw_preview": raw_message[:200]},
             ) from exc
+
+        # [TRACE] Subscription results or other non-kline messages
+        if "result" in payload or "id" in payload:
+            logger.info("ws_control_message", payload=payload)
+            return
 
         await self._process_message(payload, receive_time=receive_time)
 
@@ -799,6 +833,15 @@ class BinanceWSClient:
                 # Advance to the last one
                 await self._advance_checkpoint(closed_gaps[-1])
 
+            except BinanceIPBanError as exc:
+                logger.error(
+                    "ws_rate_limited",
+                    timestamp=now,
+                    module="ingest.binance_ws",
+                    error_message=f"Stopping all gap-fills due to IP Ban: {exc}",
+                )
+                # Break the loop to stop hitting Binance REST API
+                break
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "error",
@@ -858,18 +901,16 @@ class BinanceWSClient:
                 
                 # Special handling for 418 (IP Ban / Rate Limit)
                 if resp.status_code == 418:
-                    # Even more aggressive backoff for IP ban: 60s, 120s, 240s...
                     wait_time = 60 * (2 ** attempt)
                     logger.error(
                         "ws_rate_limited",
                         timestamp=datetime.now(timezone.utc),
-                        note=f"Binance returned 418 (IP Ban). Waiting {wait_time}s before retry.",
+                        note=f"Binance returned 418 (IP Ban). Stopping REST calls. Waiting {wait_time}s.",
                         symbol=symbol,
                         attempt=attempt + 1
                     )
-                    # Add extra sleep to the http_client shared cooldown if possible
-                    await asyncio.sleep(wait_time)
-                    continue
+                    # Propagate 418 to stop the entire gap-fill loop
+                    raise BinanceIPBanError(f"IP Ban (418) detected during {symbol} fetch", wait_time=wait_time)
 
                 resp.raise_for_status()
                 data = resp.json()
@@ -957,6 +998,10 @@ class BinanceWSClient:
             while self._running:
                 await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
                 now = datetime.now(timezone.utc)
+                
+                any_stale = False
+                stale_details = []
+
                 for symbol, timeframe in self._active_pairs:
                     try:
                         last = await self._redis.get_last_message(symbol, timeframe)
@@ -968,6 +1013,8 @@ class BinanceWSClient:
                             uptime = (now - self._connection_started_at).total_seconds()
                             expected = timeframe_to_seconds(timeframe) * WS_STALE_MULTIPLIER
                             if uptime > expected:
+                                any_stale = True
+                                stale_details.append(f"{symbol} (no data since connect)")
                                 logger.warning(
                                     "ws_stale",
                                     timestamp=now,
@@ -982,11 +1029,23 @@ class BinanceWSClient:
                     expected_interval = timeframe_to_seconds(timeframe)
                     threshold = expected_interval * WS_STALE_MULTIPLIER
                     if seconds_since > threshold:
+                        any_stale = True
+                        stale_details.append(f"{symbol} ({seconds_since:.1f}s stale)")
+                
+                # Update health manager to prevent staleness of the WebSocket component itself
+                if self._connected:
+                    if any_stale:
                         await health_manager.update_component(
                             "WebSocket", 
                             HealthStatus.WARNING, 
-                            f"WebSocket data stale for {symbol} {timeframe}: {seconds_since:.1f}s",
-                            {"symbol": symbol, "timeframe": timeframe, "delta": seconds_since}
+                            f"WebSocket data stale for: {', '.join(stale_details[:3])}...",
+                            {"stale_count": len(stale_details)}
+                        )
+                    else:
+                        await health_manager.update_component(
+                            "WebSocket", 
+                            HealthStatus.OK, 
+                            "WebSocket connection healthy and receiving data"
                         )
         except asyncio.CancelledError:
             return
