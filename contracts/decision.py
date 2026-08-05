@@ -100,5 +100,4 @@ class HTFFilterResult(BaseModel):
     bias: Literal["bullish", "bearish", "neutral"]
     alignment: bool
     reason: str
-    adx: float = 0.0
     timestamp: datetime

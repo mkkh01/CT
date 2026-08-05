@@ -252,7 +252,11 @@ class PaperTrader:
         self._supabase = supabase
 
     # ----------------------- open -------------------------------------------
-    async def open_trade(self, decision: DecisionResult) -> SimulatedTrade:
+    async def open_trade(
+        self, 
+        decision: DecisionResult, 
+        override_entry_price: Optional[float] = None
+    ) -> SimulatedTrade:
         """Open a simulated trade from an approved ``DecisionResult``.
 
         Steps (Section 18 ``open_trade`` algorithm):
@@ -317,15 +321,32 @@ class PaperTrader:
         entry = decision.entry
         symbol = decision.symbol
         direction = entry.direction
-        entry_price = _safe_float(entry.entry_price)
+        
+        # Use override price (live price) if provided, otherwise fallback to entry price from signal
+        if override_entry_price is not None and override_entry_price > 0:
+            entry_price = _safe_float(override_entry_price)
+            logger.info(
+                "simulated_trade_using_live_price",
+                symbol=symbol,
+                original_price=entry.entry_price,
+                live_price=entry_price,
+                diff_pct=round(((entry_price / entry.entry_price) - 1) * 100, 4) if entry.entry_price > 0 else 0
+            )
+        else:
+            entry_price = _safe_float(entry.entry_price)
+
         # Size comes from the risk assessment -- EntrySignal has no size field.
         size = _safe_float(decision.risk.max_position_size)
-        stop_loss = (
-            float(entry.stop_loss) if entry.stop_loss is not None else None
-        )
-        take_profit = (
-            float(entry.take_profit) if entry.take_profit is not None else None
-        )
+
+        # Recalculate SL/TP based on the new entry price if it was overridden
+        # to maintain the same risk/reward distance in absolute terms.
+        if override_entry_price is not None and override_entry_price > 0:
+            price_diff = entry_price - _safe_float(entry.entry_price)
+            stop_loss = (float(entry.stop_loss) + price_diff) if entry.stop_loss is not None else None
+            take_profit = (float(entry.take_profit) + price_diff) if entry.take_profit is not None else None
+        else:
+            stop_loss = (float(entry.stop_loss) if entry.stop_loss is not None else None)
+            take_profit = (float(entry.take_profit) if entry.take_profit is not None else None)
 
         # Conservative: default taker for the entry leg (Section 18).
         fee = calculate_fee(entry_price, size, is_maker=False)
@@ -408,7 +429,6 @@ class PaperTrader:
             slippage=slippage,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            timeframe=timeframe,
             is_simulated=True,  # Section 0 hard-constraint 7.
             label=_SIMULATED_LABEL,
         )
@@ -519,12 +539,11 @@ class PaperTrader:
             pnl=pnl,
             close_reason=close_reason,
             closed_at=closed_at.isoformat(),
-            opened_at=updated.opened_at.isoformat(),
-            timeframe=updated.timeframe,
             is_simulated=True,  # Section 0 hard-constraint 7.
             label=_SIMULATED_LABEL,
         )
         return updated
+
     # ----------------------- manual close ----------------------------------
     async def close_trade_manual(
         self,
@@ -634,8 +653,6 @@ class PaperTrader:
             pnl=pnl,
             close_reason=reason,
             closed_at=closed_at.isoformat(),
-            opened_at=updated.opened_at.isoformat(),
-            timeframe=updated.timeframe,
             is_simulated=True,  # Section 0 hard-constraint 7.
             label=_SIMULATED_LABEL,
         )
