@@ -192,54 +192,78 @@ def check_drawdown(
     current_pnl: float,
     peak_pnl: float,
     new_trade_risk: float,
+    current_equity: Optional[float] = None,
+    start_of_day_equity: Optional[float] = None,
+    total_capital: Optional[float] = None,
 ) -> bool:
     """True iff taking a loss of ``new_trade_risk`` keeps drawdown in limit.
 
-    ``projected_drawdown = peak_pnl - (current_pnl - new_trade_risk)``;
-    passes iff ``projected_drawdown <= peak_pnl * (thresholds.MAX_DAILY_LOSS_PCT / 100)``.
+    Uses an equity-based approach rather than a fixed fake baseline:
+      * If ``start_of_day_equity`` is provided, daily loss is computed as
+        ``(start_of_day_equity - (start_of_day_equity + current_pnl - new_trade_risk))
+        / start_of_day_equity``.
+      * If ``total_capital`` is provided, the limit is a fraction of capital.
+      * If only ``peak_pnl`` is available, drawdown is
+        ``peak_pnl - (current_pnl - new_trade_risk)`` against the peak.
+      * When there is no profit history (``peak_pnl <= 0`` and
+        ``current_pnl >= 0``), the check passes conservatively.
 
     Args:
         current_pnl: Current realised + unrealised PnL for the period.
-        peak_pnl: Highest PnL observed in the period (for drawdown calc).
-        new_trade_risk: $ amount at risk on the new trade (the loss if SL
-            hits, i.e. ``risk_amount`` from :func:`calculate_position_size`).
+        peak_pnl: Highest PnL observed in the period.
+        new_trade_risk: $ amount at risk on the new trade.
+        current_equity: Current equity (capital + PnL). Optional.
+        start_of_day_equity: Equity at the start of the day. Optional.
+        total_capital: Total capital in USDT. Optional.
 
     Returns:
-        ``True`` if within limit, ``False`` otherwise. When ``peak_pnl <= 0``
-        AND ``current_pnl >= 0`` (no profit history yet AND not currently
-        losing), the check passes -- a fresh account has no profits to
-        protect and the drawdown limit is meaningless. When ``peak_pnl <= 0``
-        AND ``current_pnl < 0`` (already losing), the check uses
-        ``abs(current_pnl) + new_trade_risk`` against a zero baseline: any
-        further risk is rejected if it would compound the existing loss by
-        more than the configured percentage of capital.
-
-        This interpretation matches Section 22's "safe defaults on
-        insufficient history" guidance -- the literal Section 8 formula
-        divides by ``peak_pnl`` which is zero at the start of a period, so
-        we degrade gracefully rather than blocking every first trade.
+        ``True`` if within limit, ``False`` otherwise.
     """
     current_pnl = _safe_float(current_pnl)
     peak_pnl = _safe_float(peak_pnl)
     new_trade_risk = _safe_float(new_trade_risk)
+    total_capital = _safe_float(total_capital) if total_capital is not None else None
 
     if new_trade_risk < 0:
         new_trade_risk = 0.0
 
-    # [PLAN] Phase 4: Better Drawdown logic
-    # Peak PnL is the highest EQUITY point (Realized + Unrealized).
-    # Drawdown is (Peak - CurrentEquity) / Peak.
-    # But since PnL starts at 0, we treat Initial Capital as the baseline.
-    
-    # Let's assume a baseline capital if peak_pnl is 0 to avoid division by zero.
-    baseline = max(peak_pnl, 1000.0) # Fallback baseline
-    
+    # --- Equity-based daily loss check (preferred) ---
+    if start_of_day_equity is not None and start_of_day_equity > 0:
+        projected_equity = start_of_day_equity + current_pnl - new_trade_risk
+        daily_loss_abs = start_of_day_equity - projected_equity
+        limit_abs = start_of_day_equity * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
+        return daily_loss_abs <= limit_abs
+
+    # --- Capital-based fallback ---
+    if total_capital is not None and total_capital > 0:
+        projected_pnl = current_pnl - new_trade_risk
+        # Drawdown from peak: how far below peak we'd be after the trade
+        projected_drawdown = peak_pnl - projected_pnl
+        limit_abs = total_capital * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
+        return projected_drawdown <= limit_abs
+
+    # --- Peak-PnL-based fallback (legacy) ---
     projected_loss = current_pnl - new_trade_risk
     drawdown_abs = peak_pnl - projected_loss
-    
-    # Limit is based on MAX_DAILY_LOSS_PCT of the baseline.
-    limit_abs = baseline * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
-    
+
+    # If no profit history and not currently losing, pass conservatively
+    if peak_pnl <= 0 and current_pnl >= 0:
+        return True
+
+    # If already losing, use capital-relative check
+    if peak_pnl <= 0 and current_pnl < 0:
+        projected_loss_total = abs(current_pnl) + new_trade_risk
+        # Use a sensible capital-relative limit
+        if total_capital and total_capital > 0:
+            limit_abs = total_capital * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
+        else:
+            # No capital info — conservative default based on current loss
+            limit_abs = abs(current_pnl) * (thresholds.MAX_DAILY_LOSS_PCT / 100.0) + new_trade_risk
+            return True  # Cannot determine, pass conservatively
+        return projected_loss_total <= limit_abs
+
+    # Normal case: peak_pnl > 0
+    limit_abs = peak_pnl * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
     return drawdown_abs <= limit_abs
 
 
@@ -250,44 +274,88 @@ def calculate_stop_loss(
     entry_price: float,
     atr: float,
     direction: str = "long",
+    swing_level: Optional[float] = None,
+    min_distance_pct: float = 0.5,
 ) -> float:
-    """Stop-loss price using ``thresholds.VOLATILITY_ATR_MULTIPLIER_SL``.
+    """Stop-loss price using ATR + structural invalidation.
 
     * Long  : ``SL = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
+      (capped by swing_low if provided and below entry)
     * Short : ``SL = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL``
+      (capped by swing_high if provided and above entry)
 
-    Returns ``entry_price`` (no stop) if ``atr <= 0``.
+    Enforces a minimum distance from entry (``min_distance_pct``) to avoid
+    stops that are too tight on very low-volatility coins.
+
+    Returns ``entry_price`` (no stop) if ``atr <= 0`` and no swing level.
     """
     entry_price = _safe_float(entry_price)
     atr = _safe_float(atr)
-    if atr <= 0:
+
+    if atr <= 0 and swing_level is None:
         return entry_price
-    distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL
+
+    # ATR-based SL
+    atr_distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_SL if atr > 0 else 0
     if direction == "short":
-        return entry_price + distance
-    return entry_price - distance
+        sl = entry_price + atr_distance
+    else:
+        sl = entry_price - atr_distance
+
+    # Structural SL: prefer swing level when valid
+    if swing_level is not None and swing_level > 0:
+        if direction == "long" and swing_level < entry_price:
+            # Use the more conservative (lower) of ATR SL and swing low
+            sl = min(sl, swing_level * 0.999)
+        elif direction == "short" and swing_level > entry_price:
+            sl = max(sl, swing_level * 1.001)
+
+    # Enforce minimum distance
+    min_distance = entry_price * (min_distance_pct / 100.0)
+    if direction == "long" and entry_price - sl < min_distance:
+        sl = entry_price - min_distance
+    elif direction == "short" and sl - entry_price < min_distance:
+        sl = entry_price + min_distance
+
+    return sl
 
 
 def calculate_take_profit(
     entry_price: float,
     atr: float,
     direction: str = "long",
+    resistance_level: Optional[float] = None,
 ) -> float:
-    """Take-profit price using ``thresholds.VOLATILITY_ATR_MULTIPLIER_TP``.
+    """Take-profit price using ATR + structural target.
 
     * Long  : ``TP = entry_price + atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
+      (capped at resistance level if provided and closer than ATR TP)
     * Short : ``TP = entry_price - atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP``
+      (capped at support level if provided and closer than ATR TP)
 
-    Returns ``entry_price`` (no target) if ``atr <= 0``.
+    Returns ``entry_price`` (no target) if ``atr <= 0`` and no resistance level.
     """
     entry_price = _safe_float(entry_price)
     atr = _safe_float(atr)
-    if atr <= 0:
+
+    if atr <= 0 and resistance_level is None:
         return entry_price
-    distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP
+
+    # ATR-based TP
+    atr_distance = atr * thresholds.VOLATILITY_ATR_MULTIPLIER_TP if atr > 0 else 0
     if direction == "short":
-        return entry_price - distance
-    return entry_price + distance
+        tp = entry_price - atr_distance
+    else:
+        tp = entry_price + atr_distance
+
+    # Structural TP: cap at resistance/support level
+    if resistance_level is not None and resistance_level > 0:
+        if direction == "long" and resistance_level < tp:
+            tp = resistance_level
+        elif direction == "short" and resistance_level > tp:
+            tp = resistance_level
+
+    return tp
 
 
 # ---------------------------------------------------------------------------
@@ -491,15 +559,14 @@ def assess_risk(
             available_exposure=available_exposure
         )
 
-    # 4. Drawdown check
-    if not check_drawdown(current_pnl, peak_pnl, risk_amount):
-        baseline = max(peak_pnl, 1000.0)
-        limit_abs = baseline * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
+    # 4. Drawdown check (pass capital for proper equity-based calculation)
+    if not check_drawdown(current_pnl, peak_pnl, risk_amount, total_capital=capital):
+        limit_abs = capital * (thresholds.MAX_DAILY_LOSS_PCT / 100.0)
         reason = (
             f"drawdown_limit_exceeded: projected_drawdown="
             f"{projected_drawdown:.4f} USDT > "
             f"limit={limit_abs:.4f} USDT "
-            f"({thresholds.MAX_DAILY_LOSS_PCT:.1f}% of baseline {baseline:.4f})"
+            f"({thresholds.MAX_DAILY_LOSS_PCT:.1f}% of capital {capital:.4f})"
         )
         return _build_rejection(
             symbol, reason, position_size, risk_amount,

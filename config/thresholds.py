@@ -111,17 +111,20 @@ NY_END_UTC = 21
 # ---------------------------------------------------------------------------
 # Risk Management
 # ---------------------------------------------------------------------------
-MAX_PORTFOLIO_EXPOSURE_PCT = 100.0
+MAX_PORTFOLIO_EXPOSURE_PCT = 50.0
 """Maximum total portfolio exposure as % of total capital."""
 
-MAX_POSITION_SIZE_PCT = 100.0
+MAX_POSITION_SIZE_PCT = 20.0
 """Maximum size of a single position as % of coin capital."""
 
-MAX_DAILY_LOSS_PCT = 9.0
-"""Maximum daily loss as % of peak PnL before new entries are blocked."""
+MAX_DAILY_LOSS_PCT = 2.0
+"""Maximum daily loss as % of capital before new entries are blocked."""
 
-MAX_CONCURRENT_TRADES = 10
+MAX_CONCURRENT_TRADES = 3
 """Maximum number of simultaneously open simulated trades."""
+
+RISK_PER_TRADE_PCT = 0.50
+"""Risk per trade as % of capital (default when coin_config.risk_percent is not set)."""
 
 MIN_RISK_REWARD_RATIO = 1.4
 """Minimum acceptable reward:risk ratio for any signal."""
@@ -187,9 +190,14 @@ volatile coins."""
 # ---------------------------------------------------------------------------
 # Simulation
 # ---------------------------------------------------------------------------
-MAKER_FEE_PCT = 0.01
-TAKER_FEE_PCT = 0.01
-SLIPPAGE_PCT = 0.05
+MAKER_FEE_RATE = 0.001   # 0.1% (Binance maker fee for tier 1)
+TAKER_FEE_RATE = 0.001   # 0.1% (Binance taker fee for tier 1)
+SLIPPAGE_RATE = 0.0005   # 0.05% slippage
+
+# Backwards-compatible aliases (still referenced elsewhere)
+MAKER_FEE_PCT = MAKER_FEE_RATE * 100   # 0.1
+TAKER_FEE_PCT = TAKER_FEE_RATE * 100   # 0.1
+SLIPPAGE_PCT = SLIPPAGE_RATE * 100     # 0.05
 
 # ---------------------------------------------------------------------------
 # WebSocket / Ingest
@@ -267,12 +275,13 @@ __all__ = [
     "VOLATILITY_ATR_PERIOD", "VOLATILITY_ATR_MULTIPLIER_SL", "VOLATILITY_ATR_MULTIPLIER_TP",
     "VOLATILITY_BB_PERIOD", "VOLATILITY_BB_STD", "HIGH_VOLATILITY_THRESHOLD", "VOLATILITY_BB_RANGING_PCT",
     "ASIAN_START_UTC", "ASIAN_END_UTC", "LONDON_START_UTC", "LONDON_END_UTC", "NY_START_UTC", "NY_END_UTC",
-    "MAX_PORTFOLIO_EXPOSURE_PCT", "MAX_POSITION_SIZE_PCT", "MAX_DAILY_LOSS_PCT", "MAX_CONCURRENT_TRADES",
+    "MAX_PORTFOLIO_EXPOSURE_PCT", "MAX_POSITION_SIZE_PCT", "MAX_DAILY_LOSS_PCT", "MAX_CONCURRENT_TRADES", "RISK_PER_TRADE_PCT",
     "MIN_RISK_REWARD_RATIO", "RISK_REWARD_TARGET",
     "CONFIDENCE_THRESHOLD", "HTF_ALIGNMENT_WEIGHT", "STRUCTURE_WEIGHT", "MOMENTUM_WEIGHT", "LIQUIDITY_WEIGHT",
     "SESSION_WEIGHT", "REGIME_MODIFIER_TRENDING", "REGIME_MODIFIER_RANGING", "REGIME_MODIFIER_VOLATILE",
     "ENTRY_LIMIT_OFFSET_PCT", "ENTRY_TIMEOUT_MINUTES", "MAX_ENTRY_RETRIES",
     "MAKER_FEE_PCT", "TAKER_FEE_PCT", "SLIPPAGE_PCT",
+    "MAKER_FEE_RATE", "TAKER_FEE_RATE", "SLIPPAGE_RATE",
     "WS_INITIAL_BACKOFF_SECONDS", "WS_MAX_BACKOFF_SECONDS", "WS_STABLE_RESET_SECONDS", "WS_STALE_MULTIPLIER",
     "WS_REST_RETRY_COUNT", "WS_RESUME_PAD_CANDLES",
     "TIMEFRAME_TO_SECONDS", "VALID_TIMEFRAMES", "timeframe_to_seconds", "resume_window_candles",

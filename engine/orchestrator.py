@@ -157,37 +157,37 @@ def normalize_direction(value: Any) -> str:
 # ---------------------------------------------------------------------------
 # Rejection-reason prioritisation
 # ---------------------------------------------------------------------------
-    def _determine_rejection_reason(
-        regime_ok: bool,
-        structure_ok: bool,
-        htf_ok: bool,
-        confidence_ok: bool,
-        risk_ok: bool,
-        risk_reason: Optional[str],
-        entry_ok: bool = True,
-    ) -> str:
-        """Return the first failing reason by priority order.
+def _determine_rejection_reason(
+    regime_ok: bool,
+    structure_ok: bool,
+    htf_ok: bool,
+    confidence_ok: bool,
+    risk_ok: bool,
+    risk_reason: Optional[str],
+    entry_ok: bool = True,
+) -> str:
+    """Return the first failing reason by priority order.
 
-        Priority (Section 15 engine/orchestrator.py):
-            regime > risk > entry > structure > confidence > htf
-        """
-        if not regime_ok:
-            return "regime_check_failed: VOLATILE regime blocks new entries"
-        if not risk_ok:
-            rr = risk_reason or "risk_assessment_rejected"
-            return f"risk_rejected: {rr}"
-        if not entry_ok:
-            return "entry_refinement_failed: could not determine a valid entry point"
-        if not structure_ok:
-            return "structure_alignment_failed: no clear trend/BOS/CHOCH on any timeframe"
-        if not confidence_ok:
-            return (
-                f"confidence_below_threshold: "
-                f"{CONFIDENCE_THRESHOLD:.2f} required"
-            )
-        if not htf_ok:
-            return "htf_bias_misaligned: LTF signal contradicts HTF bias"
-        return ""
+    Priority (Section 15 engine/orchestrator.py):
+        regime > risk > entry > structure > confidence > htf
+    """
+    if not regime_ok:
+        return "regime_check_failed: VOLATILE regime blocks new entries"
+    if not risk_ok:
+        rr = risk_reason or "risk_assessment_rejected"
+        return f"risk_rejected: {rr}"
+    if not entry_ok:
+        return "entry_refinement_failed: could not determine a valid entry point"
+    if not structure_ok:
+        return "structure_alignment_failed: no clear trend/BOS/CHOCH on any timeframe"
+    if not confidence_ok:
+        return (
+            f"confidence_below_threshold: "
+            f"{CONFIDENCE_THRESHOLD:.2f} required"
+        )
+    if not htf_ok:
+        return "htf_bias_misaligned: LTF signal contradicts HTF bias"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +552,7 @@ class Orchestrator:
             trade_direction=primary_signal.direction,
         )
         
-        # 6b. Market Location Penalty (Resistance Check)
+        # 6b. Market Location Check (Resistance Check)
         # -------------------------------------------------------------
         levels = get_structural_levels(ltf_analysis)
         near_resistance = is_near_resistance(
@@ -560,6 +560,7 @@ class Orchestrator:
             levels=levels,
             direction=primary_signal.direction
         )
+        resistance_blocked = False
         if near_resistance:
             from config.thresholds import NEAR_RESISTANCE_PENALTY
             setup_score = max(0.0, setup_score - NEAR_RESISTANCE_PENALTY)
@@ -568,6 +569,38 @@ class Orchestrator:
                 f"دخول قريب من المقاومة: تم تطبيق خصم {NEAR_RESISTANCE_PENALTY}",
                 {"near_resistance": True, "penalty": NEAR_RESISTANCE_PENALTY}
             )
+
+            # Check if TP is beyond the resistance level — if so, hard reject
+            # because the target path is blocked by resistance
+            current_price = ltf_analysis.candles[-1].close if ltf_analysis.candles else candle.close
+            if risk.stop_loss_price is not None and risk.take_profit_price is not None:
+                if primary_signal.direction == "long":
+                    # For a long trade, resistance above entry blocks the path to TP
+                    nearest_resistance = None
+                    for lvl in levels:
+                        if lvl > current_price:
+                            if nearest_resistance is None or lvl < nearest_resistance:
+                                nearest_resistance = lvl
+                    if nearest_resistance is not None and risk.take_profit_price >= nearest_resistance:
+                        resistance_blocked = True
+                        log_analysis_step(
+                            symbol, "market_location", "critical",
+                            f"هدف الصعود خلف مقاومة: TP={risk.take_profit_price:.6f} >= مقاومة={nearest_resistance:.6f}",
+                            {"tp_blocked_by_resistance": True}
+                        )
+                elif primary_signal.direction == "short":
+                    nearest_support = None
+                    for lvl in levels:
+                        if lvl < current_price:
+                            if nearest_support is None or lvl > nearest_support:
+                                nearest_support = lvl
+                    if nearest_support is not None and risk.take_profit_price <= nearest_support:
+                        resistance_blocked = True
+                        log_analysis_step(
+                            symbol, "market_location", "critical",
+                            f"هدف الهبوط خلف دعم: TP={risk.take_profit_price:.6f} <= دعم={nearest_support:.6f}",
+                            {"tp_blocked_by_support": True}
+                        )
 
         confidence = setup_score
         confidence_ok = confidence_gate(setup_score)
@@ -625,6 +658,60 @@ class Orchestrator:
             )
 
         risk_ok = risk.allowed
+
+        # -------------------------------------------------------------
+        # 7b. Resistance-blocked rejection
+        # -------------------------------------------------------------
+        if resistance_blocked:
+            final_verdict = False
+            rejection_reason = "entry_too_close_to_resistance: target path is blocked"
+            entry = None
+
+            # Log Decision Engine result
+            logger.info(
+                "decision_engine_result",
+                timestamp=datetime.now(timezone.utc),
+                symbol=symbol,
+                final_score=round(score, 4),
+                final_confidence=round(confidence, 4),
+                confidence_threshold=CONFIDENCE_THRESHOLD,
+                confidence_ok=False,
+                regime_ok=regime_ok,
+                structure_ok=structure_ok,
+                htf_ok=htf_ok,
+            )
+
+            # Write to decisions table
+            decision = DecisionResult(
+                symbol=symbol,
+                source_candle_open_time=source_open_time,
+                score=score,
+                confidence=confidence,
+                setup_score=setup_score,
+                regime_check_passed=regime_ok,
+                structure_alignment_passed=structure_ok,
+                htf_bias_aligned=htf_ok,
+                risk=risk,
+                entry=None,
+                final_verdict=False,
+                rejection_reason=rejection_reason,
+                component_signals=component_signals,
+                trigger_timeframe=candle.timeframe,
+                timestamp=datetime.now(timezone.utc),
+            )
+            try:
+                await self._supabase.upsert_decision(decision)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "error",
+                    timestamp=datetime.utcnow(),
+                    module="engine.orchestrator",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    event_kind="upsert_decision_failed",
+                    symbol=symbol,
+                )
+            return decision
 
         # -------------------------------------------------------------
         # 8. Entry refinement (only if risk approved).
@@ -1264,11 +1351,12 @@ class Orchestrator:
 
         # 3. Trend signal.
         trend = analysis.trend or {}
-        trend_dir = normalize_direction(trend.get("direction", "neutral"))
+        trend_dir_raw = trend.get("direction", "neutral")
+        trend_dir = normalize_direction(trend_dir_raw)
         trend_score = float(trend.get("strength", 0.0) or 0.0)
         trend_reasons = list(trend.get("reasons", []))
         if not trend_reasons:
-            trend_reasons = [f"trend direction={trend_dir_raw} (tf={tf})"]
+            trend_reasons = [f"trend direction={trend_dir} (tf={tf})"]
         signals.append(
             _build_strategy_signal(
                 strategy_name="trend",
@@ -1283,11 +1371,12 @@ class Orchestrator:
 
         # 4. Momentum signal.
         mom = analysis.momentum or {}
-        mom_dir = normalize_direction(mom.get("direction", "neutral"))
+        mom_dir_raw = mom.get("direction", "neutral")
+        mom_dir = normalize_direction(mom_dir_raw)
         mom_score = float(mom.get("momentum_score", 0.5) or 0.5)
         mom_reasons = list(mom.get("reasons", []))
         if not mom_reasons:
-            mom_reasons = [f"momentum direction={mom_dir_raw} (tf={tf})"]
+            mom_reasons = [f"momentum direction={mom_dir} (tf={tf})"]
         signals.append(
             _build_strategy_signal(
                 strategy_name="momentum",
@@ -1344,41 +1433,65 @@ class Orchestrator:
         ltf_analysis: _TimeframeAnalysis,
         component_signals: list[StrategySignal],
     ) -> StrategySignal | None:
-        """Pick the primary directional signal for the HTF filter and risk assessment.
+        """Pick the primary directional signal using weighted directional voting.
 
-        Preference order:
-          1. The LTF trend signal (if directional).
-          2. The LTF momentum signal (if directional).
-          3. Any directional signal on the LTF timeframe.
-          4. The strongest directional signal across all timeframes.
+        Instead of always picking the first LTF Trend signal (which could be
+        weak while opposing signals are strong), we:
+          1. Collect all directional LTF signals.
+          2. Sum raw_score for 'long' vs 'short' directions.
+          3. If the gap is below MIN_DIRECTIONAL_EDGE, reject (no clear direction).
+          4. Require a minimum number of agreeing signals.
+          5. Return the strongest signal from the winning direction.
 
-        Returns None if no directional evidence is found (Default Long prevention).
+        Returns None if no clear directional edge is found.
         """
         ltf_tf = ltf_analysis.timeframe
-        
-        # Helper to check if a signal is directional
+        MIN_DIRECTIONAL_EDGE = 0.15  # minimum score gap to commit to a direction
+        MIN_AGREEING_SIGNALS = 2     # at least 2 signals must agree
+
         def is_directional(sig: StrategySignal) -> bool:
             return sig.direction in ("long", "short") and sig.raw_score > 0
 
-        # 1. Trend signal on LTF.
-        for sig in component_signals:
-            if sig.timeframe == ltf_tf and sig.strategy_name == "trend" and is_directional(sig):
-                return sig
-        # 2. Momentum signal on LTF.
-        for sig in component_signals:
-            if sig.timeframe == ltf_tf and sig.strategy_name == "momentum" and is_directional(sig):
-                return sig
-        # 3. Any directional LTF signal.
-        for sig in component_signals:
-            if sig.timeframe == ltf_tf and is_directional(sig):
-                return sig
-        
-        # 4. Strongest directional signal overall.
-        directional = [s for s in component_signals if is_directional(s)]
-        if directional:
-            return max(directional, key=lambda s: s.raw_score)
+        # Collect LTF directional signals
+        ltf_signals = [
+            s for s in component_signals
+            if s.timeframe == ltf_tf and is_directional(s)
+        ]
 
-        return None
+        if not ltf_signals:
+            # No LTF directional signals — try all timeframes as fallback
+            ltf_signals = [s for s in component_signals if is_directional(s)]
+
+        if not ltf_signals:
+            return None
+
+        # Vote by direction
+        long_score = sum(s.raw_score for s in ltf_signals if s.direction == "long")
+        short_score = sum(s.raw_score for s in ltf_signals if s.direction == "short")
+        long_count = sum(1 for s in ltf_signals if s.direction == "long")
+        short_count = sum(1 for s in ltf_signals if s.direction == "short")
+
+        # If the gap is too small, no clear direction
+        if abs(long_score - short_score) < MIN_DIRECTIONAL_EDGE:
+            return None
+
+        # Determine winning direction
+        if long_score > short_score:
+            direction = "long"
+            agreeing_count = long_count
+        else:
+            direction = "short"
+            agreeing_count = short_count
+
+        # Require minimum agreeing signals
+        if agreeing_count < MIN_AGREEING_SIGNALS:
+            return None
+
+        # Return the strongest signal from the winning direction
+        winners = [s for s in ltf_signals if s.direction == direction]
+        if not winners:
+            return None
+        return max(winners, key=lambda s: s.raw_score)
 
     # -----------------------------------------------------------------
     # Structure alignment check
@@ -1389,17 +1502,24 @@ class Orchestrator:
         trade_direction: str,
         required_timeframes: list[str],
     ) -> bool:
-        """Directional structure alignment check.
+        """Directional structure alignment check (relaxed).
         
         Returns True if:
         1. At least 2 timeframes show evidence aligned with trade_direction.
-        2. NO timeframe shows evidence contradicting trade_direction.
+        2. A single contradictory event (e.g. old BOS) does not automatically
+           reject the trade -- we only reject if ALL timeframe trend_directions
+           contradict the trade direction.
+        
+        Rationale: An old BOS or CHOCH event should not override the current
+        trend direction on multiple timeframes. Only if the HTF trend itself
+        contradicts the trade should we reject.
         """
         if trade_direction not in ("long", "short"):
             return False
 
-        aligned_count = 0
-        contradictory_count = 0
+        aligned_tfs = 0
+        contradicting_tfs = 0
+        total_evaluated = 0
         opposite = "short" if trade_direction == "long" else "long"
 
         for tf in required_timeframes:
@@ -1408,24 +1528,24 @@ class Orchestrator:
                 continue
             
             struct = analysis.structure
+            # MarketStructure has trend_direction (Literal["up", "down", "neutral"])
+            tf_dir = normalize_direction(struct.trend_direction)
+            total_evaluated += 1
             
-            # Gather evidence from trend, BOS, and CHOCH
-            evidence = {
-                normalize_direction(struct.trend_direction),
-                normalize_direction(struct.bos_direction if hasattr(struct, "bos_direction") else None),
-                normalize_direction(struct.choch_direction if hasattr(struct, "choch_direction") else None)
-            }
-            
-            # Check for alignment
-            if trade_direction in evidence:
-                aligned_count += 1
-            
-            # Check for contradiction
-            if opposite in evidence:
-                contradictory_count += 1
-                
-        # Conservatively require 2 aligned timeframes and zero contradictions
-        return aligned_count >= 2 and contradictory_count == 0
+            if tf_dir == trade_direction:
+                aligned_tfs += 1
+            elif tf_dir == opposite:
+                contradicting_tfs += 1
+            # neutral / unknown: does not count against
+
+        # If ALL evaluated timeframes contradict, reject.
+        if total_evaluated > 0 and contradicting_tfs >= total_evaluated:
+            return False
+
+        # Otherwise, we need at least 2 aligned timeframes for confirmation
+        # (or 1 if only 1 timeframe has structure data)
+        min_required = min(2, total_evaluated)
+        return aligned_tfs >= min_required
 
     # -----------------------------------------------------------------
     # Portfolio state fetcher
@@ -1440,13 +1560,12 @@ class Orchestrator:
         Reads from Supabase:
           * ``open_trade_count`` -- count of open simulated trades (any
             symbol; the concurrent-trade limit is system-wide).
-          * ``current_exposure`` -- sum of (entry_price * size) for open
-            trades in the same symbol.  Section 8 specifies portfolio-level
-            exposure; for simplicity we treat it per-symbol (the orchestrator
-            runs one coin at a time).
+          * ``current_exposure`` -- sum of (entry_price * size) for **all**
+            open trades across every symbol (portfolio-wide exposure).
           * ``current_pnl`` and ``peak_pnl`` -- read from Redis if available,
             otherwise default to 0.0 (cold start).
-          * ``current_price`` -- latest close of the LTF candle.
+          * ``current_price`` -- latest close of the LTF candle (set by the
+            caller after this function returns).
 
         Returns a dict suitable for direct consumption by
         :func:`engine.risk.assess_risk`.
@@ -1472,10 +1591,11 @@ class Orchestrator:
                 symbol=symbol,
             )
 
+        # Portfolio-wide exposure: fetch ALL open trades (symbol=None)
         try:
-            open_trades = await self._supabase.fetch_open_trades(symbol=symbol)
+            all_open_trades = await self._supabase.fetch_open_trades(symbol=None)
             state["current_exposure"] = sum(
-                float(t.entry_price) * float(t.size) for t in open_trades
+                float(t.entry_price) * float(t.size) for t in all_open_trades
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(

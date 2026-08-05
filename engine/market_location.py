@@ -47,24 +47,87 @@ def is_near_resistance(
                     
     return False
 
+def _read(obj: Any, key: str, default: Any = None) -> Any:
+    """Safely read an attribute or dict key from ``obj``.
+
+    Works with both Pydantic models (attribute access) and plain dicts
+    (key lookup), returning ``default`` when the key/attribute is absent.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def get_structural_levels(analysis: Any) -> List[float]:
-    """Extract price levels from analysis results."""
-    levels = []
-    
+    """Extract price levels from analysis results.
+
+    Looks at ``analysis.smc`` for swings, order blocks, and FVGs.
+    Also checks ``analysis.structure`` for swing highs/lows as a fallback.
+    Handles both Pydantic models and plain dicts gracefully.
+    """
+    levels: List[float] = []
+
+    smc = getattr(analysis, "smc", None) or {}
+    if isinstance(smc, dict):
+        smc_data = smc
+    else:
+        # Pydantic model or object
+        smc_data = vars(smc) if hasattr(smc, "__dict__") else {}
+
     # Swing points
-    swings = analysis.smc.get("swings", [])
+    swings = smc_data.get("swings", [])
     for s in swings:
-        levels.append(s.price)
-        
+        price = _read(s, "price", None)
+        if price is not None:
+            try:
+                levels.append(float(price))
+            except (TypeError, ValueError):
+                pass
+
     # Order Blocks
-    obs = analysis.smc.get("order_blocks", [])
+    obs = smc_data.get("order_blocks", [])
     for ob in obs:
-        levels.append(ob.mitigation_level)
-        
+        mitigation = _read(ob, "mitigation_level", None)
+        if mitigation is not None:
+            try:
+                levels.append(float(mitigation))
+            except (TypeError, ValueError):
+                pass
+
     # FVGs
-    fvgs = analysis.smc.get("fvgs", [])
+    fvgs = smc_data.get("fvgs", [])
     for fvg in fvgs:
-        levels.append(fvg.top)
-        levels.append(fvg.bottom)
-        
+        top = _read(fvg, "top", None)
+        bottom = _read(fvg, "bottom", None)
+        if top is not None:
+            try:
+                levels.append(float(top))
+            except (TypeError, ValueError):
+                pass
+        if bottom is not None:
+            try:
+                levels.append(float(bottom))
+            except (TypeError, ValueError):
+                pass
+
+    # Fallback: check analysis.structure for swing highs/lows
+    structure = getattr(analysis, "structure", None)
+    if structure is not None:
+        last_high = _read(structure, "last_swing_high", None)
+        last_low = _read(structure, "last_swing_low", None)
+        if last_high is not None:
+            price = _read(last_high, "price", None)
+            if price is not None:
+                try:
+                    levels.append(float(price))
+                except (TypeError, ValueError):
+                    pass
+        if last_low is not None:
+            price = _read(last_low, "price", None)
+            if price is not None:
+                try:
+                    levels.append(float(price))
+                except (TypeError, ValueError):
+                    pass
+
     return list(set(levels))

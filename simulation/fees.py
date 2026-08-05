@@ -35,7 +35,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from config.thresholds import MAKER_FEE_PCT, TAKER_FEE_PCT
+from config.thresholds import MAKER_FEE_PCT, TAKER_FEE_PCT, MAKER_FEE_RATE, TAKER_FEE_RATE, SLIPPAGE_RATE
 from monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -71,7 +71,13 @@ def _safe_float(value: float) -> float:
 
 def _fee_pct_for(is_maker: bool) -> float:
     """Return the fee percentage (in 0-100 scale) for the given order type."""
+    # MAKER_FEE_PCT / TAKER_FEE_PCT are already in percent scale (e.g. 0.1 = 0.1%)
     return MAKER_FEE_PCT if is_maker else TAKER_FEE_PCT
+
+
+def _fee_rate_for(is_maker: bool) -> float:
+    """Return the fee as a fractional rate (e.g. 0.001 = 0.1%)."""
+    return MAKER_FEE_RATE if is_maker else TAKER_FEE_RATE
 
 
 def _fee_type_label(is_maker: bool) -> Literal["maker", "taker"]:
