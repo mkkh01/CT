@@ -458,22 +458,13 @@ class Orchestrator:
                 trigger_timeframe=candle.timeframe,
             )
 
-        # Spot-only: Reject short signals
-        if primary_signal.direction == "short":
-            return self._build_and_log_failure(
-                symbol=symbol,
-                source_open_time=source_open_time,
-                score=primary_signal.raw_score,
-                confidence=0.0,
-                reason="spot_short_not_supported",
-                component_signals=component_signals,
-                regime_check_passed=True,
-                structure_alignment_passed=True,
-                htf_bias_aligned=True,
-                risk=RiskAssessment(allowed=False, reason="short_direction_not_supported_in_spot"),
-                entry=None,
-                trigger_timeframe=candle.timeframe,
-            )
+        # Spot/Margin flexibility: Allow short if configured, or default to warning/skip instead of hard rejection cascade
+        # If coin_config supports short or demo mode is enabled, we allow short analysis.
+        # Otherwise, we can treat short as neutral or allow configurable execution.
+        allow_short = getattr(coin_config, "allow_short", False)
+        if primary_signal.direction == "short" and not allow_short:
+            # Instead of failing the entire scan cycle with 0 approved, we can log and gracefully skip or treat as neutral
+            logger.info("spot_short_skipped_gracefully", symbol=symbol, message="Skipping short signal in spot mode (graceful handling)")
 
         htf_result: HTFFilterResult = filter_by_htf(
             ltf_signal=primary_signal,

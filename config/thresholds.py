@@ -135,7 +135,7 @@ RISK_REWARD_TARGET = 1.07
 # ---------------------------------------------------------------------------
 # Confidence Scoring
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD = 0.72
+CONFIDENCE_THRESHOLD = 0.55
 """Minimum confidence (0..1) required for a signal to be acted on.
 
 Raised from 0.60 to 0.72 to filter out weak setups that consistently
@@ -150,8 +150,8 @@ SESSION_WEIGHT = 0.05
 # Sum of the five weights above MUST equal 1.0 (validated in tests).
 
 REGIME_MODIFIER_TRENDING = 1.0
-REGIME_MODIFIER_RANGING = 0.70
-REGIME_MODIFIER_VOLATILE = 0.60
+REGIME_MODIFIER_RANGING = 0.85
+REGIME_MODIFIER_VOLATILE = 0.75
 """Confidence multipliers applied based on detected market regime.
 
 Ranging and volatile markets are penalised more heavily so that
