@@ -126,10 +126,10 @@ MAX_CONCURRENT_TRADES = 3
 RISK_PER_TRADE_PCT = 0.50
 """Risk per trade as % of capital (default when coin_config.risk_percent is not set)."""
 
-MIN_RISK_REWARD_RATIO = 1.4
+MIN_RISK_REWARD_RATIO = 1.07
 """Minimum acceptable reward:risk ratio for any signal."""
 
-RISK_REWARD_TARGET = 1.8
+RISK_REWARD_TARGET = 1.07
 """Target reward:risk ratio used when no other information is available."""
 
 # ---------------------------------------------------------------------------
