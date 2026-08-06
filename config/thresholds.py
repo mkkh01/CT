@@ -135,8 +135,12 @@ RISK_REWARD_TARGET = 1.07
 # ---------------------------------------------------------------------------
 # Confidence Scoring
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD = 0.60
-"""Minimum confidence (0..1) required for a signal to be acted on."""
+CONFIDENCE_THRESHOLD = 0.72
+"""Minimum confidence (0..1) required for a signal to be acted on.
+
+Raised from 0.60 to 0.72 to filter out weak setups that consistently
+lose.  A confidence of 0.72 means at least 4 of 5 weighted components
+must be aligned with the trade direction."""
 
 HTF_ALIGNMENT_WEIGHT = 0.20
 STRUCTURE_WEIGHT = 0.30
@@ -146,9 +150,12 @@ SESSION_WEIGHT = 0.05
 # Sum of the five weights above MUST equal 1.0 (validated in tests).
 
 REGIME_MODIFIER_TRENDING = 1.0
-REGIME_MODIFIER_RANGING = 0.90
-REGIME_MODIFIER_VOLATILE = 0.85
-"""Confidence multipliers applied based on detected market regime."""
+REGIME_MODIFIER_RANGING = 0.70
+REGIME_MODIFIER_VOLATILE = 0.60
+"""Confidence multipliers applied based on detected market regime.
+
+Ranging and volatile markets are penalised more heavily so that
+weak setups in choppy conditions are rejected."""
 
 # ---------------------------------------------------------------------------
 # Entry Rules
@@ -292,13 +299,15 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Setup Score Penalties
 # ---------------------------------------------------------------------------
-BEARISH_HTF_PENALTY = 0.35
-BEARISH_STRUCTURE_PENALTY = 0.30
-BEARISH_MOMENTUM_PENALTY = 0.20
-NEAR_RESISTANCE_PENALTY = 0.15
-LOW_VOLUME_PENALTY = 0.10
-EXTENDED_ENTRY_PENALTY = 0.10
-CONTRADICTION_PENALTY_MULTIPLIER = 1.0
+BEARISH_HTF_PENALTY = 0.40
+BEARISH_STRUCTURE_PENALTY = 0.35
+BEARISH_MOMENTUM_PENALTY = 0.25
+NEAR_RESISTANCE_PENALTY = 0.20
+LOW_VOLUME_PENALTY = 0.15
+EXTENDED_ENTRY_PENALTY = 0.15
+CONTRADICTION_PENALTY_MULTIPLIER = 1.5
+"""Penalties are increased and contradiction multiplier raised to 1.5
+so that opposing signals drag the setup score down more aggressively."""
 
 # ---------------------------------------------------------------------------
 # Market Location

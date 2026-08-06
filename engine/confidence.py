@@ -283,6 +283,16 @@ def calculate_confidence(
     # Session is always neutral/positive (time-of-day signal)
     sess_score = _norm(session_score)
 
+    # --- Count aligned components (must have >= 3 of 5 aligned) ---
+    _components = [
+        htf_contrib,
+        struct_score,
+        mom_score,
+        liq_score,
+        sess_score,
+    ]
+    _aligned_count = sum(1 for c in _components if c > 0.0)
+
     # --- Weighted sum (contributions can be negative) ---
     raw_score = (
         htf_contrib * HTF_ALIGNMENT_WEIGHT
@@ -291,6 +301,17 @@ def calculate_confidence(
         + liq_score * LIQUIDITY_WEIGHT
         + sess_score * SESSION_WEIGHT
     )
+
+    # --- Hard gate: if fewer than 3 components agree, score drops to 0 ---
+    if _aligned_count < 3:
+        raw_score = 0.0
+        logger.info(
+            "setup_score_rejected_insufficient_alignment",
+            timestamp=datetime.utcnow(),
+            symbol=symbol or "",
+            aligned_count=_aligned_count,
+            required=3,
+        )
 
     # --- Apply regime modifier ---
     modifier = _regime_modifier(regime)
