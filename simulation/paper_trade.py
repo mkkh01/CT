@@ -340,6 +340,25 @@ class PaperTrader:
             stop_loss = (float(entry.stop_loss) if entry.stop_loss is not None else None)
             take_profit = (float(entry.take_profit) if entry.take_profit is not None else None)
 
+        # Strict validation: For LONG, stop_loss must be strictly less than entry_price, and take_profit greater.
+        # If invalid, recalculate using default ATR multiplier or enforce safe distance.
+        if stop_loss is not None and stop_loss >= entry_price:
+            logger.warning(
+                "invalid_stop_loss_corrected",
+                symbol=symbol,
+                entry_price=entry_price,
+                bad_stop_loss=stop_loss,
+            )
+            stop_loss = entry_price * 0.985 # 1.5% default stop loss buffer
+        if take_profit is not None and take_profit <= entry_price:
+            logger.warning(
+                "invalid_take_profit_corrected",
+                symbol=symbol,
+                entry_price=entry_price,
+                bad_take_profit=take_profit,
+            )
+            take_profit = entry_price * 1.025 # 2.5% default take profit buffer
+
         # Conservative: default taker for the entry leg (Section 18).
         fee = calculate_fee(entry_price, size, is_maker=False)
         slippage = estimate_slippage(entry_price, size, symbol)
@@ -479,7 +498,10 @@ class PaperTrader:
             fee=trade.fee,
             slippage=trade.slippage,
         )
+        # Ensure closed_at is never before opened_at (prevent time travel bugs)
         closed_at = current_candle.close_time
+        if closed_at < trade.opened_at:
+            closed_at = trade.opened_at + timedelta(seconds=1)
 
         # Persist the closure (DB-level update of closed_at / pnl /
         # close_reason / status).
