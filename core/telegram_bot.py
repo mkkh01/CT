@@ -13,17 +13,6 @@ class TelegramBot:
     def _admin_ok(self, user_id):
         return settings.TELEGRAM_ADMIN_ID and user_id == settings.TELEGRAM_ADMIN_ID
 
-    async def setup_commands(self):
-        """إعداد قائمة الأزرار الدائمة"""
-        cmds = [
-            BotCommand("status", "📊 حالة النظام"),
-            BotCommand("symbols", "💰 العملات المراقبة"),
-            BotCommand("mode", "⚙️ وضع التداول"),
-            BotCommand("help", "❓ المساعدة"),
-        ]
-        await self.app.bot.set_my_commands(cmds)
-        log.info("🤖 Command menu set ✅")
-
     async def cmd_status(self, update: Update, _):
         if not self._admin_ok(update.effective_user.id):
             return
@@ -32,9 +21,7 @@ class TelegramBot:
             f"✅ **النظام يعمل ONLINE**\n\n"
             f"💰 العملات: {', '.join(settings.SYMBOLS)}\n"
             f"⚙️ الوضع: {mode}\n"
-            f"⏰ وقت العمل: 07:30–19:30 UTC\n"
-            f"✅ Supabase: متصل\n"
-            f"✅ Redis: متصل"
+            f"⏰ وقت العمل: 07:30–19:30 UTC"
         )
 
     async def cmd_symbols(self, update: Update, _):
@@ -73,7 +60,12 @@ class TelegramBot:
             self.app.add_handler(CommandHandler("help", self.cmd_help))
 
             await self.app.initialize()
-            await self.app.setup_commands()
+            await self.app.bot.set_my_commands([
+                BotCommand("status", "📊 حالة النظام"),
+                BotCommand("symbols", "💰 العملات"),
+                BotCommand("mode", "⚙️ الوضع"),
+                BotCommand("help", "❓ المساعدة"),
+            ])
             await self.app.start()
             await self.app.updater.start_polling(drop_pending_updates=True)
             self._running = True
@@ -81,15 +73,10 @@ class TelegramBot:
 
             await self.app.bot.send_message(
                 chat_id=settings.TELEGRAM_ADMIN_ID,
-                text="🤖 **نظام التداول يعمل ONLINE**\n\n"
-                "استخدم القائمة أسفل الشاشة أو الأوامر:\n"
-                "/status - الحالة\n"
-                "/symbols - العملات\n"
-                "/mode - الوضع"
+                text="🤖 **نظام التداول يعمل ONLINE**\n\nاستخدم الأوامر:\n/status /symbols /mode"
             )
         except Exception as ex:
             if "Conflict" in str(ex):
                 log.warning("⚠️ Bot conflict — stop other instances!")
             else:
                 log.error("🤖 Bot error: %s", ex)
-            raise
