@@ -1,35 +1,26 @@
-import os, re
 from core.config import settings
 
-supabase = None
+db_conn = None
 
-try:
-    from supabase import create_client
-    raw_url = settings.SUPABASE_URL or ""
-    key = settings.SUPABASE_KEY or ""
+async def init_db():
+    global db_conn
+    db_url = settings.SUPABASE_URL or ""
+    
+    if not db_url.startswith("postgresql://"):
+        print("⚠️ رابط PostgreSQL غير صالح")
+        return None
 
-    # ✅ تحويل رابط PostgreSQL إلى رابط API
-    if raw_url.startswith("postgresql://"):
-        match = re.search(r"@([^:/]+)", raw_url)
-        if match:
-            host = match.group(1).replace(".pooler.", ".")
-            raw_url = f"https://{host}"
+    try:
+        import psycopg
+        db_conn = await psycopg.AsyncConnection.connect(db_url)
+        print("✅ Supabase PostgreSQL: متصل بنجاح ✅")
+        return db_conn
+    except Exception as e:
+        print(f"❌ خطأ قاعدة البيانات: {type(e).__name__}: {e}")
+        return None
 
-    # ✅ تقبل المفتاح سواء كان eyJhbGci... أو sb_secret...
-    if raw_url.startswith("https://") and key:
-        try:
-            supabase = create_client(raw_url, key)
-            print(f"✅ Supabase: متصل بنجاح")
-        except Exception as api_err:
-            # ✅ إذا فشل بـ API → نستخدم رابط PostgreSQL مباشرة
-            import psycopg
-            db_url = settings.SUPABASE_URL
-            conn = psycopg.connect(db_url)
-            print(f"✅ Supabase: متصل عبر PostgreSQL مباشرة")
-            supabase = conn
-    else:
-        print(f"⚠️ بيانات غير مكتملة")
-
-except Exception as e:
-    print(f"❌ خطأ Supabase: {type(e).__name__}: {e}")
-    supabase = None
+async def close_db():
+    global db_conn
+    if db_conn:
+        await db_conn.close()
+        print("✅ تم إغلاق اتصال قاعدة البيانات")
