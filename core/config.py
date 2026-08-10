@@ -13,7 +13,10 @@ def _e(k, alt=None, default=None):
 
 class Settings:
     APP_ENV = _e("APP_ENV", "production")
-    SYSTEM_ENABLED = (_e("SYSTEM_ENABLED", default="true") or "true").lower() == "true"
+    
+    se_val = _e("SYSTEM_ENABLED", default="true") or "true"
+    SYSTEM_ENABLED = se_val.lower() == "true"
+    
     MODE = _e("TRADING_MODE", "BALANCED")
 
     SUPABASE_URL = _e("SUPABASE_URL")
@@ -22,7 +25,8 @@ class Settings:
     REDIS_URL = _e("REDIS_URL", "redis://localhost:6379/0")
 
     TELEGRAM_BOT_TOKEN = _e("TELEGRAM_BOT_TOKEN")
-    _tid = _e("TELEGRAM_ADMIN_ID", "TELEGRAM_CHAT_ID", "0")
+    
+    _tid = _e("TELEGRAM_ADMIN_ID", "TELEGRAM_CHAT_ID", "0") or "0"
     TELEGRAM_ADMIN_ID = int(_tid) if _tid and _tid.isdigit() else None
 
     _sym = _e("SYMBOL_LIST", "BTC/USDT,ETH/USDT,SOL/USDT") or "BTC/USDT,ETH/USDT,SOL/USDT"
