@@ -20,9 +20,11 @@ class Settings:
     REDIS_URL = _e("REDIS_URL","redis://localhost:6379/0")
 
     TELEGRAM_BOT_TOKEN = _e("TELEGRAM_BOT_TOKEN")
-    TELEGRAM_ADMIN_ID = int(_e("TELEGRAM_ADMIN_ID","TELEGRAM_CHAT_ID","0") or 0)
+    _tid = _e("TELEGRAM_ADMIN_ID","TELEGRAM_CHAT_ID","0")
+    TELEGRAM_ADMIN_ID = int(_tid) if _tid and _tid.isdigit() else None
 
-    SYMBOLS: List[str] = [s.strip().upper() for s in (_e("SYMBOL_LIST","BTC/USDT,ETH/USDT,SOL/USDT") or "").split(",") if s.strip()]
+    _sym = _e("SYMBOL_LIST","BTC/USDT,ETH/USDT,SOL/USDT")
+    SYMBOLS: List[str] = [s.strip().upper() for s in _sym.split(",") if s.strip()]
 
     TP_PCT = 1.00
     SL_PCT = 0.40
