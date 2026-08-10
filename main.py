@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from core.config import settings
 from services.supabase_client import init_db, close_db, supabase
 from services.redis_client import redis_client
-from bot.telegram_bot import application
+from core.telegram_bot import application  # ✅ المسار الصحيح!
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
