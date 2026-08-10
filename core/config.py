@@ -25,7 +25,7 @@ class Settings:
     _tid = _e("TELEGRAM_ADMIN_ID", "TELEGRAM_CHAT_ID", "0")
     TELEGRAM_ADMIN_ID = int(_tid) if _tid and _tid.isdigit() else None
 
-    _sym = _e("SYMBOL_LIST", "BTC/USDT,ETH/USDT,SOL/USDT")
+    _sym = _e("SYMBOL_LIST", "BTC/USDT,ETH/USDT,SOL/USDT") or "BTC/USDT,ETH/USDT,SOL/USDT"
     SYMBOLS: List[str] = [s.strip().upper() for s in _sym.split(",") if s.strip()]
 
     TP_PCT = 1.00
