@@ -84,9 +84,9 @@ class TelegramBot:
         return (
             "نظام توصيات Binance Spot — تنبيهات ومتابعة افتراضية فقط دون تنفيذ.\n\n"
             "من زر إدارة العملات ورأس المال استخدم إحدى الصيغ:\n"
-            "أضف XRPUSDT 50\n"
-            "عدّل XRPUSDT 75\n"
-            "احذف XRPUSDT\n"
+            "أضف <SYMBOL> <AMOUNT>\n"
+            "عدّل <SYMBOL> <AMOUNT>\n"
+            "احذف <SYMBOL>\n"
             "القائمة\n\n"
             "بعد الإضافة تُفتح متابعة السعر والإشارات تلقائياً عبر Binance WebSocket."
         )
@@ -111,7 +111,7 @@ class TelegramBot:
             self._awaiting.pop(chat_id, None)
             self.send_message(self.manage_coin(f"remove:{symbol}"), chat_id, with_keyboard=True)
             return
-        self.send_message("صيغة غير صحيحة. مثال: أضف XRPUSDT 50 أو احذف XRPUSDT", chat_id)
+        self.send_message("صيغة غير صحيحة. استخدم: أضف <SYMBOL> <AMOUNT>", chat_id)
 
     def _handle_text(self, chat_id: str, text: str) -> None:
         if chat_id != self.chat_id:
@@ -125,9 +125,9 @@ class TelegramBot:
             self._awaiting[chat_id] = "coin"
             self.send_message(
                 "أرسل الأمر في رسالة واحدة:\n\n"
-                "أضف XRPUSDT 50\n"
-                "عدّل XRPUSDT 75\n"
-                "احذف XRPUSDT\n"
+                "أضف <SYMBOL> <AMOUNT>\n"
+                "عدّل <SYMBOL> <AMOUNT>\n"
+                "احذف <SYMBOL>\n"
                 "القائمة",
                 chat_id,
             )
