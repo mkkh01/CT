@@ -1,0 +1,107 @@
+project:
+  name: crypto_spot_long_only_research
+  version: "1.0.0"
+  timezone: UTC
+  seed: 42
+  mode: research_only
+
+exchange:
+  name: binance_spot_public
+  base_url: https://data-api.binance.vision
+  klines_path: /api/v3/klines
+  max_rows_per_request: 1000
+  request_pause_seconds: 0.15
+
+data:
+  symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - BNBUSDT
+    - SOLUSDT
+    - XRPUSDT
+    - ADAUSDT
+    - DOGEUSDT
+    - AVAXUSDT
+    - LINKUSDT
+    - DOTUSDT
+    - LTCUSDT
+    - TRXUSDT
+    - ATOMUSDT
+    - NEARUSDT
+    - APTUSDT
+    - SUIUSDT
+    - ETCUSDT
+    - FILUSDT
+    - ARBUSDT
+    - OPUSDT
+    - AAVEUSDT
+    - UNIUSDT
+    - INJUSDT
+    - ALGOUSDT
+    - XLMUSDT
+    - VETUSDT
+    - ICPUSDT
+    - MATICUSDT
+    - MKRUSDT
+    - RUNEUSDT
+  interval: 1h
+  start: "2023-01-01"
+  end: null
+  cache_dir: data/cache
+  max_symbols: 30
+  reject_non_spot: true
+
+costs:
+  low:
+    fee_bps: 5.0
+    slippage_bps: 1.0
+    spread_bps: 1.0
+  normal:
+    fee_bps: 10.0
+    slippage_bps: 2.0
+    spread_bps: 2.0
+  high:
+    fee_bps: 15.0
+    slippage_bps: 5.0
+    spread_bps: 4.0
+  stress:
+    fee_bps: 20.0
+    slippage_bps: 8.0
+    spread_bps: 6.0
+
+backtest:
+  initial_capital: 10000.0
+  risk_per_trade: 0.005
+  max_bars_in_trade: 96
+  same_bar_policy: conservative_stop_first
+  allow_fractional_quantity: true
+  min_notional: 10.0
+  score_thresholds: [55, 60, 65, 70, 75, 80, 85]
+  take_profit_r_multiples: [1.0, 1.5, 2.0, 2.5, 3.0]
+  atr_stop_multipliers: [1.0, 1.5, 2.0, 2.5, 3.0]
+
+validation:
+  train_days: 365
+  validation_days: 90
+  test_days: 90
+  step_days: 90
+  purge_bars: 2
+  embargo_bars: 2
+  min_trades_total: 30
+  min_trades_per_test_window: 5
+
+portfolio:
+  max_positions: [1, 3, 5, 10]
+  max_total_exposure: 0.80
+  max_btc_correlation: 0.85
+
+research:
+  download: true
+  run_candidates: true
+  run_optimization: true
+  run_walk_forward: true
+  run_oos_lock: true
+  run_stress: true
+  run_monte_carlo: true
+  output_dir: results
+  report_dir: reports

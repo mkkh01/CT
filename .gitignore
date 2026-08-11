@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.DS_Store
+
+# Historical market data can be regenerated with the downloader.
+data/cache/*.parquet
+
+# Keep generated research artifacts local by default; users can force-add selected reports.
+logs/*
+results/*.csv
+results/*.json
+reports/*.md
