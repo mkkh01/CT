@@ -64,3 +64,11 @@ python run_research.py --config configs/config.yaml --mode data
 ## مبدأ اختيار الاستراتيجية
 
 لا يتم اختيار أعلى Win Rate منفردة. يستخدم الترتيب Expectancy موجبة خارج العينة، Profit Factor، Max Drawdown، عدد الصفقات، الثبات بين العملات والنوافذ، وحساسية التكاليف. إذا لم تُظهر النتائج ثباتًا حقيقيًا، يجب أن يقول التقرير صراحةً: `NO ROBUST EDGE FOUND`.
+
+## References
+
+[1]: https://developers.binance.com/en/docs/binance-spot-api-docs/rest-api/market-data-endpoints "Binance Spot API market data endpoints"
+[2]: https://developers.binance.com/en/docs/products/spot/faqs/market_data_only "Binance market-data-only URLs"
+[3]: https://data.binance.vision/ "Binance Data Collection"
+
+تعتمد طبقة التنزيل على بيانات Klines العامة من Binance Spot كما هو موثق في [1]، وتستخدم نطاق بيانات السوق العامة المشار إليه في [2]. وتبقى التغطية التاريخية وقائمة الرموز قابلة للتغير، لذلك يسجل النظام metadata لكل تشغيل ولا يخفي قيود Survivorship Bias.
