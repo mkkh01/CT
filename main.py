@@ -3,32 +3,29 @@ from fastapi import FastAPI
 from core.config import settings
 from services.supabase_client import init_db, close_db, supabase
 from services.redis_client import redis_client
-from core.telegram_bot import TelegramBot  # ✅ الاسم الصحيح!
+from core.telegram_bot import TelegramBot
 
-# ✅ إنشاء كائن البوت
 bot = TelegramBot()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ✅ بدء تشغيل قاعدة البيانات والريدس
     await init_db()
     await redis_client.connect()
     
-    # ✅ بدء بوت التليجرام
     try:
         await bot.start()
         print("🤖 Telegram Bot ONLINE ✅")
     except Exception as e:
         print(f"⚠️ مشكلة في تشغيل البوت: {type(e).__name__}: {e}")
     
-    yield  # ← التطبيق يعمل هنا
+    yield
 
-    # ✅ إيقاف آمن عند الإغلاق
     try:
         await bot.stop()
         print("✅ تم إيقاف البوت بأمان")
     except Exception as e:
         print(f"⚠️ مشكلة في إيقاف البوت: {type(e).__name__}: {e}")
+    
     await close_db()
     await redis_client.close()
     print("✅ تم إيقاف النظام بأمان")
