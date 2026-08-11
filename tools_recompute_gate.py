@@ -24,6 +24,7 @@ test = oos[oos["split"] == "test"].sort_values("window")
 if not test.empty:
     metrics["trades"] = int(test.iloc[-1]["trades"])
     metrics["profit_factor"] = float(test.iloc[-1]["profit_factor"])
+    metrics["win_rate"] = float(test.iloc[-1]["win_rate"])
     metrics["expectancy"] = float(test.iloc[-1]["expectancy"])
     metrics["max_drawdown"] = float(test.iloc[-1]["max_drawdown"])
 stress_row = stress.loc[stress["stress"] == "stress"].iloc[0].to_dict()

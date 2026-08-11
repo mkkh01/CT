@@ -59,4 +59,5 @@ def _config_from_dict(row: pd.Series) -> StrategyConfig:
         take_profit_r=float(row["take_profit_r"]), swing_buffer_atr=float(row.get("swing_buffer_atr", 0.2)),
         stop_method=str(row.get("stop_method", "atr")),
         max_bars_in_trade=int(row.get("max_bars_in_trade", 96)),
+        breakeven_trigger_r=float(row.get("breakeven_trigger_r", 0.0)),
     )

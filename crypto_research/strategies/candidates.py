@@ -15,6 +15,7 @@ class StrategyConfig:
     swing_buffer_atr: float = 0.20
     stop_method: str = "atr"
     max_bars_in_trade: int = 96
+    breakeven_trigger_r: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -62,6 +63,10 @@ def strategy_entry(name: str, row: pd.Series, score_threshold: int) -> bool:
         "mtf_trend_momentum": trend and adx >= 15 and momentum and volume,
         "bollinger_reversion": bool(row.get("bb_reversion_long", False)) and close > float(row.get("ema_slow", close)) * 0.95 and rsi <= 52,
         "ema_cross_momentum": trend and bool(row.get("ema_cross_up", False)) and momentum and volume,
+        "mean_reversion_reclaim": bool(row.get("bb_reversion_long", False)) and rsi <= 48 and close > float(row.get("open", close)),
+        "trend_retest_precision": trend and pullback and bool(row.get("bullish_candle", False)) and 48 <= rsi <= 65 and float(row.get("relative_volume", 0.0) or 0.0) >= 0.8,
+        "range_reversion": bool(row.get("bb_reversion_long", False)) and rsi <= 42 and float(row.get("atr_pct", 0.0) or 0.0) <= 0.05,
+        "high_confidence_reclaim": bool(row.get("bb_reversion_long", False)) and rsi <= 40 and bool(row.get("bullish_candle", False)) and close > float(row.get("ema_fast", close)) and float(row.get("relative_volume", 0.0) or 0.0) >= 1.1,
     }
     return rules.get(name, False)
 
@@ -73,16 +78,20 @@ def candidate_configs(cfg: dict) -> list[StrategyConfig]:
         "trend_pullback", "trend_breakout", "momentum_volume",
         "liquidity_sweep_reversal", "structure_pullback", "mtf_trend_momentum",
     ]
+    high_win_names = {"bollinger_reversion", "mean_reversion_reclaim", "range_reversion", "trend_retest_precision", "high_confidence_reclaim"}
     for name in names:
-        for threshold in bt.get("score_thresholds", [70]):
+        thresholds = bt.get("score_thresholds_high_win", [35, 45, 55, 65]) if name in high_win_names else bt.get("score_thresholds", [70])
+        target_rs = [0.25, 0.40, 0.50, 0.75, 1.0, 1.5, 2.0] if name in high_win_names else [1.0, 1.5, 2.0, 2.5]
+        for threshold in thresholds:
             for stop_mult in [1.5, 2.0, 2.5]:
-                for tp_r in [1.0, 1.5, 2.0, 2.5]:
+                for tp_r in target_rs:
                     for stop_method in ["atr", "swing"]:
                         configs.append(StrategyConfig(
                             name=name, score_threshold=int(threshold),
                             atr_stop_multiplier=float(stop_mult), take_profit_r=float(tp_r),
                             stop_method=stop_method,
                             max_bars_in_trade=int(bt.get("max_bars_in_trade", 96)),
+                            breakeven_trigger_r=float(0.25 if name in high_win_names else 0.0),
                         ))
     return configs
 

@@ -83,6 +83,7 @@ backtest:
   allow_fractional_quantity: true
   min_notional: 10.0
   score_thresholds: [55, 60, 65, 70, 75, 80, 85]
+  score_thresholds_high_win: [35, 45, 55, 65]
   take_profit_r_multiples: [1.0, 1.5, 2.0, 2.5, 3.0]
   atr_stop_multipliers: [1.0, 1.5, 2.0, 2.5, 3.0]
 
@@ -103,9 +104,10 @@ portfolio:
 
 research:
   download: true
-  enabled_strategies: [trend_pullback, trend_breakout, momentum_volume, liquidity_sweep_reversal, structure_pullback, mtf_trend_momentum, bollinger_reversion, ema_cross_momentum]
+  enabled_strategies: [trend_pullback, trend_breakout, momentum_volume, liquidity_sweep_reversal, structure_pullback, mtf_trend_momentum, bollinger_reversion, ema_cross_momentum, mean_reversion_reclaim, trend_retest_precision, range_reversion, high_confidence_reclaim]
   min_oos_trades: 30
   min_oos_profit_factor: 1.10
+  min_oos_win_rate: 0.75
   min_oos_expectancy: 0.0
   max_oos_drawdown: -0.30
   require_paper_gate: true

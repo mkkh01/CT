@@ -27,6 +27,8 @@ def evaluate_gate(metrics: dict[str, Any], cfg: dict[str, Any], stress: dict[str
         reasons.append("OOS trade count below minimum")
     if float(metrics.get("profit_factor", 0.0)) < float(research.get("min_oos_profit_factor", 1.10)):
         reasons.append("OOS profit factor below minimum")
+    if float(metrics.get("win_rate", 0.0)) < float(research.get("min_oos_win_rate", 0.75)):
+        reasons.append("OOS win rate below configured target")
     if float(metrics.get("expectancy", 0.0)) <= float(research.get("min_oos_expectancy", 0.0)):
         reasons.append("OOS expectancy is not positive")
     if float(metrics.get("max_drawdown", 0.0)) < float(research.get("max_oos_drawdown", -0.30)):

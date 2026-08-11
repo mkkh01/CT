@@ -45,6 +45,7 @@ def run_backtest(
         exited_this_bar = False
 
         if position is not None:
+            _update_breakeven(position, bar)
             exit_raw, reason = _exit_decision(position, bar, i, same_bar_policy)
             if exit_raw is not None:
                 exit_exec = costs.sell_price(exit_raw)
@@ -143,8 +144,22 @@ def _open_position(df: pd.DataFrame, i: int, signal_bar: pd.Series, strategy: St
         "target_raw": target_raw, "quantity": quantity, "entry_fee": entry_fee,
         "risk_amount": max(risk_per_unit * quantity, 1e-12), "equity_before": equity,
         "max_bars_in_trade": strategy.max_bars_in_trade,
+        "breakeven_trigger_r": strategy.breakeven_trigger_r,
+        "initial_stop_raw": stop_raw,
         "entry_score": float(signal_bar.get("score", np.nan)),
     }
+
+
+def _update_breakeven(position: dict[str, Any], bar: pd.Series) -> None:
+    trigger_r = float(position.get("breakeven_trigger_r", 0.0))
+    if trigger_r <= 0.0 or position.get("breakeven_armed", False):
+        return
+    initial_r = float(position["entry_exec"] - position["initial_stop_raw"])
+    trigger_price = float(position["entry_raw"] + trigger_r * initial_r)
+    if float(bar["high"]) >= trigger_price:
+        # Raw stop at the raw entry avoids assuming an unknown future fill price.
+        position["stop_raw"] = max(float(position["stop_raw"]), float(position["entry_raw"]))
+        position["breakeven_armed"] = True
 
 
 def _exit_decision(position: dict[str, Any], bar: pd.Series, i: int, policy: str) -> tuple[float | None, str | None]:
