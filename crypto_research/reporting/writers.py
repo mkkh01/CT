@@ -61,6 +61,8 @@ def write_final_report(
             lines += ["", "**OOS selection rule:** parameters were frozen before this final test and were not modified after viewing it."]
         else:
             lines += ["Final OOS result unavailable."]
+        gate = metadata.get("paper_gate", {})
+        lines += ["", "## Readiness Gate", "", "| Check | Result |", "|---|---|", f"| Status | {gate.get('status', 'UNKNOWN')} |", f"| Paper Trading allowed | {gate.get('paper_trading_allowed', False)} |", f"| Live Trading allowed | {gate.get('live_trading_allowed', False)} |", f"| Reasons | {'; '.join(gate.get('reasons', []))} |"]
 
     lines += ["", "## Coin Performance", ""]
     lines.append(_markdown_table(coin_table))

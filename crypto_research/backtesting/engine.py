@@ -122,7 +122,10 @@ def _open_position(df: pd.DataFrame, i: int, signal_bar: pd.Series, strategy: St
     swing_low = float(signal_bar.get("swing_low", np.nan))
     if not np.isfinite(atr) or atr <= 0:
         return None
-    stop_raw = swing_low - strategy.swing_buffer_atr * atr if np.isfinite(swing_low) else raw_entry - strategy.atr_stop_multiplier * atr
+    if strategy.stop_method == "swing" and np.isfinite(swing_low):
+        stop_raw = swing_low - strategy.swing_buffer_atr * atr
+    else:
+        stop_raw = raw_entry - strategy.atr_stop_multiplier * atr
     if stop_raw >= raw_entry:
         stop_raw = raw_entry - strategy.atr_stop_multiplier * atr
     risk_per_unit = entry_exec - stop_raw

@@ -72,3 +72,31 @@ python run_research.py --config configs/config.yaml --mode data
 [3]: https://data.binance.vision/ "Binance Data Collection"
 
 تعتمد طبقة التنزيل على بيانات Klines العامة من Binance Spot كما هو موثق في [1]، وتستخدم نطاق بيانات السوق العامة المشار إليه في [2]. وتبقى التغطية التاريخية وقائمة الرموز قابلة للتغير، لذلك يسجل النظام metadata لكل تشغيل ولا يخفي قيود Survivorship Bias.
+
+## Multi-year research and user-added symbols
+
+يبدأ الإعداد الافتراضي من `2019-01-01`، ويُعد تشغيل `full` تدريبًا بحثيًا زمنيًا بالمعنى العملي: تُختبر شروط الدخول والخروج على سنوات تاريخية، ثم تُختار المعلمات من Train وValidation، وتُجمّد قبل Final OOS. هذا ليس نموذج تعلم آلي ولا ينبغي تسميته ضمانًا للربح.
+
+يمكن اختبار عملة يحددها المستخدم بعد التحقق من أنها Spot متداولة مقابل USDT:
+
+```bash
+PYTHONPATH=. python3 run_research.py --mode full --add-symbol PEPEUSDT
+```
+
+ويمكن اكتشاف أكبر رموز Spot الحالية بحسب حجم التداول العام، مع تسجيل Universe المكتشف وتحذير Survivorship Bias:
+
+```bash
+PYTHONPATH=. python3 run_research.py --mode data --discover-universe --max-symbols 30
+```
+
+لاختبار فاصل آخر:
+
+```bash
+PYTHONPATH=. python3 run_research.py --mode full --interval 4h --symbols BTCUSDT,ETHUSDT
+```
+
+أُضيفت استراتيجيات `bollinger_reversion` و`ema_cross_momentum` إلى مساحة البحث، كما يختبر النظام `ATR` و`Swing` Stop، ويضمن Random Search الطبقي تمثيل كل استراتيجية مفعّلة بدل ترك التوزيع للصدفة.
+
+## Paper Trading gate
+
+ينتج كل تشغيل `results/paper_gate.json`. لا يسمح المراقب الورقي بالعمل إلا إذا اجتازت نتيجة OOS عدد الصفقات الأدنى، وProfit Factor، وExpectancy، وMax Drawdown، ونتيجة Stress، وثبات Walk-Forward. حتى عند اجتيازها، يبقى `live_trading_allowed=false`؛ ملف `paper_trader.py` يستقبل بيانات السوق العامة ويولد إشارات ورقية فقط ولا يحتوي على استدعاءات تنفيذ أوامر.

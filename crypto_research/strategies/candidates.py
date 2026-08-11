@@ -13,6 +13,7 @@ class StrategyConfig:
     atr_stop_multiplier: float = 2.0
     take_profit_r: float = 2.0
     swing_buffer_atr: float = 0.20
+    stop_method: str = "atr"
     max_bars_in_trade: int = 96
 
     def to_dict(self) -> dict:
@@ -59,6 +60,8 @@ def strategy_entry(name: str, row: pd.Series, score_threshold: int) -> bool:
         "liquidity_sweep_reversal": trend and previous_low > 0 and low < previous_low and close > previous_low and rsi >= 45,
         "structure_pullback": trend and structure and pullback and 48 <= rsi <= 72,
         "mtf_trend_momentum": trend and adx >= 15 and momentum and volume,
+        "bollinger_reversion": bool(row.get("bb_reversion_long", False)) and close > float(row.get("ema_slow", close)) * 0.95 and rsi <= 52,
+        "ema_cross_momentum": trend and bool(row.get("ema_cross_up", False)) and momentum and volume,
     }
     return rules.get(name, False)
 
@@ -66,18 +69,21 @@ def strategy_entry(name: str, row: pd.Series, score_threshold: int) -> bool:
 def candidate_configs(cfg: dict) -> list[StrategyConfig]:
     bt = cfg["backtest"]
     configs: list[StrategyConfig] = []
-    for name in [
+    names = cfg.get("research", {}).get("enabled_strategies") or [
         "trend_pullback", "trend_breakout", "momentum_volume",
         "liquidity_sweep_reversal", "structure_pullback", "mtf_trend_momentum",
-    ]:
+    ]
+    for name in names:
         for threshold in bt.get("score_thresholds", [70]):
             for stop_mult in [1.5, 2.0, 2.5]:
-                for tp_r in [1.5, 2.0, 2.5]:
-                    configs.append(StrategyConfig(
-                        name=name, score_threshold=int(threshold),
-                        atr_stop_multiplier=float(stop_mult), take_profit_r=float(tp_r),
-                        max_bars_in_trade=int(bt.get("max_bars_in_trade", 96)),
-                    ))
+                for tp_r in [1.0, 1.5, 2.0, 2.5]:
+                    for stop_method in ["atr", "swing"]:
+                        configs.append(StrategyConfig(
+                            name=name, score_threshold=int(threshold),
+                            atr_stop_multiplier=float(stop_mult), take_profit_r=float(tp_r),
+                            stop_method=stop_method,
+                            max_bars_in_trade=int(bt.get("max_bars_in_trade", 96)),
+                        ))
     return configs
 
 

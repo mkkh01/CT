@@ -40,6 +40,16 @@ def add_indicators(frame: pd.DataFrame, params: dict | None = None) -> pd.DataFr
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     df["adx"] = dx.ewm(alpha=1 / int(p["adx_period"]), adjust=False).mean()
 
+    bb_period = int(p.get("bb_period", 20))
+    bb_std = float(p.get("bb_std", 2.0))
+    df["bb_mid"] = close.rolling(bb_period, min_periods=bb_period).mean()
+    df["bb_sigma"] = close.rolling(bb_period, min_periods=bb_period).std(ddof=0)
+    df["bb_upper"] = df["bb_mid"] + bb_std * df["bb_sigma"]
+    df["bb_lower"] = df["bb_mid"] - bb_std * df["bb_sigma"]
+    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"].replace(0, np.nan)
+    df["bb_reversion_long"] = (low < df["bb_lower"]) & (close > df["bb_lower"])
+    df["ema_cross_up"] = (df["ema_fast"] > df["ema_slow"]) & (df["ema_fast"].shift(1) <= df["ema_slow"].shift(1))
+
     df["volume_ma"] = volume.rolling(int(p["volume_period"]), min_periods=int(p["volume_period"])).mean()
     df["relative_volume"] = volume / df["volume_ma"].replace(0, np.nan)
     df["roc"] = close.pct_change(int(p["breakout_period"]))
@@ -62,5 +72,5 @@ def add_indicators(frame: pd.DataFrame, params: dict | None = None) -> pd.DataFr
     df["bullish_candle"] = (close > df["open"]) & ((close - df["open"]) > (high - low) * 0.35)
     df["momentum_confirmed"] = (df["rsi"] >= 52) & (df["rsi"] <= 78) & (df["roc"] > 0)
     df["volume_confirmed"] = df["relative_volume"] >= float(p.get("relative_volume_threshold", 1.0))
-    df["valid_features"] = df[["ema_fast", "ema_slow", "atr", "previous_high", "previous_low", "volume_ma"]].notna().all(axis=1)
+    df["valid_features"] = df[["ema_fast", "ema_slow", "atr", "previous_high", "previous_low", "volume_ma", "bb_mid", "bb_upper", "bb_lower"]].notna().all(axis=1)
     return df

@@ -13,6 +13,7 @@ exchange:
   request_pause_seconds: 0.15
 
 data:
+  # The list is a seed universe; --discover-universe can replace it with live Spot symbols.
   symbols:
     - BTCUSDT
     - ETHUSDT
@@ -45,11 +46,15 @@ data:
     - MKRUSDT
     - RUNEUSDT
   interval: 1h
-  start: "2023-01-01"
+  intervals_to_test: [1h, 4h]
+  start: "2019-01-01"
   end: null
   cache_dir: data/cache
   max_symbols: 30
+  quote_asset: USDT
+  discover_universe: false
   reject_non_spot: true
+  exclude_base_assets: [USDT, USDC, BUSD, DAI, FDUSD, TUSD, USTC]
 
 costs:
   low:
@@ -97,6 +102,12 @@ portfolio:
 
 research:
   download: true
+  enabled_strategies: [trend_pullback, trend_breakout, momentum_volume, liquidity_sweep_reversal, structure_pullback, mtf_trend_momentum, bollinger_reversion, ema_cross_momentum]
+  min_oos_trades: 30
+  min_oos_profit_factor: 1.10
+  min_oos_expectancy: 0.0
+  max_oos_drawdown: -0.30
+  require_paper_gate: true
   run_candidates: true
   run_optimization: true
   run_walk_forward: true

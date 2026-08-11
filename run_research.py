@@ -11,8 +11,10 @@ import pandas as pd
 from crypto_research.backtesting.costs import CostModel
 from crypto_research.backtesting.portfolio import run_portfolio_backtest
 from crypto_research.data.binance import BinanceClient, download_universe, load_or_download
+from crypto_research.data.universe import add_user_symbol, discover_spot_symbols, save_universe
 from crypto_research.data.validate import validate_universe
 from crypto_research.reporting.writers import save_frame, save_json, write_final_report
+from crypto_research.paper_gate import evaluate_gate, save_gate
 from crypto_research.strategies.candidates import StrategyConfig, add_scores
 from crypto_research.strategies.indicators import add_indicators
 from crypto_research.utils.config import ensure_dirs, load_config, set_seed
@@ -28,6 +30,24 @@ LOG = logging.getLogger("research")
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    if args.interval:
+        cfg["data"]["interval"] = args.interval
+    if args.symbols:
+        cfg["data"]["symbols"] = [s.upper().replace("/", "") for s in args.symbols.split(",") if s.strip()]
+    if args.add_symbol:
+        seed = pd.DataFrame({"symbol": cfg["data"]["symbols"]})
+        for symbol in args.add_symbol:
+            seed = add_user_symbol(symbol, seed, cfg["exchange"]["base_url"], cfg["data"].get("quote_asset", "USDT"))
+        cfg["data"]["symbols"] = seed["symbol"].tolist()
+    if args.add_symbol or args.symbols:
+        cfg["data"]["max_symbols"] = max(int(cfg["data"].get("max_symbols", 30)), len(cfg["data"]["symbols"]))
+    if args.discover_universe or cfg["data"].get("discover_universe", False):
+        discovered = discover_spot_symbols(
+            cfg["exchange"]["base_url"], cfg["data"].get("quote_asset", "USDT"),
+            int(args.max_symbols or cfg["data"].get("max_symbols", 30)), cfg["data"].get("exclude_base_assets", []),
+        )
+        save_universe(discovered, Path(cfg["research"]["output_dir"]) / "discovered_universe.csv")
+        cfg["data"]["symbols"] = discovered["symbol"].tolist()
     ensure_dirs(cfg)
     set_seed(int(cfg["project"].get("seed", 42)))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -67,7 +87,9 @@ def main() -> None:
         windows = windows[-1:]
         max_trials = min(args.max_trials or 6, 6)
     else:
-        max_trials = args.max_trials or 48
+        max_trials = args.max_trials or int(cfg["research"].get("max_trials", 48))
+    if args.max_windows:
+        windows = windows[-int(args.max_windows):]
 
     def split_universe(start: pd.Timestamp, end: pd.Timestamp) -> dict[str, pd.DataFrame]:
         return {sym: slice_window(frame, start, end) for sym, frame in universe.items()}
@@ -124,6 +146,9 @@ def main() -> None:
     frozen_strategy = StrategyConfig(**final_oos["strategy"])
     stress = stress_matrix(final_oos_universe, frozen_strategy, costs, float(cfg["backtest"]["initial_capital"]), float(cfg["backtest"]["risk_per_trade"]))
     save_frame(stress, Path(cfg["research"]["output_dir"]) / "stress_tests.csv")
+    normal_stress = stress.loc[stress["stress"] == "normal"].iloc[0].to_dict() if not stress.empty and (stress["stress"] == "normal").any() else None
+    gate = evaluate_gate(final_oos["metrics"], cfg, normal_stress, walk_forward)
+    save_gate(gate, Path(cfg["research"]["output_dir"]) / "paper_gate.json")
     regime_trades = []
     for symbol, frame in final_oos_universe.items():
         symbol_trades = final_oos["trades"].loc[final_oos["trades"]["symbol"] == symbol].copy()
@@ -147,6 +172,7 @@ def main() -> None:
         "strategy_version": cfg["project"].get("version", "1.0.0"),
         "symbols": list(universe), "interval": cfg["data"]["interval"], "windows": len(windows),
         "survivorship_bias_note": "Current symbol list is not a delisting-complete historical universe.",
+        "paper_gate": gate.to_dict(),
     }
     save_json(Path(cfg["research"]["output_dir"]) / "metadata.json", metadata)
     write_final_report(Path(cfg["research"]["report_dir"]) / "final_report.md", metadata, final_best, final_oos, coin_table, walk_forward, stress, monte_carlo, regime_table, portfolio_table)
@@ -177,6 +203,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-download", action="store_true")
     parser.add_argument("--max-symbols", type=int, default=None)
     parser.add_argument("--max-trials", type=int, default=None)
+    parser.add_argument("--max-windows", type=int, default=None)
+    parser.add_argument("--interval", default=None, help="OHLCV interval, e.g. 5m, 15m, 1h, 4h")
+    parser.add_argument("--symbols", default=None, help="Comma-separated Spot symbols, e.g. BTCUSDT,ETHUSDT")
+    parser.add_argument("--add-symbol", action="append", default=[], help="Add and validate a user-selected Spot symbol")
+    parser.add_argument("--discover-universe", action="store_true", help="Discover active USDT Spot symbols from Binance")
     return parser.parse_args()
 
 
