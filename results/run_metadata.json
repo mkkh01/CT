@@ -1,0 +1,25 @@
+{
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "start": "2022-01-01T00:00:00+00:00",
+  "end_exclusive": "2026-08-01T00:00:00+00:00",
+  "source": "https://data-api.binance.vision/api/v3/klines",
+  "interval": "1h",
+  "base_costs": {
+    "fee_bps": 10.0,
+    "slippage_bps": 2.0,
+    "half_spread_bps": 2.0
+  },
+  "stress_costs": {
+    "fee_bps": 15.0,
+    "slippage_bps": 5.0,
+    "half_spread_bps": 4.0
+  },
+  "risk_per_trade": 0.01,
+  "initial_capital_per_symbol": 10000.0,
+  "same_bar_policy": "conservative_stop_first",
+  "entry_policy": "next_bar_open_after_signal_close"
+}

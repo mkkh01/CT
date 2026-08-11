@@ -1,114 +1,96 @@
-# Crypto Spot Long-Only Research Lab
+# نظام Spot Long-Only: Sweep + HTF POI + IFVG + CISD
 
-مختبر بحثي قابل لإعادة التشغيل لاكتشاف ما إذا كان هناك **أثر تاريخي متين** في استراتيجيات تداول العملات المشفرة Spot Long-Only. أُعيد بناء المستودع مع أولوية لمحرك باكتيست event-driven يمنع استخدام معلومات مستقبلية، ويحتسب الرسوم والانزلاق وفارق السعر التقريبي، ويفرض تقسيمًا زمنيًا وOut-of-Sample lock.
+> **تنبيه مالي:** أنا لست مستشاراً مالياً مرخّصاً. هذا المستودع أداة بحث واختبار تاريخي، وليس توصية استثمارية أو ضماناً للربح. قد تخسر كامل رأس المال في أسواق الأصول المشفرة.
 
-> هذا المشروع للبحث والاختبار التاريخي وPaper Trading فقط. لا يحتوي على مفاتيح تداول ولا ينفذ أوامر حقيقية.
+هذا مشروع جديد من الصفر يحول الشروط الأربعة الظاهرة في الصورة إلى **قواعد كمية قابلة للتكرار**، ثم يختبرها على بيانات شموع تاريخية حقيقية من Binance Spot. لا يحتوي المشروع على مفاتيح API خاصة، ولا يستدعي أي أمر شراء أو بيع، ولا يستخدم الرافعة أو البيع على المكشوف.
 
-## التشغيل السريع
+| الشرط | الصياغة البرمجية |
+|---|---|
+| Sweep of Liquidity | اختراق قاع أقل 12 شمعة ساعة ثم الإغلاق فوقه |
+| HTF POI | منطقة طلب 4 ساعات من قاع محوري مؤكد، ولا تصبح مرئية قبل تأكيدها زمنياً |
+| IFVG | استرداد صاعد لفجوة قيمة عادلة هابطة ثلاثية الشموع |
+| CISD | شمعة اندفاع صاعدة تغلق فوق قمة شمعة هابطة حديثة وبمدى لا يقل عن ATR(14) |
+
+تجد التعريفات الكاملة ومدة صلاحية كل شرط وحدودها في [`docs/strategy_spec.md`](docs/strategy_spec.md).
+
+## خصائص السلامة المنهجية
+
+يدخل المحرك فقط في **افتتاح الشمعة التالية** بعد اكتمال الإشارة، ولا يستعمل قاع 4h المحوري قبل شموع تأكيده. يفرض رسوماً وانزلاقاً وفارق سعر غير مواتٍ عند الدخول والخروج، ويطبق سياسة تحفظية إذا لامس السعر وقف الخسارة والهدف داخل الشمعة ذاتها: **يُحسب وقف الخسارة أولاً**. يحد حجم المركز بالنقد المتاح، وبالتالي يبقى الاختبار Spot بلا اقتراض.
+
+| عنصر | افتراض الأساس |
+|---|---:|
+| نطاق الاختبار | `BTCUSDT`, `ETHUSDT`, `SOLUSDT` |
+| الإطار التنفيذي | ساعة واحدة |
+| رأس المال الافتراضي لكل رمز | 10,000 USDT |
+| المخاطرة المستهدفة للصفقة | 1% من الرصيد |
+| وقف الخسارة | أسفل Sweep بمقدار `0.25 × ATR(14)` |
+| هدف الربح | `2.0R` |
+| الحد الزمني | 48 شمعة ساعة |
+| رسوم لكل جهة | 10 bps |
+| انزلاق لكل جهة | 2 bps |
+| نصف فرق السعر لكل جهة | 2 bps |
+
+## التشغيل
+
+يتطلب Python 3.11 أو أحدث. أنشئ بيئة افتراضية ثم ثبت الاعتماديات:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python run_research.py --config configs/config.yaml --mode full
 ```
 
-للتجربة السريعة بعد تنزيل البيانات أو مع ملفات cache موجودة:
+لتنزيل البيانات العامة وتشغيل الدراسة الافتراضية:
 
 ```bash
-python run_research.py --config configs/config.yaml --mode smoke --no-download
+python3 run_backtest.py \
+  --symbols BTCUSDT,ETHUSDT,SOLUSDT \
+  --start 2022-01-01 \
+  --end 2026-08-01 \
+  --initial-capital 10000 \
+  --risk-per-trade 0.01
 ```
 
-لتنزيل البيانات والتحقق منها فقط:
+لتشغيل الاختبارات الوحدية:
 
 ```bash
-python run_research.py --config configs/config.yaml --mode data
+pytest -q
 ```
 
-## ما الذي ينفذه النظام؟
+يخزن التنزيل في `data/*.csv.gz`. إذا كان التخزين المؤقت موجوداً، يعيد البرنامج استخدامه؛ ويمكن فرض تنزيل جديد عبر `--force-download` أو منع التحميل عبر `--no-download`.
 
-يستخدم موصل Binance Spot العام لتنزيل شموع OHLCV الحقيقية ويخزنها بصيغة Parquet داخل `data/cache`. تُفحص الطوابع الزمنية، الفجوات، التكرارات، علاقات OHLC، القيم السالبة، والبيانات غير المنطقية قبل السماح باستخدامها.
+## تقسيم زمني وتقييم خارج العينة
 
-يُنشئ محرك الباكتيست الإشارات عند إغلاق الشمعة، ثم ينفذ الدخول على الشمعة التالية فقط. يراقب SL وTP شمعةً بشمعة، ويستخدم سياسة محافظة عندما يلمس السعر SL وTP داخل الشمعة نفسها. كل صفقة تسجل السعر الخام، أثر الانزلاق، الرسوم، المخاطرة، الحجم، سبب الخروج، والنتيجة.
+لا توجد عملية بحث عن معلمات لتضخيم النتائج. تُثبّت المعلمات في مواصفة الاستراتيجية وتُعرض النتائج عبر ثلاث شرائح زمنية متتابعة:
 
-يتضمن النظام مرشحي استراتيجيات مستقلة، وتحسينًا محدودًا، وتقسيم Train/Validation/Test، وRolling Walk-Forward، وFinal OOS lock، واختبارات تكاليف وانزلاق وضوضاء، وMonte Carlo trade resampling، وتقارير CSV/JSON/Markdown.
+| الشريحة | الفترة | الاستخدام |
+|---|---|---|
+| Development | 2022-01-01 إلى 2024-06-30 | فحص سلوك القواعد الأولي |
+| Validation | 2024-07-01 إلى 2025-03-31 | تحقق منفصل قبل الاختبار النهائي |
+| OOS | 2025-04-01 إلى 2026-07-31 | تقييم خارج العينة للمعلمات المجمدة |
 
-## هيكل المشروع
+لا يجب اعتبار تفوق بسيط على Buy & Hold دليلاً كافياً، ولا سيما عند وجود عائد مطلق سلبي أو عامل ربح دون 1.00.
 
-| المسار | الوظيفة |
+## المخرجات
+
+| الملف | المحتوى |
 |---|---|
-| `crypto_research/data` | تنزيل OHLCV والتحقق والتخزين المؤقت |
-| `crypto_research/strategies` | المؤشرات ومرشحو الإشارات |
-| `crypto_research/backtesting` | محرك event-driven والمقاييس والمحفظة |
-| `crypto_research/validation` | التقسيم الزمني وWalk-Forward والمتانة |
-| `crypto_research/reporting` | النتائج والتقارير |
-| `configs/config.yaml` | إعدادات قابلة لإعادة الإنتاج |
-| `run_research.py` | أمر التشغيل الواحد |
-| `tests` | اختبارات وحدات تمنع الانزلاق المستقبلي والأخطاء الأساسية |
+| `results/summary.csv` | المقاييس لكل رمز وشريحة وسيناريو تكلفة |
+| `results/backtest_report.md` | تقرير قابل للقراءة بالنتائج والقيود |
+| `results/run_metadata.json` | تاريخ التشغيل، المصدر، والتكاليف والسياسات |
+| `results/trades_*.csv` | جميع الصفقات التفصيلية |
+| `results/signals_*.csv` | الإشارات، Sweep، POI، وFVG المستخدمين |
+| `results/equity_*.csv` | منحنى رأس المال بالساعة |
 
-## مصادر البيانات والقيود
+تشمل النتائج العائد الصافي، Buy & Hold، التفوق أو التخلف عنه، CAGR، الهبوط الأقصى، Sharpe السنوي من عوائد الساعة، عدد الصفقات، نسبة الربح، Factor Profit، والتوقعية لكل صفقة.
 
-البيانات من واجهة Binance Spot العامة، وقد تختلف التغطية التاريخية حسب الرمز والفاصل الزمني. قائمة العملات الحالية ليست Universe تاريخيًا كاملًا، لذلك يضع التقرير تنبيهًا عن Survivorship Bias. لا تُستنتج الجاهزية للتداول الحقيقي من نتائج هذا المشروع، ولا تُعتبر النتائج نصيحة مالية.
+## ملاحظة حول النتيجة الحالية
 
-## النتائج
+التشغيل المرفق يختبر الفترة من 2022-01-01 حتى 2026-08-01 على بيانات Binance Spot العامة. النتيجة ليست دعوة للتداول؛ الحكم ينبغي أن يستند إلى مخرجات `OOS` وسيناريو الضغط، مع الاعتراف بأن تعريفات POI/IFVG/CISD هنا محددة برمجياً وقد تختلف عن تفسير أي متداول بصرياً.
 
-تُكتب النتائج في:
+## المراجع
 
-- `results/experiments.csv`
-- `results/trades_*.csv`
-- `results/walk_forward.csv`
-- `results/stress_tests.csv`
-- `results/monte_carlo.json`
-- `reports/final_report.md`
+[1]: https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints "Binance Spot API: market-data endpoints"
+[2]: https://data.binance.vision/ "Binance public market-data archive"
 
-## مبدأ اختيار الاستراتيجية
-
-لا يتم اختيار أعلى Win Rate منفردة. يستخدم الترتيب Expectancy موجبة خارج العينة، Profit Factor، Max Drawdown، عدد الصفقات، الثبات بين العملات والنوافذ، وحساسية التكاليف. إذا لم تُظهر النتائج ثباتًا حقيقيًا، يجب أن يقول التقرير صراحةً: `NO ROBUST EDGE FOUND`.
-
-## References
-
-[1]: https://developers.binance.com/en/docs/binance-spot-api-docs/rest-api/market-data-endpoints "Binance Spot API market data endpoints"
-[2]: https://developers.binance.com/en/docs/products/spot/faqs/market_data_only "Binance market-data-only URLs"
-[3]: https://data.binance.vision/ "Binance Data Collection"
-
-تعتمد طبقة التنزيل على بيانات Klines العامة من Binance Spot كما هو موثق في [1]، وتستخدم نطاق بيانات السوق العامة المشار إليه في [2]. وتبقى التغطية التاريخية وقائمة الرموز قابلة للتغير، لذلك يسجل النظام metadata لكل تشغيل ولا يخفي قيود Survivorship Bias.
-
-## Multi-year research and user-added symbols
-
-يبدأ الإعداد الافتراضي من `2019-01-01`، ويُعد تشغيل `full` تدريبًا بحثيًا زمنيًا بالمعنى العملي: تُختبر شروط الدخول والخروج على سنوات تاريخية، ثم تُختار المعلمات من Train وValidation، وتُجمّد قبل Final OOS. هذا ليس نموذج تعلم آلي ولا ينبغي تسميته ضمانًا للربح.
-
-يمكن اختبار عملة يحددها المستخدم بعد التحقق من أنها Spot متداولة مقابل USDT:
-
-```bash
-PYTHONPATH=. python3 run_research.py --mode full --add-symbol PEPEUSDT
-```
-
-ويمكن اكتشاف أكبر رموز Spot الحالية بحسب حجم التداول العام، مع تسجيل Universe المكتشف وتحذير Survivorship Bias:
-
-```bash
-PYTHONPATH=. python3 run_research.py --mode data --discover-universe --max-symbols 30
-```
-
-لاختبار فاصل آخر:
-
-```bash
-PYTHONPATH=. python3 run_research.py --mode full --interval 4h --symbols BTCUSDT,ETHUSDT
-```
-
-أُضيفت استراتيجيات `bollinger_reversion` و`ema_cross_momentum` إلى مساحة البحث، كما يختبر النظام `ATR` و`Swing` Stop، ويضمن Random Search الطبقي تمثيل كل استراتيجية مفعّلة بدل ترك التوزيع للصدفة.
-
-## Paper Trading gate
-
-ينتج كل تشغيل `results/paper_gate.json`. لا يسمح المراقب الورقي بالعمل إلا إذا اجتازت نتيجة OOS عدد الصفقات الأدنى، وProfit Factor، وExpectancy، وMax Drawdown، ونتيجة Stress، وثبات Walk-Forward. حتى عند اجتيازها، يبقى `live_trading_allowed=false`؛ ملف `paper_trader.py` يستقبل بيانات السوق العامة ويولد إشارات ورقية فقط ولا يحتوي على استدعاءات تنفيذ أوامر.
-
-## 50-symbol systematic study
-
-The reproducible 50-symbol run uses real Binance Spot data, 4-hour candles, 24 stratified candidate trials, and three OOS windows. Data is loaded from Parquet cache after discovery, and selection can be frozen once before testing across the windows:
-
-```bash
-PYTHONPATH=. python3 run_research.py \
-  --mode full --no-download --discover-universe --max-symbols 50 \
-  --interval 4h --max-trials 24 --max-windows 3 --freeze-selection
-```
-
-The resulting study is documented in `reports/research_roadmap.md`. The latest run had a positive final OOS window but failed the full robustness gate because earlier Walk-Forward windows and the stress-cost scenario were not sufficiently stable. Therefore the system correctly reports `FAILED_NO_ROBUST_EDGE` and does not allow Paper Trading or live execution.
+**الإفصاح:** تستند النتائج إلى OHLCV عامة، ورسوم وانزلاق وفارق سعر مفترضين. وهي بحث وتحليل فقط وليست نصيحة مالية شخصية.
