@@ -45,6 +45,22 @@ BASE_COSTS = CostModel(fee_bps=10.0, slippage_bps=2.0, half_spread_bps=2.0)
 STRESS_COSTS = CostModel(fee_bps=15.0, slippage_bps=5.0, half_spread_bps=4.0)
 
 
+@dataclass(frozen=True)
+class StrategyConfig:
+    name: str = "baseline"
+    sweep_window: int = 12
+    volume_multiplier: float = 0.0
+    trend_filter: str = "none"
+    cisd_atr_multiplier: float = 1.0
+    target_r: float = 2.0
+    max_bars_in_trade: int = 48
+    stop_atr_multiplier: float = 0.25
+
+
+DEFAULT_STRATEGY = StrategyConfig()
+SignalContext = tuple[pd.DataFrame, list[dict[str, Any]], list[dict[str, Any]]]
+
+
 @dataclass
 class Position:
     entry_time: pd.Timestamp
@@ -147,6 +163,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     ).max(axis=1)
     frame["atr"] = true_range.rolling(14, min_periods=14).mean()
     frame["tr"] = true_range
+    frame["ema50"] = frame["close"].ewm(span=50, adjust=False, min_periods=50).mean()
+    frame["ema200"] = frame["close"].ewm(span=200, adjust=False, min_periods=200).mean()
+    frame["volume_sma20"] = frame["volume"].rolling(20, min_periods=20).mean()
     return frame
 
 
@@ -206,12 +225,12 @@ def bearish_fvgs(df: pd.DataFrame) -> list[dict[str, Any]]:
     return gaps
 
 
-def recent_cisd(frame: pd.DataFrame, i: int) -> bool:
+def recent_cisd(frame: pd.DataFrame, i: int, atr_multiplier: float = 1.0) -> bool:
     """Bullish displacement above the high of a recent bearish candle."""
     if i < 6 or not np.isfinite(frame["atr"].iloc[i]):
         return False
     candle = frame.iloc[i]
-    if float(candle["close"]) <= float(candle["open"]) or float(candle["tr"]) < float(candle["atr"]):
+    if float(candle["close"]) <= float(candle["open"]) or float(candle["tr"]) < atr_multiplier * float(candle["atr"]):
         return False
     lookback = frame.iloc[max(0, i - 6) : i]
     bearish = lookback[lookback["close"] < lookback["open"]]
@@ -220,19 +239,37 @@ def recent_cisd(frame: pd.DataFrame, i: int) -> bool:
     return float(candle["close"]) > float(bearish["high"].iloc[-1])
 
 
-def find_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """Find valid sequential signals without reading future bars."""
+def prepare_signal_context(df: pd.DataFrame) -> SignalContext:
     frame = add_indicators(df)
-    zones = confirmed_htf_zones(frame)
-    gaps = bearish_fvgs(frame)
+    return frame, confirmed_htf_zones(frame), bearish_fvgs(frame)
+
+
+def find_signals(
+    df: pd.DataFrame,
+    config: StrategyConfig = DEFAULT_STRATEGY,
+    context: SignalContext | None = None,
+) -> pd.DataFrame:
+    """Find valid sequential signals without reading future bars."""
+    frame, zones, gaps = context if context is not None else prepare_signal_context(df)
     signals: list[dict[str, Any]] = []
     active_sweep: dict[str, Any] | None = None
 
-    for i in range(30, len(frame) - 1):
+    start_bar = max(30, 200 if config.trend_filter == "ema" else 30)
+    for i in range(start_bar, len(frame) - 1):
         candle = frame.iloc[i]
         timestamp = frame.index[i]
-        prior_low = float(frame["low"].iloc[i - 12 : i].min())
-        is_sweep = bool(float(candle["low"]) < prior_low and float(candle["close"]) > prior_low)
+        prior_low = float(frame["low"].iloc[i - config.sweep_window : i].min())
+        volume_ok = config.volume_multiplier <= 0 or (
+            np.isfinite(candle["volume_sma20"]) and float(candle["volume"]) >= config.volume_multiplier * float(candle["volume_sma20"])
+        )
+        trend_ok = config.trend_filter == "none" or (
+            config.trend_filter == "ema"
+            and np.isfinite(candle["ema50"])
+            and np.isfinite(candle["ema200"])
+            and float(candle["close"]) > float(candle["ema200"])
+            and float(candle["ema50"]) > float(candle["ema200"])
+        )
+        is_sweep = bool(float(candle["low"]) < prior_low and float(candle["close"]) > prior_low and volume_ok and trend_ok)
         zone = active_zone_at(zones, timestamp, float(candle["low"]), float(candle["close"]))
         if is_sweep and zone is not None and np.isfinite(candle["atr"]):
             active_sweep = {
@@ -261,7 +298,7 @@ def find_signals(df: pd.DataFrame) -> pd.DataFrame:
             and float(candle["low"]) <= float(g["upper"])
             and float(candle["close"]) > float(g["upper"])
         ]
-        if recent_cisd(frame, i) and matching_gaps:
+        if recent_cisd(frame, i, config.cisd_atr_multiplier) and matching_gaps:
             gap = matching_gaps[-1]
             signals.append(
                 {
@@ -278,6 +315,7 @@ def find_signals(df: pd.DataFrame) -> pd.DataFrame:
                     "fvg_created": gap["created_time"],
                     "fvg_lower": gap["lower"],
                     "fvg_upper": gap["upper"],
+                    "strategy": config.name,
                 }
             )
             active_sweep = None
@@ -329,9 +367,16 @@ def calculate_metrics(equity: pd.DataFrame, trades: pd.DataFrame, initial_capita
     }
 
 
-def run_backtest(df: pd.DataFrame, initial_capital: float, risk_per_trade: float, costs: CostModel) -> BacktestResult:
-    frame = add_indicators(df)
-    signals = find_signals(df)
+def run_backtest(
+    df: pd.DataFrame,
+    initial_capital: float,
+    risk_per_trade: float,
+    costs: CostModel,
+    config: StrategyConfig = DEFAULT_STRATEGY,
+    context: SignalContext | None = None,
+) -> BacktestResult:
+    frame = context[0] if context is not None else add_indicators(df)
+    signals = find_signals(df, config, context)
     signal_by_entry = {int(row.entry_bar): row for row in signals.itertuples(index=False)}
     cash = float(initial_capital)
     position: Position | None = None
@@ -345,13 +390,13 @@ def run_backtest(df: pd.DataFrame, initial_capital: float, risk_per_trade: float
             signal = signal_by_entry[i]
             raw_entry = float(candle["open"])
             entry = raw_entry * costs.buy_multiplier
-            stop = float(signal.sweep_low) - 0.25 * float(signal.atr)
+            stop = float(signal.sweep_low) - config.stop_atr_multiplier * float(signal.atr)
             if stop > 0 and stop < entry:
                 unit_risk = entry - stop
                 risk_quantity = (cash * risk_per_trade) / unit_risk
                 quantity = min(risk_quantity, cash / entry)
                 if quantity > 0:
-                    target = entry + 2.0 * unit_risk
+                    target = entry + config.target_r * unit_risk
                     position = Position(
                         entry_time=when,
                         entry_bar=i,
@@ -369,7 +414,7 @@ def run_backtest(df: pd.DataFrame, initial_capital: float, risk_per_trade: float
         if position is not None:
             hit_stop = float(candle["low"]) <= position.stop
             hit_target = float(candle["high"]) >= position.target
-            time_exit = i - position.entry_bar >= 48
+            time_exit = i - position.entry_bar >= config.max_bars_in_trade
             if hit_stop or hit_target or time_exit:
                 if hit_stop:  # Conservative if stop and target occurred inside one candle.
                     exit_raw, reason = position.stop, "stop"
