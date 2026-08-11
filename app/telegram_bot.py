@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from typing import Any, Callable, Optional
 
 import requests
@@ -10,16 +11,6 @@ import requests
 from .config import Settings
 
 logger = logging.getLogger(__name__)
-
-MAIN_KEYBOARD = {
-    "keyboard": [
-        [{"text": "➕ إضافة رأس مال"}, {"text": "🪙 إدارة العملات"}],
-        [{"text": "📈 الأسعار الحية"}, {"text": "📊 أداء النظام"}],
-        [{"text": "📂 الصفقات"}, {"text": "ℹ️ الحالة"}],
-    ],
-    "resize_keyboard": True,
-    "is_persistent": True,
-}
 
 
 class TelegramBot:
@@ -30,8 +21,9 @@ class TelegramBot:
         get_prices: Callable[[], str],
         get_performance: Callable[[], str],
         get_positions: Callable[[], str],
-        set_capital: Callable[[str, float], str],
-        manage_symbol: Callable[[str], str],
+        manage_coin: Callable[[str], str],
+        get_keyboard: Callable[[], dict[str, Any]],
+        get_symbol_status: Callable[[str], str],
     ):
         self.settings = settings
         self.base_url = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
@@ -40,13 +32,15 @@ class TelegramBot:
         self.get_prices = get_prices
         self.get_performance = get_performance
         self.get_positions = get_positions
-        self.set_capital = set_capital
-        self.manage_symbol = manage_symbol
+        self.manage_coin = manage_coin
+        self.get_keyboard = get_keyboard
+        self.get_symbol_status = get_symbol_status
         self.session = requests.Session()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._offset = 0
         self._awaiting: dict[str, str] = {}
+        self._last_conflict_log_at = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -57,6 +51,12 @@ class TelegramBot:
             return None
         try:
             response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=35)
+            if response.status_code == 409:
+                now = time.time()
+                if now - self._last_conflict_log_at > 60:
+                    logger.error("telegram_polling_conflict method=%s another_bot_consumer_may_be_running", method)
+                    self._last_conflict_log_at = now
+                return None
             response.raise_for_status()
             body = response.json()
             if not body.get("ok"):
@@ -69,11 +69,11 @@ class TelegramBot:
     def send_message(self, text: str, chat_id: Optional[str] = None, with_keyboard: bool = False) -> None:
         payload: dict[str, Any] = {"chat_id": chat_id or self.chat_id, "text": text, "disable_web_page_preview": True}
         if with_keyboard:
-            payload["reply_markup"] = MAIN_KEYBOARD
+            payload["reply_markup"] = self.get_keyboard()
         self._call("sendMessage", payload)
 
     def alert(self, text: str) -> None:
-        self.send_message(text, with_keyboard=False)
+        self.send_message(text, with_keyboard=True)
 
     def _get_updates(self) -> list[dict[str, Any]]:
         body = self._call("getUpdates", {"offset": self._offset, "timeout": 25, "allowed_updates": ["message"]})
@@ -82,11 +82,36 @@ class TelegramBot:
 
     def _help_text(self) -> str:
         return (
-            "نظام توصيات Binance Spot — تنبيهات فقط دون تنفيذ صفقات.\n\n"
-            "استخدم الأزرار لإضافة رأس المال لكل عملة، إدارة الأزواج، وعرض الأسعار والأداء والصفقات.\n"
-            "تنسيق رأس المال: BTCUSDT 50\n"
-            "إدارة العملات: أضف BTCUSDT أو احذف BTCUSDT"
+            "نظام توصيات Binance Spot — تنبيهات ومتابعة افتراضية فقط دون تنفيذ.\n\n"
+            "من زر إدارة العملات ورأس المال استخدم إحدى الصيغ:\n"
+            "أضف XRPUSDT 50\n"
+            "عدّل XRPUSDT 75\n"
+            "احذف XRPUSDT\n"
+            "القائمة\n\n"
+            "بعد الإضافة تُفتح متابعة السعر والإشارات تلقائياً عبر Binance WebSocket."
         )
+
+    def _handle_coin_command(self, chat_id: str, text: str) -> None:
+        add_or_update = re.fullmatch(r"(?:أضف|اضف|add|عدّل|عدل|تعديل|update)\s+([A-Za-z0-9_-]+)\s+([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+        remove = re.fullmatch(r"(?:احذف|حذف|remove)\s+([A-Za-z0-9_-]+)", text, re.IGNORECASE)
+        if text in ("القائمة", "list"):
+            self._awaiting.pop(chat_id, None)
+            self.send_message(self.manage_coin("list"), chat_id, with_keyboard=True)
+            return
+        if add_or_update:
+            verb = text.split(maxsplit=1)[0].lower()
+            action = "update" if verb in ("عدّل", "عدل", "تعديل", "update") else "add"
+            symbol = add_or_update.group(1).upper()
+            amount = float(add_or_update.group(2))
+            self._awaiting.pop(chat_id, None)
+            self.send_message(self.manage_coin(f"{action}:{symbol}:{amount}"), chat_id, with_keyboard=True)
+            return
+        if remove:
+            symbol = remove.group(1).upper()
+            self._awaiting.pop(chat_id, None)
+            self.send_message(self.manage_coin(f"remove:{symbol}"), chat_id, with_keyboard=True)
+            return
+        self.send_message("صيغة غير صحيحة. مثال: أضف XRPUSDT 50 أو احذف XRPUSDT", chat_id)
 
     def _handle_text(self, chat_id: str, text: str) -> None:
         if chat_id != self.chat_id:
@@ -96,46 +121,35 @@ class TelegramBot:
         if text in ("/start", "/help", "مساعدة"):
             self.send_message(self._help_text(), chat_id, with_keyboard=True)
             return
-        if text in ("➕ إضافة رأس مال", "/capital"):
-            self._awaiting[chat_id] = "capital"
-            self.send_message("أرسل: SYMBOL AMOUNT\nمثال: BTCUSDT 50", chat_id)
-            return
-        if text in ("🪙 إدارة العملات", "/symbols"):
-            self._awaiting[chat_id] = "symbol"
-            self.send_message("أرسل: أضف BTCUSDT أو احذف BTCUSDT", chat_id)
+        if text in ("🪙 إدارة العملات ورأس المال", "🪙 إدارة العملات", "/coins", "/capital"):
+            self._awaiting[chat_id] = "coin"
+            self.send_message(
+                "أرسل الأمر في رسالة واحدة:\n\n"
+                "أضف XRPUSDT 50\n"
+                "عدّل XRPUSDT 75\n"
+                "احذف XRPUSDT\n"
+                "القائمة",
+                chat_id,
+            )
             return
         if text in ("📈 الأسعار الحية", "/prices"):
-            self.send_message(self.get_prices(), chat_id)
+            self.send_message(self.get_prices(), chat_id, with_keyboard=True)
             return
         if text in ("📊 أداء النظام", "/performance"):
-            self.send_message(self.get_performance(), chat_id)
+            self.send_message(self.get_performance(), chat_id, with_keyboard=True)
             return
         if text in ("📂 الصفقات", "/positions"):
-            self.send_message(self.get_positions(), chat_id)
+            self.send_message(self.get_positions(), chat_id, with_keyboard=True)
             return
         if text in ("ℹ️ الحالة", "/status"):
             self.send_message(self.get_status(), chat_id, with_keyboard=True)
             return
-
-        mode = self._awaiting.get(chat_id)
-        if mode == "capital":
-            match = re.fullmatch(r"([A-Za-z0-9_-]+)\s+([0-9]+(?:\.[0-9]+)?)", text)
-            if not match:
-                self.send_message("صيغة غير صحيحة. أرسل مثلاً: BTCUSDT 50", chat_id)
-                return
-            symbol, amount = match.group(1).upper(), float(match.group(2))
-            self._awaiting.pop(chat_id, None)
-            self.send_message(self.set_capital(symbol, amount), chat_id, with_keyboard=True)
+        if text.startswith("🔎 "):
+            self.send_message(self.get_symbol_status(text[2:].strip().upper()), chat_id, with_keyboard=True)
             return
-        if mode == "symbol":
-            match = re.fullmatch(r"(أضف|احذف|add|remove)\s+([A-Za-z0-9_-]+)", text, re.IGNORECASE)
-            if not match:
-                self.send_message("صيغة غير صحيحة. أرسل: أضف BTCUSDT أو احذف BTCUSDT", chat_id)
-                return
-            action = "add" if match.group(1).lower() in ("أضف", "add") else "remove"
-            symbol = match.group(2).upper()
-            self._awaiting.pop(chat_id, None)
-            self.send_message(self.manage_symbol(f"{action}:{symbol}"), chat_id, with_keyboard=True)
+
+        if self._awaiting.get(chat_id) == "coin":
+            self._handle_coin_command(chat_id, text)
             return
         self.send_message("استخدم /start لعرض الأزرار والتعليمات.", chat_id, with_keyboard=True)
 
@@ -151,7 +165,10 @@ class TelegramBot:
         if not self.enabled:
             logger.warning("telegram_disabled_missing_credentials")
             return
-        self.send_message("تم تشغيل نظام التوصيات. لا توجد أوامر تداول متصلة بهذا البوت.", with_keyboard=True)
+        # A webhook and getUpdates cannot be used at the same time. This is safe
+        # for this polling-based service and makes a stale webhook non-blocking.
+        self._call("deleteWebhook", {"drop_pending_updates": False})
+        self.send_message("تم تشغيل نظام التوصيات. أضف العملات ورأس مال كل عملة من الزر الديناميكي.", with_keyboard=True)
         while not self._stop.is_set():
             try:
                 for update in self._get_updates():

@@ -9,12 +9,22 @@ def _csv(value: str) -> List[str]:
     return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
+def _normalise_supabase_url(raw: str) -> tuple[str, str]:
+    value = raw.strip().rstrip("/")
+    if value.startswith(("postgres://", "postgresql://")):
+        return "", "SUPABASE_URL is a PostgreSQL connection string; use the REST URL https://PROJECT_REF.supabase.co"
+    if value and not value.startswith("https://"):
+        return "", "SUPABASE_URL must start with https://"
+    return value, ""
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_chat_id: str = ""
     telegram_bot_token: str = ""
     supabase_url: str = ""
     supabase_key: str = ""
+    supabase_url_issue: str = ""
     redis_url: str = ""
     selected_symbols: List[str] = field(default_factory=list)
     initial_capital_usdt: float = 0.0
@@ -34,13 +44,15 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        supabase_url, supabase_url_issue = _normalise_supabase_url(os.getenv("SUPABASE_URL", ""))
         return cls(
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-            supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
+            supabase_url=supabase_url,
             supabase_key=os.getenv("SUPABASE_KEY", "").strip(),
+            supabase_url_issue=supabase_url_issue,
             redis_url=os.getenv("REDIS_URL", "").strip(),
-            selected_symbols=_csv(os.getenv("SELECTED_SYMBOLS", "BTCUSDT,ETHUSDT")),
+            selected_symbols=_csv(os.getenv("SELECTED_SYMBOLS", "")),
             initial_capital_usdt=float(os.getenv("INITIAL_CAPITAL_USDT", "0") or 0),
             max_concurrent_positions=int(os.getenv("MAX_CONCURRENT_POSITIONS", "5")),
             daily_loss_limit_pct=float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.09")),
@@ -63,7 +75,9 @@ class Settings:
             missing.append("TELEGRAM_BOT_TOKEN")
         if not self.telegram_chat_id:
             missing.append("TELEGRAM_CHAT_ID")
-        if not self.supabase_url or not self.supabase_key:
+        if self.supabase_url_issue:
+            missing.append(self.supabase_url_issue)
+        elif not self.supabase_url or not self.supabase_key:
             missing.append("SUPABASE_URL/SUPABASE_KEY")
         if not self.redis_url:
             missing.append("REDIS_URL")
@@ -75,4 +89,4 @@ class Settings:
 
     @property
     def is_ready_for_persistence(self) -> bool:
-        return bool(self.supabase_url and self.supabase_key)
+        return bool(self.supabase_url and self.supabase_key and not self.supabase_url_issue)

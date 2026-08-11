@@ -18,7 +18,7 @@ services:
       - key: REDIS_URL
         sync: false
       - key: SELECTED_SYMBOLS
-        value: BTCUSDT,ETHUSDT
+        value: ""
       - key: INITIAL_CAPITAL_USDT
         value: "0"
       - key: MAX_CONCURRENT_POSITIONS

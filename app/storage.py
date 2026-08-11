@@ -17,6 +17,8 @@ class SupabaseStore:
         self.key = settings.supabase_key
         self.session = requests.Session()
         self.enabled = bool(self.base_url and self.key)
+        if settings.supabase_url_issue:
+            logger.error("supabase_disabled_invalid_configuration reason=%s", settings.supabase_url_issue)
 
     def _request(self, method: str, table: str, **kwargs: Any) -> Optional[Any]:
         if not self.enabled:
