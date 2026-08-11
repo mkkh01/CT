@@ -165,8 +165,8 @@ def main() -> None:
     frozen_strategy = StrategyConfig(**final_oos["strategy"])
     stress = stress_matrix(final_oos_universe, frozen_strategy, costs, float(cfg["backtest"]["initial_capital"]), float(cfg["backtest"]["risk_per_trade"]))
     save_frame(stress, Path(cfg["research"]["output_dir"]) / "stress_tests.csv")
-    normal_stress = stress.loc[stress["stress"] == "normal"].iloc[0].to_dict() if not stress.empty and (stress["stress"] == "normal").any() else None
-    gate = evaluate_gate(final_oos["metrics"], cfg, normal_stress, walk_forward)
+    stress_gate = stress.loc[stress["stress"] == "stress"].iloc[0].to_dict() if not stress.empty and (stress["stress"] == "stress").any() else (stress.loc[stress["stress"] == "normal"].iloc[0].to_dict() if not stress.empty and (stress["stress"] == "normal").any() else None)
+    gate = evaluate_gate(final_oos["metrics"], cfg, stress_gate, walk_forward)
     save_gate(gate, Path(cfg["research"]["output_dir"]) / "paper_gate.json")
     regime_trades = []
     for symbol, frame in final_oos_universe.items():
