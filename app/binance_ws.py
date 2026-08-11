@@ -46,7 +46,7 @@ class BinanceMarketData:
         logger.info("market_symbols_updated symbols=%s restart_required=true", self.symbols)
 
     def candles(self, symbol: str, interval: str) -> list[dict[str, Any]]:
-        return list(self._candles[(symbol.upper(), interval)])
+        return [candle for candle in self._candles[(symbol.upper(), interval)] if candle.get("closed")]
 
     def bootstrap(self) -> None:
         for symbol in self.symbols:
@@ -63,15 +63,18 @@ class BinanceMarketData:
 
     @staticmethod
     def _normalise_rest_kline(raw: list[Any]) -> dict[str, Any]:
+        import time
+
+        close_time = int(raw[6])
         return {
             "open_time": int(raw[0]),
-            "close_time": int(raw[6]),
+            "close_time": close_time,
             "open": float(raw[1]),
             "high": float(raw[2]),
             "low": float(raw[3]),
             "close": float(raw[4]),
             "volume": float(raw[5]),
-            "closed": True,
+            "closed": close_time <= int(time.time() * 1000),
         }
 
     @staticmethod

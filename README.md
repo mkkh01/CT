@@ -87,6 +87,12 @@ Redis مناسب للكاش والملخص السريع، لكن Supabase هو �
 | `supabase/schema.sql` | الجداول والفهارس وسياسة RLS |
 | `render.yaml` | إعداد Web Service أحادي العملية |
 
+## أمان Supabase
+
+أظهر فحص مشروع `Trading_bot` أن جداول قديمة موجودة مسبقاً، منها `candles` و`decisions` و`simulated_trades` و`ws_checkpoints` و`performance_snapshots` و`coins` و`user_config_v4` و`tracked_coins_v4` و`live_trades_v4` و`shadow_trades_v4` و`decision_component_signals`، لديها RLS معطل. هذا يعني أن استخدام anon key مع PostgREST قد يعرّض البيانات للقراءة أو التعديل. لم أطبّق إصلاحاً تلقائياً على هذه الجداول لأن تفعيل RLS بلا سياسات قد يمنع الوصول الحالي؛ يجب مراجعتها وإضافة سياسات مناسبة قبل تعريض أي مفتاح للعميل.
+
+الجداول الجديدة للنظام (`bot_settings` و`signals` و`virtual_positions` و`trade_events` و`system_events`) أنشئت مع RLS مفعّل ومن دون سياسات عامة. هذا مقصود لأن التطبيق خادمي: استخدم مفتاحاً خادمياً في `SUPABASE_KEY` على Render فقط، ولا تضعه في HTML أو JavaScript أو Telegram. إذا أردت استخدام anon key، يجب أولاً تصميم سياسات RLS مبنية على هوية المستخدم، وهو خارج نطاق هذه النسخة.
+
 ## حدود مهمة
 
 النظام لا يضمن تنفيذ سعر الدخول أو وقف الخسارة لأن جميع الصفقات افتراضية، كما لا يضمن ألا تتجاوز الحركة السريعة أو انقطاع الشبكة الحد النظري للخسارة. لا يستخدم Futures أو الرافعة أو averaging down أو martingale. الإشارة ليست توصية مالية شخصية، وهي نتيجة قواعد آلية ثابتة يجب اختبارها وفهمها قبل الاعتماد عليها.
