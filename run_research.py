@@ -99,6 +99,22 @@ def main() -> None:
     final_best: dict[str, Any] | None = None
     final_oos: dict[str, Any] | None = None
     final_oos_universe: dict[str, pd.DataFrame] = {}
+    frozen_selection: StrategyConfig | None = None
+    if args.freeze_selection:
+        selection_window = windows[-1]
+        selection_train = split_universe(selection_window.train_start, selection_window.train_end)
+        selection_val = split_universe(selection_window.validation_start, selection_window.validation_end)
+        purge = int(cfg["validation"].get("purge_bars", 2))
+        embargo = int(cfg["validation"].get("embargo_bars", 2))
+        selection_train = {s: (f.iloc[:-purge] if len(f) > purge else f.iloc[0:0]) for s, f in selection_train.items()}
+        selection_val = {s: (f.iloc[embargo:] if len(f) > embargo else f.iloc[0:0]) for s, f in selection_val.items()}
+        selection_optimization = optimize_candidates(
+            selection_train, selection_val, cfg, normal_cost, float(cfg["backtest"]["initial_capital"]),
+            float(cfg["backtest"]["risk_per_trade"]), max_trials=max_trials,
+            top_k=min(8, max_trials), seed=int(cfg["project"].get("seed", 42)) + selection_window.window_id,
+        )
+        if selection_optimization["best"] is not None:
+            frozen_selection = _config_from_dict(pd.Series(selection_optimization["best"]["strategy"]))
 
     for window in windows:
         train_uni = split_universe(window.train_start, window.train_end)
@@ -109,14 +125,17 @@ def main() -> None:
         embargo = int(cfg["validation"].get("embargo_bars", 2))
         train_uni = {s: (f.iloc[:-purge] if len(f) > purge else f.iloc[0:0]) for s, f in train_uni.items()}
         val_uni = {s: (f.iloc[embargo:] if len(f) > embargo else f.iloc[0:0]) for s, f in val_uni.items()}
-        optimization = optimize_candidates(
-            train_uni, val_uni, cfg, normal_cost, float(cfg["backtest"]["initial_capital"]),
-            float(cfg["backtest"]["risk_per_trade"]), max_trials=max_trials,
-            top_k=min(8, max_trials), seed=int(cfg["project"].get("seed", 42)) + window.window_id,
-        )
-        if optimization["best"] is None:
-            continue
-        best_config = _config_from_dict(pd.Series(optimization["best"]["strategy"]))
+        if frozen_selection is not None:
+            best_config = frozen_selection
+        else:
+            optimization = optimize_candidates(
+                train_uni, val_uni, cfg, normal_cost, float(cfg["backtest"]["initial_capital"]),
+                float(cfg["backtest"]["risk_per_trade"]), max_trials=max_trials,
+                top_k=min(8, max_trials), seed=int(cfg["project"].get("seed", 42)) + window.window_id,
+            )
+            if optimization["best"] is None:
+                continue
+            best_config = _config_from_dict(pd.Series(optimization["best"]["strategy"]))
         train_result = evaluate_strategy(train_uni, best_config, normal_cost, float(cfg["backtest"]["initial_capital"]), float(cfg["backtest"]["risk_per_trade"]))
         val_result = evaluate_strategy(val_uni, best_config, normal_cost, float(cfg["backtest"]["initial_capital"]), float(cfg["backtest"]["risk_per_trade"]))
         test_result = evaluate_strategy(test_uni, best_config, normal_cost, float(cfg["backtest"]["initial_capital"]), float(cfg["backtest"]["risk_per_trade"]))
@@ -208,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols", default=None, help="Comma-separated Spot symbols, e.g. BTCUSDT,ETHUSDT")
     parser.add_argument("--add-symbol", action="append", default=[], help="Add and validate a user-selected Spot symbol")
     parser.add_argument("--discover-universe", action="store_true", help="Discover active USDT Spot symbols from Binance")
+    parser.add_argument("--freeze-selection", action="store_true", help="Optimize once on the latest train/validation window, then test frozen parameters across selected windows")
     return parser.parse_args()
 
 

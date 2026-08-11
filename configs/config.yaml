@@ -11,6 +11,7 @@ exchange:
   klines_path: /api/v3/klines
   max_rows_per_request: 1000
   request_pause_seconds: 0.15
+  download_workers: 5
 
 data:
   # The list is a seed universe; --discover-universe can replace it with live Spot symbols.

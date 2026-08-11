@@ -100,3 +100,15 @@ PYTHONPATH=. python3 run_research.py --mode full --interval 4h --symbols BTCUSDT
 ## Paper Trading gate
 
 ينتج كل تشغيل `results/paper_gate.json`. لا يسمح المراقب الورقي بالعمل إلا إذا اجتازت نتيجة OOS عدد الصفقات الأدنى، وProfit Factor، وExpectancy، وMax Drawdown، ونتيجة Stress، وثبات Walk-Forward. حتى عند اجتيازها، يبقى `live_trading_allowed=false`؛ ملف `paper_trader.py` يستقبل بيانات السوق العامة ويولد إشارات ورقية فقط ولا يحتوي على استدعاءات تنفيذ أوامر.
+
+## 50-symbol systematic study
+
+The reproducible 50-symbol run uses real Binance Spot data, 4-hour candles, 24 stratified candidate trials, and three OOS windows. Data is loaded from Parquet cache after discovery, and selection can be frozen once before testing across the windows:
+
+```bash
+PYTHONPATH=. python3 run_research.py \
+  --mode full --no-download --discover-universe --max-symbols 50 \
+  --interval 4h --max-trials 24 --max-windows 3 --freeze-selection
+```
+
+The resulting study is documented in `reports/research_roadmap.md`. The latest run had a positive final OOS window but failed the full robustness gate because earlier Walk-Forward windows and the stress-cost scenario were not sufficiently stable. Therefore the system correctly reports `FAILED_NO_ROBUST_EDGE` and does not allow Paper Trading or live execution.

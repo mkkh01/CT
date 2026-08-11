@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -147,17 +148,30 @@ def load_or_download(
 def download_universe(cfg: dict, force: bool = False) -> dict[str, pd.DataFrame]:
     data_cfg = cfg["data"]
     symbols = list(data_cfg["symbols"])[: int(data_cfg.get("max_symbols", 30))]
-    client = BinanceClient(
-        base_url=cfg["exchange"]["base_url"],
-        pause_seconds=float(cfg["exchange"].get("request_pause_seconds", 0.15)),
-    )
-    universe: dict[str, pd.DataFrame] = {}
-    for symbol in symbols:
+    client_kwargs = {
+        "base_url": cfg["exchange"]["base_url"],
+        "pause_seconds": float(cfg["exchange"].get("request_pause_seconds", 0.15)),
+    }
+
+    def load_one(symbol: str) -> tuple[str, pd.DataFrame, Path]:
+        client = BinanceClient(**client_kwargs)
         LOG.info("Loading %s %s", symbol, data_cfg["interval"])
         frame, path = load_or_download(
             client, data_cfg["cache_dir"], symbol, data_cfg["interval"],
             data_cfg["start"], data_cfg.get("end"), force=force,
         )
-        universe[symbol] = frame
-        LOG.info("%s: %d rows cached at %s", symbol, len(frame), path)
-    return universe
+        return symbol, frame, path
+
+    universe: dict[str, pd.DataFrame] = {}
+    workers = max(1, min(int(cfg["exchange"].get("download_workers", 5)), len(symbols) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(load_one, symbol): symbol for symbol in symbols}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                name, frame, path = future.result()
+                universe[name] = frame
+                LOG.info("%s: %d rows cached at %s", name, len(frame), path)
+            except Exception as exc:
+                LOG.error("Skipping %s after download failure: %s", symbol, exc)
+    return dict(sorted(universe.items()))
