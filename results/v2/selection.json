@@ -1,9 +1,0 @@
-{
-  "selected_candidate": "ema_v24_r25",
-  "candidate_count": 12,
-  "selection_data": [
-    "development",
-    "validation"
-  ],
-  "oos_frozen": true
-}

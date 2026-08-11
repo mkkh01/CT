@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Optional
+
+import requests
+
+from .config import Settings
+
+logger = logging.getLogger(__name__)
+
+
+class SupabaseStore:
+    def __init__(self, settings: Settings):
+        self.base_url = settings.supabase_url
+        self.key = settings.supabase_key
+        self.session = requests.Session()
+        self.enabled = bool(self.base_url and self.key)
+
+    def _request(self, method: str, table: str, **kwargs: Any) -> Optional[Any]:
+        if not self.enabled:
+            return None
+        url = f"{self.base_url}/rest/v1/{table}"
+        headers = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
+        headers.update(kwargs.pop("headers", {}))
+        try:
+            response = self.session.request(method, url, headers=headers, timeout=10, **kwargs)
+            response.raise_for_status()
+            if not response.content:
+                return None
+            return response.json()
+        except requests.RequestException as exc:
+            logger.warning("supabase_request_failed table=%s error=%s", table, exc)
+            return None
+
+    def upsert(self, table: str, row: dict[str, Any], conflict_column: str) -> Optional[Any]:
+        return self._request("POST", f"{table}?on_conflict={conflict_column}", json=row, headers={"Prefer": "resolution=merge-duplicates,return=representation"})
+
+    def insert(self, table: str, row: dict[str, Any]) -> Optional[Any]:
+        return self._request("POST", table, json=row)
+
+    def select_one(self, table: str, column: str, value: str) -> Optional[dict[str, Any]]:
+        result = self._request("GET", f"{table}?select=*&{column}=eq.{value}&limit=1")
+        return result[0] if isinstance(result, list) and result else None
+
+    def select_open_positions(self, user_id: str) -> list[dict[str, Any]]:
+        result = self._request("GET", f"virtual_positions?select=*&user_id=eq.{user_id}&status=eq.OPEN&limit=20")
+        return result if isinstance(result, list) else []
+
+    def update_position(self, position_id: str, row: dict[str, Any]) -> Optional[Any]:
+        return self._request("PATCH", f"virtual_positions?id=eq.{position_id}", json=row)
+
+
+class RedisStore:
+    def __init__(self, settings: Settings):
+        self.client = None
+        self.enabled = False
+        if settings.redis_url:
+            try:
+                import redis
+
+                self.client = redis.from_url(settings.redis_url, decode_responses=True, socket_timeout=3)
+                self.client.ping()
+                self.enabled = True
+            except Exception as exc:  # redis is optional during local tests
+                logger.warning("redis_unavailable error=%s", exc)
+
+    def set_json(self, key: str, value: Any, ex: int = 3600) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            self.client.set(key, json.dumps(value), ex=ex)
+            return True
+        except Exception as exc:
+            logger.warning("redis_set_failed key=%s error=%s", key, exc)
+            return False
+
+    def get_json(self, key: str) -> Optional[Any]:
+        if not self.enabled:
+            return None
+        try:
+            value = self.client.get(key)
+            return json.loads(value) if value else None
+        except Exception as exc:
+            logger.warning("redis_get_failed key=%s error=%s", key, exc)
+            return None
+
+    def delete(self, key: str) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            self.client.delete(key)
+            return True
+        except Exception as exc:
+            logger.warning("redis_delete_failed key=%s error=%s", key, exc)
+            return False

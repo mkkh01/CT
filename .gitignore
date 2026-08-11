@@ -1,19 +1,11 @@
+.env
+.env.*
+!.env.example
 __pycache__/
 .pytest_cache/
-.venv/
 *.py[cod]
-
-# Downloaded public OHLCV cache (reproducibly re-downloaded by run_backtest.py)
-data/*.csv.gz
-!data/.gitkeep
-
-# Detailed generated artifacts; keep the compact reproducible summary and report.
-results/equity_*.csv
-results/signals_*.csv
-results/trades_*.csv
-!results/.gitkeep
-!results/summary.csv
-!results/backtest_report.md
-!results/run_metadata.json
-
+.venv/
+venv/
+*.log
+logs/
 .DS_Store

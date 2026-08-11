@@ -1,6 +1,6 @@
-numpy>=1.26
-pandas>=2.1
-requests>=2.31
-tabulate>=0.9
-matplotlib>=3.8
-pytest>=8.0
+Flask>=3.0,<4
+requests>=2.31,<3
+websocket-client>=1.8,<2
+redis>=5.0,<6
+gunicorn>=22.0,<24
+pytest>=8.0,<9
