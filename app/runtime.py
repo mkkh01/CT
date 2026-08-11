@@ -45,6 +45,7 @@ class BotRuntime:
             get_prices=self.prices_text,
             get_performance=self.performance_text,
             get_positions=self.positions_text,
+            get_coins=self.coins_text,
             manage_coin=self.manage_coin,
             get_keyboard=self.telegram_keyboard,
             get_symbol_status=self.symbol_status_text,
@@ -249,7 +250,7 @@ class BotRuntime:
 
     def telegram_keyboard(self) -> dict[str, Any]:
         rows: list[list[dict[str, str]]] = [
-            [{"text": "🪙 إدارة العملات ورأس المال"}],
+            [{"text": "➕ إضافة عملة"}, {"text": "🧾 العملات المضافة"}],
             [{"text": "📈 الأسعار الحية"}, {"text": "📊 أداء النظام"}],
             [{"text": "📂 الصفقات"}, {"text": "ℹ️ الحالة"}],
         ]
