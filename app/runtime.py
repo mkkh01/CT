@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from .binance_ws import BinanceMarketData
 from .config import Settings
@@ -146,38 +146,30 @@ class BotRuntime:
                     self._persisting_runtime_log = False
 
     def dashboard_snapshot(self) -> dict[str, Any]:
+        """Returns lightweight overview for fast UI loading."""
         with self._lock:
-            trader_snapshot = self.trader.snapshot()
+            trader_snapshot = self.trader.status_snapshot()
             symbols = sorted(self.trader.selected_symbols)
-            coins = [
-                {
+            coins = []
+            market_status = self.market.status_snapshot()
+            for symbol in symbols:
+                price = market_status["symbols"].get(symbol, {}).get("price")
+                decision = self.last_decision_by_symbol.get(symbol, {})
+                metrics = decision.get("indicator_metrics", {})
+                coin = {
                     "symbol": symbol,
                     "capital_usdt": self.trader.capital_by_symbol.get(symbol, 0.0),
-                    "price": self.trader.last_prices.get(symbol),
+                    "price": price,
                     "position_open": bool(self.trader.position_for_symbol(symbol)),
+                    "market": market_status["symbols"].get(symbol),
                 }
-                for symbol in symbols
-            ]
-            market_status = self.market.status_snapshot()
-            for coin in coins:
-                coin["market"] = market_status["symbols"].get(coin["symbol"], {})
-                decision = self.last_decision_by_symbol.get(coin["symbol"])
                 if decision:
-                    metrics = decision.get("indicator_metrics") or {}
                     coin["analysis"] = {
-                        "decision": decision.get("decision"),
-                        "chart_regime": decision.get("market_regime"),
-                        "chart_regime_label": decision.get("market_regime_label"),
-                        "chart_regime_1h": decision.get("chart_regime_1h"),
                         "chart_regime_1h_label": decision.get("chart_regime_1h_label"),
-                        "chart_regime_4h": decision.get("chart_regime_4h"),
                         "chart_regime_4h_label": decision.get("chart_regime_4h_label"),
-                        "candle_pattern": decision.get("candle_pattern"),
-                        "candle_pattern_label": decision.get("candle_pattern_label"),
-                        "candle_direction": decision.get("candle_direction"),
                         "candle_pattern_1h": decision.get("candle_pattern_1h"),
-                        "candle_direction_1h": decision.get("candle_direction_1h"),
                         "candle_pattern_4h": decision.get("candle_pattern_4h"),
+                        "candle_direction_1h": decision.get("candle_direction_1h"),
                         "candle_direction_4h": decision.get("candle_direction_4h"),
                         "rejection_reason": decision.get("rejection_reason"),
                         "rejection_detail": decision.get("rejection_detail"),
@@ -186,6 +178,7 @@ class BotRuntime:
                     }
                 else:
                     coin["analysis"] = None
+                coins.append(coin)
             overview = {
                 "service": "CT Binance Spot Live Recommendations",
                 "execution": "disabled",
@@ -195,7 +188,11 @@ class BotRuntime:
                 "live_data_source": self.market.live_data_source,
                 "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
                 "strategy": "ema_breakout_4h_filter_v1",
-                "timeframes": {"execution": self.settings.execution_timeframe, "higher": self.settings.higher_timeframe},
+                "timeframes": {
+                    "trigger": self.settings.trigger_timeframe,
+                    "execution": self.settings.execution_timeframe,
+                    "higher": self.settings.higher_timeframe
+                },
                 "coins": coins,
                 "capital_by_symbol": self.trader.capital_by_symbol,
                 "total_capital": trader_snapshot["total_capital"],
@@ -223,8 +220,10 @@ class BotRuntime:
                     "atr_min_pct": self.settings.atr_min_pct,
                     "atr_max_pct": self.settings.atr_max_pct,
                 },
+                "win_rate": trader_snapshot.get("win_rate", 0.0),
+                "sharpe_ratio": trader_snapshot.get("sharpe_ratio", 0.0),
+                "max_drawdown": trader_snapshot.get("max_drawdown", 0.0),
             }
-            recent_logs = list(self.recent_logs)[-250:][::-1]
             last_error = self.last_error_log
             last_warning = self.last_warning
         user_id = self.settings.telegram_chat_id or "local"
@@ -253,15 +252,20 @@ class BotRuntime:
         return {
             "overview": overview,
             "open_positions": trader_snapshot["open_positions"],
-            "recent_signals": self.supabase.select_recent_signals(user_id, limit=20),
-            "recent_positions": self.supabase.select_recent_positions(user_id, limit=20),
-            "events": [{k: v for k, v in e.items() if k != 'payload'} for e in self.supabase.select_recent_events(user_id, limit=50)],
-            "logs": recent_logs[:20],
-            "errors": [item for item in recent_logs if item["level"] in ("ERROR", "CRITICAL")],
-            "warnings": [item for item in recent_logs if item["level"] == "WARNING"],
-            "persisted_runtime_state": persisted_state,
             "last_error": last_error,
             "last_warning": last_warning,
+        }
+
+    def history_snapshot(self) -> dict[str, Any]:
+        """Returns heavy historical data for background loading."""
+        user_id = self.settings.telegram_chat_id or "local"
+        with self._lock:
+            recent_logs = list(self.recent_logs)[-50:][::-1]
+        return {
+            "recent_signals": self.supabase.select_recent_signals(user_id, limit=20),
+            "recent_positions": self.supabase.select_recent_positions(user_id, limit=20),
+            "events": [{k: v for k, v in e.items() if k != 'payload'} for e in self.supabase.select_recent_events(user_id, limit=30)],
+            "logs": recent_logs,
         }
 
     def _on_price(self, symbol: str, price: float) -> None:
@@ -292,380 +296,217 @@ class BotRuntime:
 
     def _on_closed_candle(self, symbol: str, interval: str, candle: dict[str, Any]) -> None:
         symbol = self._normalise_symbol(symbol)
-        if interval != self.settings.execution_timeframe or symbol not in self.trader.selected_symbols:
-            return
         with self._lock:
+            if symbol not in self.trader.selected_symbols:
+                return
             self.last_event_at = datetime.now(timezone.utc)
-            self.cycle_count += 1
-            execution = self.market.candles(symbol, self.settings.execution_timeframe)
-            higher = self.market.candles(symbol, self.settings.higher_timeframe)
-            market_state = self.market.status_snapshot()["symbols"].get(symbol, {})
-            decision: dict[str, Any] = {
-                "cycle": self.cycle_count,
-                "symbol": symbol,
-                "strategy": "ema_breakout_4h_filter_v1",
-                "timeframe": interval,
-                "candle_open_time": candle.get("open_time"),
-                "closed_candles_1h": len(execution),
-                "closed_candles_4h": len(higher),
-                "price": candle.get("close"),
-                "selected": True,
-                "signal": False,
-                "position_action": "none",
-                "data_ready": bool(market_state.get("ready_for_strategy")),
-                "data_readiness_reason": "ready" if market_state.get("ready_for_strategy") else "waiting_for_55_closed_candles_on_1h_and_4h",
-            }
-            if not market_state.get("ready_for_strategy"):
-                decision["decision"] = "DATA_NOT_READY"
-                self._record_decision(decision)
-                logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
-                self._log_event("strategy_cycle", decision)
-                return
-            signal, diagnostics = evaluate_signal_diagnostics(
-                symbol,
-                execution,
-                higher,
-                stop_loss_pct=self.settings.stop_loss_pct,
-                take_profit_r_multiple=self.settings.take_profit_r_multiple,
-                adx_period=self.settings.adx_period,
-                adx_min=self.settings.adx_min,
-                atr_period=self.settings.atr_period,
-                atr_min_pct=self.settings.atr_min_pct,
-                atr_max_pct=self.settings.atr_max_pct,
-            )
-            decision.update({
-                "market_regime": diagnostics.get("chart_regime"),
-                "market_regime_label": diagnostics.get("chart_regime_label"),
-                "chart_regime_1h": diagnostics.get("chart_regime_1h"),
-                "chart_regime_1h_label": diagnostics.get("chart_regime_1h_label"),
-                "chart_regime_4h": diagnostics.get("chart_regime_4h"),
-                "chart_regime_4h_label": diagnostics.get("chart_regime_4h_label"),
-                "candle_pattern": diagnostics.get("candle_pattern"),
-                "candle_pattern_label": diagnostics.get("candle_pattern_label"),
-                "candle_direction": diagnostics.get("candle_direction"),
-                "candle_pattern_1h": diagnostics.get("candle_pattern_label_1h"),
-                "candle_direction_1h": diagnostics.get("candle_direction_1h"),
-                "candle_pattern_4h": diagnostics.get("candle_pattern_label_4h"),
-                "candle_direction_4h": diagnostics.get("candle_direction_4h"),
-                "indicator_metrics": diagnostics,
-            })
-            if signal is None:
-                decision["decision"] = "MARKET_FILTER_REJECTED" if diagnostics.get("rejection_reason") in {
-                    "SIDEWAYS_ADX_LOW",
-                    "SIDEWAYS_ATR_LOW",
-                    "EMA_ALIGNMENT_SIDEWAYS",
-                    "VOLATILITY_TOO_HIGH",
-                    "BEARISH_DIRECTIONAL_MOVEMENT",
-                } else "NO_SIGNAL"
-                decision["rejection_reason"] = diagnostics.get("rejection_reason")
-                decision["rejection_detail"] = diagnostics.get("rejection_detail")
-                self._record_decision(decision)
-                logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
-                self._log_event("strategy_cycle", decision)
-                return
-            if self.trader.last_signal_at.get(symbol) == signal.candle_open_time:
-                decision["decision"] = "DUPLICATE_SIGNAL_IGNORED"
-                self._record_decision(decision)
-                logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
-                return
-
-            self.signal_count += 1
-            self.last_signal = signal
-            self._persist_signal(signal)
-            signal_payload = signal.to_dict()
-            decision.update({"signal": True, "decision": "SIGNAL_GENERATED", "signal_payload": signal_payload})
-            position, status = self.trader.open_from_signal(signal)
-            if position:
-                decision["position_action"] = "VIRTUAL_POSITION_OPENED"
-                self._persist_open_position(position)
-                text = (
-                    f"توصية شراء Spot — {signal.symbol}\n"
-                    f"الإطار: {signal.timeframe} | نوع التنبيه: افتراضي\n"
-                    f"الدخول المرجعي: {signal.entry_price:.8f}\n"
-                    f"وقف الخسارة: {signal.stop_loss:.8f}\n"
-                    f"الهدف: {signal.take_profit:.8f}\n"
-                    f"Risk/Reward: {signal.risk_reward:.2f}R\n"
-                    f"السبب: {signal.reason}\n\n"
-                    "تم فتح متابعة افتراضية فقط؛ لم يُرسل أي أمر إلى Binance."
+            if interval == self.settings.execution_timeframe:
+                self.cycle_count += 1
+                logger.info("strategy_cycle_start symbol=%s interval=%s price=%.8f", symbol, interval, candle["close"])
+                
+                # Check for signal confirmation on 15m (trigger timeframe) if it's different from execution
+                trigger_data = None
+                if self.settings.trigger_timeframe != self.settings.execution_timeframe:
+                    trigger_candles = self.market.candles(symbol, self.settings.trigger_timeframe)
+                    if len(trigger_candles) >= 55:
+                        trigger_data = list(trigger_candles)
+                
+                execution_candles = self.market.candles(symbol, self.settings.execution_timeframe)
+                higher_candles = self.market.candles(symbol, self.settings.higher_timeframe)
+                
+                if len(execution_candles) < 55 or len(higher_candles) < 55:
+                    logger.info("strategy_cycle_skipped symbol=%s reason=insufficient_history", symbol)
+                    self._record_decision({"symbol": symbol, "decision": "DATA_NOT_READY", "rejection_reason": "History incomplete"})
+                    return
+                
+                decision = evaluate_signal_diagnostics(
+                    symbol=symbol,
+                    execution_candles=list(execution_candles),
+                    higher_candles=list(higher_candles),
+                    trigger_candles=trigger_data,
+                    settings=self.settings
                 )
-                self.telegram.alert(text)
-                self._log_event("virtual_position_opened", position.to_dict())
-            else:
-                self.rejected_signal_count += 1
-                decision.update({"decision": "SIGNAL_REJECTED", "rejection_reason": status})
-                self.telegram.alert(f"إشارة {signal.symbol} موجودة، لكن لم تُفتح متابعة افتراضية.\nالسبب: {status}")
-            self.last_decision = decision
-            logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
-            self._log_event("strategy_decision", decision)
+                self._record_decision(decision)
+                
+                if decision.get("decision") == "BUY":
+                    self.signal_count += 1
+                    signal_payload = decision.get("signal_payload")
+                    if signal_payload:
+                        signal = Signal.from_dict(signal_payload)
+                        self.last_signal = signal
+                        self._persist_signal(signal)
+                        position = self.trader.open_position(symbol, signal.entry_price, signal.stop_loss, signal.take_profit)
+                        if position:
+                            self._persist_open_position(position)
+                            logger.info("virtual_trade_opened symbol=%s entry=%.8f", symbol, signal.entry_price)
+                            self.telegram.alert(
+                                f"توصية شراء جديدة: {symbol}\n"
+                                f"السعر: {signal.entry_price:.8f}\n"
+                                f"الوقف: {signal.stop_loss:.8f}\n"
+                                f"الهدف: {signal.take_profit:.8f}\n"
+                                f"السبب: {signal.reason}"
+                            )
+                elif decision.get("decision") != "DATA_NOT_READY":
+                    self.rejected_signal_count += 1
+                
+                self._persist_runtime_state()
 
-    def manage_coin(self, command: str) -> str:
-        if command == "list":
-            return self.coins_text()
-        parts = command.split(":")
-        action = parts[0]
-        symbol = self._normalise_symbol(parts[1]) if len(parts) > 1 else ""
-        with self._lock:
-            if not symbol:
-                return "رمز العملة غير صالح."
-            if action in ("add", "update"):
-                try:
-                    amount = float(parts[2])
-                except (IndexError, ValueError):
-                    return "أرسل الصيغة: أضف XRPUSDT 50"
-                if amount <= 0:
-                    return "رأس المال يجب أن يكون أكبر من صفر."
-                self.trader.set_capital(symbol, amount)
-                self.market.update_symbols(sorted(self.trader.selected_symbols))
-                self._persist_settings()
-                if self._started:
-                    self.market.restart()
-                verb = "إضافة" if action == "add" else "تعديل"
-                return f"تمت {verb} العملة {symbol} برأس مال {amount:.8f} USDT. بدأت متابعة السعر والإشارات لها."
-            if action == "remove":
-                if not self.trader.remove_symbol(symbol):
-                    return f"لا يمكن حذف {symbol} أثناء وجود صفقة افتراضية مفتوحة."
-                self.market.update_symbols(sorted(self.trader.selected_symbols))
-                self._persist_settings()
-                if self._started:
-                    self.market.restart()
-                return f"تم حذف {symbol} وإيقاف متابعة سعرها وإشاراتها."
-            return "أمر غير معروف. استخدم: أضف XRPUSDT 50 أو عدّل XRPUSDT 75 أو احذف XRPUSDT."
-
-    def coins_text(self) -> str:
-        symbols = sorted(self.trader.selected_symbols)
-        if not symbols:
-            return "لا توجد عملات مضافة. اضغط إدارة العملات ورأس المال ثم أرسل مثلاً: أضف XRPUSDT 50"
-        lines = ["العملات التي أضافها المستخدم:"]
-        for symbol in symbols:
-            price = self.trader.last_prices.get(symbol)
-            position = self.trader.position_for_symbol(symbol)
-            state = "صفقة افتراضية مفتوحة" if position else "لا توجد صفقة مفتوحة"
-            price_text = f"{price:.8f}" if price is not None else "بانتظار WebSocket"
-            lines.append(f"{symbol} | رأس المال: {self.trader.capital_by_symbol.get(symbol, 0):.8f} USDT | السعر: {price_text} | {state}")
-        return "\n".join(lines)
-
-    def telegram_keyboard(self) -> dict[str, Any]:
-        rows: list[list[dict[str, str]]] = [
-            [{"text": "➕ إضافة عملة"}, {"text": "🧾 العملات المضافة"}],
-            [{"text": "📈 الأسعار الحية"}, {"text": "📊 أداء النظام"}],
-            [{"text": "📂 الصفقات"}, {"text": "ℹ️ الحالة"}],
-        ]
-        symbols = sorted(self.trader.selected_symbols)
-        if symbols:
-            for index in range(0, len(symbols), 2):
-                rows.append([{"text": f"🔎 {symbol}"} for symbol in symbols[index : index + 2]])
-        return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
-
-    def symbol_status_text(self, symbol: str) -> str:
-        symbol = self._normalise_symbol(symbol)
-        if symbol not in self.trader.selected_symbols:
-            return f"{symbol} غير موجودة في قائمة المستخدم. أضفها من زر إدارة العملات ورأس المال."
-        price = self.trader.last_prices.get(symbol)
-        position = self.trader.position_for_symbol(symbol)
-        signal = self.last_signal if self.last_signal and self.last_signal.symbol == symbol else None
-        lines = [
-            f"حالة {symbol}",
-            f"رأس المال: {self.trader.capital_by_symbol.get(symbol, 0):.8f} USDT",
-            f"السعر الحي: {price:.8f}" if price is not None else "السعر الحي: بانتظار Binance WebSocket",
-            f"المتابعة الافتراضية: {'مفتوحة' if position else 'غير مفتوحة'}",
-        ]
-        if position:
-            lines.append(f"الدخول {position.entry_price:.8f} | الوقف {position.stop_loss:.8f} | الهدف {position.take_profit:.8f}")
-        if signal:
-            lines.append(f"آخر إشارة: دخول {signal.entry_price:.8f} | {signal.reason}")
-        decision = self.last_decision_by_symbol.get(symbol)
-        if decision:
-            metrics = decision.get("indicator_metrics") or {}
-            lines.extend([
-                f"حالة الشارت: {decision.get('market_regime_label') or decision.get('market_regime') or 'غير متاح'}",
-                f"شمعة 1H: {decision.get('candle_pattern_1h') or decision.get('candle_pattern_label') or decision.get('candle_pattern') or 'غير متاح'} ({decision.get('candle_direction_1h') or decision.get('candle_direction') or '—'})",
-                f"شمعة 4H: {decision.get('candle_pattern_4h') or 'غير متاح'} ({decision.get('candle_direction_4h') or '—'})",
-                f"ADX: {float(metrics['adx']):.2f}" if metrics.get("adx") is not None else "ADX: غير متاح",
-                f"ATR/السعر: {float(metrics['atr_pct']) * 100:.3f}%" if metrics.get("atr_pct") is not None else "ATR/السعر: غير متاح",
-                f"سبب القرار: {decision.get('rejection_detail') or decision.get('rejection_reason') or decision.get('decision') or '—'}",
-            ])
-        return "\n".join(lines)
-
-    def prices_text(self) -> str:
-        symbols = sorted(self.trader.selected_symbols)
-        if not symbols:
-            return "لا توجد عملات للعرض. أضف عملة ورأس مالها من الزر الديناميكي أولاً."
-        market_status = self.market.status_snapshot()
-        lines = [
-            "الأسعار الحية للعملات المضافة فقط:",
-            f"مرحلة النظام: {market_status.get('startup_stage', 'unknown')}",
-            f"آخر شمعة مغلقة: {market_status.get('last_closed_candle') or 'بانتظار WebSocket'}",
-        ]
-        for symbol in symbols:
-            price = self.trader.last_prices.get(symbol)
-            lines.append(f"{symbol}: {price:.8f}" if price is not None else f"{symbol}: بانتظار WebSocket")
-        return "\n".join(lines)
-
-    def performance_text(self) -> str:
-        snapshot = self.trader.snapshot()
-        total = snapshot["total_capital"]
-        pnl = snapshot["realized_pnl_today"]
-        pct = (pnl / total * 100) if total else 0.0
-        return (
-            "أداء النظام الافتراضي اليوم\n"
-            f"رأس المال المعرّف: {total:.8f} USDT\n"
-            f"النتيجة المحققة افتراضياً: {pnl:.8f} USDT ({pct:.2f}%)\n"
-            f"حد الخسارة اليومية: {snapshot['daily_loss_limit_amount']:.8f} USDT ({self.settings.daily_loss_limit_pct * 100:.2f}%)\n"
-            f"حالة الحد اليومي: {'متوقف' if snapshot['daily_loss_limit_hit'] else 'نشط'}\n"
-            f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count} | الصفقات المغلقة: {self.closed_trade_count}"
-        )
-
-    def positions_text(self) -> str:
-        positions = list(self.trader.positions.values())
-        if not positions:
-            return "لا توجد صفقات افتراضية مفتوحة للعملات المضافة."
-        lines = ["الصفقات الافتراضية المفتوحة للعملات المضافة:"]
-        for position in positions:
-            current = self.trader.last_prices.get(position.symbol, position.entry_price)
-            pnl = (current - position.entry_price) * position.quantity
-            lines.append(
-                f"{position.symbol} | رأس المال {position.capital_allocated:.8f} | دخول {position.entry_price:.8f} | الآن {current:.8f} | "
-                f"وقف {position.stop_loss:.8f} | هدف {position.take_profit:.8f} | PnL {pnl:.8f} USDT"
-            )
-        return "\n".join(lines)
-
-    def status_text(self) -> str:
-        snapshot = self.trader.snapshot()
-        market_status = self.market.status_snapshot()
-        live_source = market_status.get("live_data_source") or "none"
-        live_available = bool(market_status.get("live_data_available"))
-        ws = "متصل" if self.market.connected else ("REST fallback حي" if live_available and live_source == "rest_polling_fallback" else "غير متصل")
-        last_event = self.last_event_at.isoformat() if self.last_event_at else "لا يوجد"
-        missing = ", ".join(snapshot.get("selected_symbols", [])) or "لا توجد عملات مضافة"
-        integration_missing = ", ".join(self.settings.missing_integrations()) or "لا يوجد"
-        ready_symbols = ", ".join(market_status.get("strategy_ready_symbols", [])) or "لا توجد عملات جاهزة بعد"
-        next_retry = market_status.get("next_bootstrap_retry_at") or "غير مطلوب؛ التهيئة مكتملة"
-        return (
-            "حالة النظام\n"
-            f"مرحلة البدء: {market_status.get('startup_stage', 'unknown')}\n"
-            f"إعادة محاولة جلب الشموع: {next_retry}\n"
-            f"مصدر بيانات السوق: {ws}\n"
-            f"آخر حدث: {last_event}\n"
-            f"العملات المضافة: {missing}\n"
-            f"الصفقات المفتوحة: {len(snapshot['open_positions'])}/{self.settings.max_concurrent_positions}\n"
-            f"التكاملات الناقصة: {integration_missing}\n"
-            f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count}\n"
-            f"العملات الجاهزة للتحليل: {ready_symbols}\n"
-            "التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
-        )
-
-    def _persist_runtime_state(self, market_status: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    def _persist_runtime_state(self) -> None:
         user_id = self.settings.telegram_chat_id or "local"
         row = {
             "user_id": user_id,
             "runtime_started": self._started,
-            "websocket_connected": bool(market_status.get("connected")),
-            "live_data_available": bool(market_status.get("live_data_available")),
-            "live_data_source": market_status.get("live_data_source"),
-            "startup_stage": market_status.get("startup_stage") or "idle",
-            "websocket_last_message_at": market_status.get("last_message_at"),
-            "websocket_connected_at": market_status.get("connected_at"),
-            "websocket_last_error": market_status.get("last_ws_error"),
-            "websocket_last_close_code": str(market_status.get("last_ws_close_code")) if market_status.get("last_ws_close_code") is not None else None,
-            "websocket_last_close_reason": market_status.get("last_ws_close_reason"),
-            "websocket_active_stream_url": market_status.get("active_stream_url"),
-            "selected_symbols": snapshot.get("selected_symbols", []),
-            "capital_by_symbol": snapshot.get("capital_by_symbol", {}),
-            "strategy_ready_symbols": market_status.get("strategy_ready_symbols", []),
-            "market_status": market_status,
-            "metrics": snapshot.get("metrics", {}),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self.supabase.upsert_runtime_state(row)
-
-    def _emit_summary_cycle(self) -> None:
-        with self._lock:
-            snapshot = self.trader.snapshot()
-            market_status = self.market.status_snapshot()
-            snapshot.update({
-                "websocket_connected": self.market.connected,
-                "live_data_available": self.market.live_data_available,
-                "live_data_source": self.market.live_data_source,
-                "startup_stage": market_status.get("startup_stage"),
-                "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
-                "strategy": "ema_breakout_4h_filter_v1",
-                "strategy_ready_symbols": market_status.get("strategy_ready_symbols", []),
-                "metrics": {
-                    "cycles": self.cycle_count,
-                    "signals": self.signal_count,
-                    "rejected_signals": self.rejected_signal_count,
-                    "closed_trades": self.closed_trade_count,
-                },
-                "last_decision": self.last_decision,
-                "last_decision_by_symbol": self.last_decision_by_symbol,
-                "last_signal": self.last_signal.to_dict() if self.last_signal else None,
-                "market_status": market_status,
-            })
-            logger.info("summary_cycle %s", json.dumps(snapshot, ensure_ascii=False, default=str))
-            self.redis.set_json("bot:summary", snapshot, ex=300)
-            self._persist_runtime_state(market_status, snapshot)
-            self._log_event("summary_cycle", snapshot)
-
-    def _summary_loop(self) -> None:
-        # Self-healing watchdog: if live data is missing for too long, restart market connection.
-        last_live_at = time.time()
-        while not self._stop.wait(60):
-            self._emit_summary_cycle()
-            
-            # Check liveness
-            status = self.market.status_snapshot()
-            if status.get("live_data_available"):
-                last_live_at = time.time()
-            else:
-                missing_duration = time.time() - last_live_at
-                if missing_duration > 300: # 5 minutes
-                    logger.warning("runtime_watchdog_restarting_market reason=no_live_data duration_seconds=%.1f", missing_duration)
-                    self.market.restart()
-                    last_live_at = time.time() # Reset to avoid immediate repeat
-
-    def is_alive(self) -> bool:
-        # Check if the main background threads are running.
-        return bool(
-            self._started and
-            self.market._thread and self.market._thread.is_alive() and
-            self._summary_thread and self._summary_thread.is_alive()
-        )
-
-    def start(self) -> None:
-        if self.is_alive():
-            return
-        self._load_persisted_settings()
-        self.market.update_symbols(sorted(self.trader.selected_symbols))
-        self.market.start()
-        self.telegram.start()
-        self._stop.clear()
-        self._started = True
-        self._emit_summary_cycle()
-        self._summary_thread = threading.Thread(target=self._summary_loop, name="summary-cycle", daemon=True)
-        self._summary_thread.start()
-        logger.info("runtime_started symbols=%s capital_by_symbol=%s strategy=ema_breakout_4h_filter_v1", sorted(self.trader.selected_symbols), self.trader.capital_by_symbol)
-
-    def stop(self) -> None:
-        self._stop.set()
-        self.telegram.stop()
-        self.market.stop()
-        if self._summary_thread and self._summary_thread.is_alive():
-            self._summary_thread.join(timeout=5)
-        self._started = False
-
-    def health(self) -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "runtime_started": self._started,
             "websocket_connected": self.market.connected,
             "live_data_available": self.market.live_data_available,
             "live_data_source": self.market.live_data_source,
-            "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
-            "open_positions": len(self.trader.positions),
             "selected_symbols": sorted(self.trader.selected_symbols),
-            "capital_by_symbol": self.trader.capital_by_symbol,
-            "cycles": self.cycle_count,
-            "signals": self.signal_count,
-            "missing_integrations": self.settings.missing_integrations(),
-            "market_status": self.market.status_snapshot(),
+            "cycle_count": self.cycle_count,
+            "signal_count": self.signal_count,
+            "closed_trade_count": self.closed_trade_count,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        self.supabase.upsert("runtime_state", row, "user_id")
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started and self.is_alive():
+                return
+            self._started = True
+            self._stop.clear()
+            self._load_persisted_settings()
+            self.market.start()
+            self.telegram.start()
+            self._summary_thread = threading.Thread(target=self._run_forever, name="bot-runtime", daemon=True)
+            self._summary_thread.start()
+            logger.info("runtime_started")
+
+    def is_alive(self) -> bool:
+        return bool(self._summary_thread and self._summary_thread.is_alive())
+
+    def stop(self) -> None:
+        with self._lock:
+            self._started = False
+            self._stop.set()
+            self.market.stop()
+            self.telegram.stop()
+            if self._summary_thread:
+                self._summary_thread.join(timeout=5)
+            logger.info("runtime_stopped")
+
+    def _run_forever(self) -> None:
+        while not self._stop.is_set():
+            try:
+                with self._lock:
+                    self._persist_runtime_state()
+                    # Watchdog: If no live data for 5 minutes, force reconnect
+                    if self.market.live_data_available:
+                        last_msg = self.market.status_snapshot().get("last_message_at") or self.market.status_snapshot().get("last_rest_message_at")
+                        if last_msg:
+                            age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(last_msg))).total_seconds()
+                            if age > 300:
+                                logger.warning("runtime_watchdog_triggered reason=stale_data age=%ds", age)
+                                self.market._force_reconnect()
+            except Exception as exc:
+                logger.error("runtime_loop_error error=%s", exc)
+            self._stop.wait(60)
+
+    def status_text(self) -> str:
+        with self._lock:
+            ms = self.market.status_snapshot()
+            ready = sorted(ms["strategy_ready_symbols"])
+            return (
+                f"حالة النظام\n"
+                f"مرحلة البدء: {ms['startup_stage']}\n"
+                f"إعادة محاولة جلب الشموع: {'مطلوبة' if ms['next_bootstrap_retry_at'] else 'غير مطلوب؛ التهيئة مكتملة'}\n"
+                f"مصدر بيانات السوق: {'متصل' if self.market.live_data_available else 'غير متصل'}\n"
+                f"آخر حدث: {self.last_event_at.isoformat() if self.last_event_at else 'لا يوجد'}\n"
+                f"العملات المضافة: {', '.join(sorted(self.trader.selected_symbols))}\n"
+                f"الصفقات المفتوحة: {len(self.trader.open_positions)}/{self.settings.max_concurrent_positions}\n"
+                f"التكاملات الناقصة: {', '.join(self.settings.missing_integrations()) or 'لا يوجد'}\n"
+                f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count}\n"
+                f"العملات الجاهزة للتحليل: {', '.join(ready) or 'لا يوجد'}\n"
+                f"التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
+            )
+
+    def prices_text(self) -> str:
+        with self._lock:
+            lines = ["الأسعار الحية:"]
+            for symbol in sorted(self.trader.selected_symbols):
+                price = self.trader.last_prices.get(symbol)
+                lines.append(f"{symbol}: {f'{price:.8f}' if price else 'بانتظار البيانات'}")
+            return "\n".join(lines)
+
+    def performance_text(self) -> str:
+        with self._lock:
+            stats = self.trader.status_snapshot()
+            return (
+                f"أداء النظام (افتراضي)\n"
+                f"PnL اليوم: {stats['realized_pnl_today']:.2f} USDT\n"
+                f"نسبة الربح: {stats.get('win_rate', 0.0)*100:.1f}%\n"
+                f"معدل شارب: {stats.get('sharpe_ratio', 0.0):.2f}\n"
+                f"أقصى تراجع: {stats.get('max_drawdown', 0.0)*100:.1f}%\n"
+                f"إجمالي الصفقات: {self.closed_trade_count}\n"
+                f"رأس المال النشط: {stats['total_capital']:.2f} USDT"
+            )
+
+    def positions_text(self) -> str:
+        with self._lock:
+            positions = self.trader.open_positions
+            if not positions:
+                return "لا توجد صفقات مفتوحة حالياً."
+            lines = ["الصفقات المفتوحة:"]
+            for p in positions:
+                pnl = p.unrealized_pnl(self.trader.last_prices.get(p.symbol, p.entry_price))
+                lines.append(f"{p.symbol}: دخول {p.entry_price:.8f} | PnL: {pnl:.2f} USDT")
+            return "\n".join(lines)
+
+    def coins_text(self) -> str:
+        with self._lock:
+            symbols = sorted(self.trader.selected_symbols)
+            if not symbols:
+                return "لم يتم إضافة أي عملات بعد."
+            lines = ["العملات المراقبة:"]
+            for s in symbols:
+                cap = self.trader.capital_by_symbol.get(s, 0.0)
+                lines.append(f"{s}: {cap:.2f} USDT")
+            return "\n".join(lines)
+
+    def manage_coin(self, symbol: str, capital: float | None = None) -> str:
+        symbol = self._normalise_symbol(symbol)
+        with self._lock:
+            if capital is None:
+                if symbol in self.trader.selected_symbols:
+                    self.trader.remove_symbol(symbol)
+                    self._persist_settings()
+                    return f"تم حذف العملة {symbol} بنجاح."
+                return f"العملة {symbol} غير موجودة."
+            else:
+                self.trader.add_symbol(symbol)
+                self.trader.set_capital(symbol, capital)
+                self._persist_settings()
+                self.market.start()  # Ensure market data client is updated
+                return f"تم إضافة {symbol} برأس مال {capital} USDT."
+
+    def telegram_keyboard(self) -> list[list[str]]:
+        with self._lock:
+            symbols = sorted(self.trader.selected_symbols)
+            rows = []
+            for i in range(0, len(symbols), 2):
+                rows.append(symbols[i:i+2])
+            return rows
+
+    def symbol_status_text(self, symbol: str) -> str:
+        symbol = self._normalise_symbol(symbol)
+        with self._lock:
+            if symbol not in self.trader.selected_symbols:
+                return f"العملة {symbol} غير مراقبة."
+            price = self.trader.last_prices.get(symbol)
+            cap = self.trader.capital_by_symbol.get(symbol, 0.0)
+            decision = self.last_decision_by_symbol.get(symbol, {})
+            return (
+                f"حالة {symbol}\n"
+                f"السعر: {f'{price:.8f}' if price else 'بانتظار البيانات'}\n"
+                f"رأس المال: {cap:.2f} USDT\n"
+                f"آخر قرار: {decision.get('decision', 'لا يوجد')}\n"
+                f"السبب: {decision.get('rejection_reason', '—')}"
+            )

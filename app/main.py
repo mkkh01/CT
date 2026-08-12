@@ -104,6 +104,10 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
     def dashboard_overview() -> Any:
         return jsonify(runtime.dashboard_snapshot())
 
+    @app.get("/dashboard/api/history")
+    def dashboard_history() -> Any:
+        return jsonify(runtime.history_snapshot())
+
     def _ensure_runtime_running():
         if start_runtime and os.getenv("DISABLE_AUTO_START", "0") != "1":
             # Ensure runtime is started and its background threads are alive.
