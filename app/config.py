@@ -45,6 +45,7 @@ class Settings:
     binance_rest_url: str = "https://data-api.binance.vision/api/v3"
     heartbeat_interval_seconds: int = 15
     stale_data_seconds: int = 180
+    websocket_reconnect_grace_seconds: int = 45
     log_level: str = "INFO"
 
     @classmethod
@@ -76,6 +77,7 @@ class Settings:
             binance_rest_url=os.getenv("BINANCE_REST_URL", "https://data-api.binance.vision/api/v3").strip().rstrip("/"),
             heartbeat_interval_seconds=int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "15")),
             stale_data_seconds=int(os.getenv("STALE_DATA_SECONDS", "180")),
+            websocket_reconnect_grace_seconds=int(os.getenv("WEBSOCKET_RECONNECT_GRACE_SECONDS", "45")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 

@@ -44,3 +44,7 @@ grant select, insert, update, delete on table public.runtime_state to service_ro
 ```
 
 After the grant, Supabase contained the expected current row for user `1503808643`: `runtime_started=true`, `websocket_connected=true`, `startup_stage=waiting_for_live_candle_close`, with fresh WebSocket and update timestamps. The remaining code change makes a transport handshake without a market message report as not live, preventing a false green state during the first connection seconds.
+
+## WebSocket incident follow-up
+
+The deployed `/healthz` at 18:55 UTC showed `transport_connected=true`, `connected=false`, `last_message_at=null`, `last_ws_error=null`, and all four symbols with historical data ready. The Dashboard event stream then showed the stream being closed by the peer shortly after the handshake, with no market message delivered. This is not a candle-readiness problem; it is a live-stream transport failure. The app needs a transport-independent recovery path and an explicit distinction between a socket handshake and received market data.

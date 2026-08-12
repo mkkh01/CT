@@ -49,5 +49,9 @@ services:
         value: "0.003"
       - key: ATR_MAX_PCT
         value: "0.08"
+      - key: WEBSOCKET_RECONNECT_GRACE_SECONDS
+        value: "45"
+      - key: STALE_DATA_SECONDS
+        value: "180"
       - key: LOG_LEVEL
         value: INFO

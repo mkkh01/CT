@@ -47,6 +47,7 @@ class BinanceMarketData:
         self._active_stream_url: Optional[str] = None
         self._last_ws_attempt_at: Optional[str] = None
         self._last_liveness_log_at = 0.0
+        self._last_forced_reconnect_at = 0.0
         self._rest_session = requests.Session()
         self._rest_session.headers.update({
             "User-Agent": "CT-Spot-Monitor/1.0",
@@ -499,33 +500,50 @@ class BinanceMarketData:
             if not self._stop.wait(wait_seconds):
                 logger.info("binance_ws_reconnect_wait_seconds=%s endpoint=%s", wait_seconds, base_url)
 
+    def _force_reconnect(self, reason: str) -> None:
+        now = time.time()
+        if now - self._last_forced_reconnect_at < 15:
+            return
+        self._last_forced_reconnect_at = now
+        self._connected = False
+        self._last_ws_error = reason
+        logger.warning("binance_ws_force_reconnect reason=%s endpoint=%s", reason, self._active_stream_url)
+        ws = self._ws
+        if ws:
+            try:
+                ws.keep_running = False
+                ws.close()
+            except Exception as exc:
+                logger.warning("binance_ws_force_close_failed error=%s", exc)
+        thread = self._thread
+        if thread and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=2)
+        if not self._stop.is_set() and (self._thread is None or not self._thread.is_alive()):
+            self._thread = threading.Thread(target=self._run, name="binance-ws", daemon=True)
+            self._thread.start()
+
     def _watchdog_loop(self) -> None:
         stale_after = max(30, self.settings.stale_data_seconds)
+        reconnect_grace = max(15, self.settings.websocket_reconnect_grace_seconds)
         while not self._stop.wait(10):
-            if self._connected:
-                reference = self._last_message_at
-                if reference is None and self._connected_at:
-                    try:
-                        reference = datetime.fromisoformat(self._connected_at).timestamp()
-                    except ValueError:
-                        reference = None
-                age = (time.time() - reference) if reference else None
-                if age is not None and age > stale_after:
-                    now = time.time()
-                    if now - self._last_liveness_log_at >= 30:
-                        self._last_liveness_log_at = now
-                        self._last_ws_error = f"stale_market_data age_seconds={age:.1f}"
-                        logger.warning("binance_ws_stale endpoint=%s age_seconds=%.1f", self._active_stream_url, age)
-                    ws = self._ws
-                    if ws:
-                        try:
-                            ws.close()
-                        except Exception:
-                            pass
+            now = time.time()
+            message_age = (now - self._last_message_at) if self._last_message_at else None
+            attempt_age = None
+            if self._last_ws_attempt_at:
+                try:
+                    attempt_age = now - datetime.fromisoformat(self._last_ws_attempt_at).timestamp()
+                except ValueError:
+                    attempt_age = None
+            if self._connected and message_age is not None and message_age > stale_after:
+                if now - self._last_liveness_log_at >= 30:
+                    self._last_liveness_log_at = now
+                    self._last_ws_error = f"stale_market_data age_seconds={message_age:.1f}"
+                    logger.warning("binance_ws_stale endpoint=%s age_seconds=%.1f", self._active_stream_url, message_age)
+                self._force_reconnect(f"stale_market_data age_seconds={message_age:.1f}")
+            elif not self._connected and (attempt_age is None or attempt_age > reconnect_grace):
+                self._force_reconnect(f"no_live_market_data age_seconds={attempt_age if attempt_age is not None else 'unknown'}")
             if self._thread and not self._thread.is_alive() and not self._stop.is_set():
-                logger.error("binance_ws_thread_not_alive restarting=true")
-                self._thread = threading.Thread(target=self._run, name="binance-ws", daemon=True)
-                self._thread.start()
+                self._force_reconnect("binance_ws_thread_not_alive")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
