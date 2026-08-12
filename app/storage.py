@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -57,6 +58,33 @@ class SupabaseStore:
 
     def update_position(self, position_id: str, row: dict[str, Any]) -> Optional[Any]:
         return self._request("PATCH", f"virtual_positions?id=eq.{position_id}", json=row)
+
+    def _user_filter(self, user_id: str) -> str:
+        return quote(str(user_id), safe="")
+
+    def select_recent_signals(self, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        columns = "id,symbol,timeframe,generated_at,candle_open_time,entry_price,stop_loss,take_profit,reason,risk_reward,status,created_at"
+        result = self._request(
+            "GET",
+            f"signals?select={columns}&user_id=eq.{self._user_filter(user_id)}&order=created_at.desc&limit={min(max(limit, 1), 500)}",
+        )
+        return result if isinstance(result, list) else []
+
+    def select_recent_positions(self, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        columns = "id,signal_id,symbol,capital_allocated,entry_price,stop_loss,take_profit,quantity,opened_at,status,exit_price,closed_at,realized_pnl,close_reason,created_at"
+        result = self._request(
+            "GET",
+            f"virtual_positions?select={columns}&user_id=eq.{self._user_filter(user_id)}&order=created_at.desc&limit={min(max(limit, 1), 500)}",
+        )
+        return result if isinstance(result, list) else []
+
+    def select_recent_events(self, user_id: str, limit: int = 250) -> list[dict[str, Any]]:
+        columns = "id,event_type,payload,created_at"
+        result = self._request(
+            "GET",
+            f"system_events?select={columns}&user_id=eq.{self._user_filter(user_id)}&order=created_at.desc&limit={min(max(limit, 1), 500)}",
+        )
+        return result if isinstance(result, list) else []
 
 
 class RedisStore:

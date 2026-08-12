@@ -5,7 +5,8 @@ os.environ["DISABLE_AUTO_START"] = "1"
 from app.main import create_app
 
 
-def test_health_endpoints_are_available_without_starting_runtime():
+def test_health_endpoints_are_available_without_starting_runtime(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TOKEN", "test-dashboard-token")
     app, runtime = create_app(start_runtime=False)
     client = app.test_client()
     response = client.get("/healthz")
@@ -13,4 +14,5 @@ def test_health_endpoints_are_available_without_starting_runtime():
     body = response.get_json()
     assert body["status"] == "ok"
     assert client.get("/api/status").status_code == 200
-    assert client.get("/api/snapshot").status_code == 200
+    assert client.get("/api/snapshot").status_code == 401
+    assert client.get("/api/snapshot", headers={"X-Dashboard-Token": "test-dashboard-token"}).status_code == 200

@@ -22,6 +22,7 @@ def _normalise_supabase_url(raw: str) -> tuple[str, str]:
 class Settings:
     telegram_chat_id: str = ""
     telegram_bot_token: str = ""
+    dashboard_token: str = ""
     supabase_url: str = ""
     supabase_key: str = ""
     supabase_url_issue: str = ""
@@ -48,6 +49,7 @@ class Settings:
         return cls(
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+            dashboard_token=os.getenv("DASHBOARD_TOKEN", "").strip(),
             supabase_url=supabase_url,
             supabase_key=os.getenv("SUPABASE_KEY", "").strip(),
             supabase_url_issue=supabase_url_issue,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 import re
 import threading
 import time
@@ -38,6 +39,10 @@ class BotRuntime:
         self.rejected_signal_count = 0
         self.closed_trade_count = 0
         self._last_price_log_at: dict[str, float] = {}
+        self.recent_logs: deque[dict[str, Any]] = deque(maxlen=500)
+        self.last_warning: dict[str, Any] | None = None
+        self.last_error_log: dict[str, Any] | None = None
+        self._persisting_runtime_log = False
         self.market = BinanceMarketData(self.settings, self._on_price, self._on_closed_candle)
         self.telegram = TelegramBot(
             self.settings,
@@ -105,6 +110,88 @@ class BotRuntime:
     def _log_event(self, event_type: str, payload: dict[str, Any]) -> None:
         row = {"user_id": self.settings.telegram_chat_id or "local", "event_type": event_type, "payload": payload}
         self.supabase.insert("system_events", row)
+
+    @staticmethod
+    def _redact_log_message(message: str) -> str:
+        message = re.sub(r"(?i)(postgres(?:ql)?://)[^\s]+", r"\1[REDACTED]", message)
+        message = re.sub(r"(?i)(password|secret|token|apikey|api_key|authorization)[=: ]+[^\s]+", r"\1=[REDACTED]", message)
+        return message[:2000]
+
+    def add_runtime_log(self, level: str, message: str, logger_name: str = "app", persist: bool = True) -> None:
+        level = level.upper()
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "logger": logger_name,
+            "message": self._redact_log_message(message),
+        }
+        with self._lock:
+            self.recent_logs.append(record)
+            if level in ("ERROR", "CRITICAL"):
+                self.last_error_log = record
+            elif level == "WARNING":
+                self.last_warning = record
+            if persist and level in ("WARNING", "ERROR", "CRITICAL") and not self._persisting_runtime_log:
+                self._persisting_runtime_log = True
+                try:
+                    self._log_event("runtime_log", record)
+                finally:
+                    self._persisting_runtime_log = False
+
+    def dashboard_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            trader_snapshot = self.trader.snapshot()
+            symbols = sorted(self.trader.selected_symbols)
+            coins = [
+                {
+                    "symbol": symbol,
+                    "capital_usdt": self.trader.capital_by_symbol.get(symbol, 0.0),
+                    "price": self.trader.last_prices.get(symbol),
+                    "position_open": bool(self.trader.position_for_symbol(symbol)),
+                }
+                for symbol in symbols
+            ]
+            overview = {
+                "service": "CT Binance Spot Live Recommendations",
+                "execution": "disabled",
+                "runtime_started": self._started,
+                "websocket_connected": self.market.connected,
+                "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
+                "strategy": "ema_breakout_4h_filter_v1",
+                "timeframes": {"execution": self.settings.execution_timeframe, "higher": self.settings.higher_timeframe},
+                "coins": coins,
+                "capital_by_symbol": self.trader.capital_by_symbol,
+                "total_capital": trader_snapshot["total_capital"],
+                "realized_pnl_today": trader_snapshot["realized_pnl_today"],
+                "daily_loss_limit_pct": trader_snapshot["daily_loss_limit_pct"],
+                "daily_loss_limit_amount": trader_snapshot["daily_loss_limit_amount"],
+                "daily_loss_limit_hit": trader_snapshot["daily_loss_limit_hit"],
+                "open_positions_count": len(trader_snapshot["open_positions"]),
+                "max_concurrent_positions": self.settings.max_concurrent_positions,
+                "cycles": self.cycle_count,
+                "signals": self.signal_count,
+                "rejected_signals": self.rejected_signal_count,
+                "closed_trades": self.closed_trade_count,
+                "last_decision": self.last_decision,
+                "last_signal": self.last_signal.to_dict() if self.last_signal else None,
+                "missing_integrations": self.settings.missing_integrations(),
+            }
+            recent_logs = list(self.recent_logs)[-250:][::-1]
+            last_error = self.last_error_log
+            last_warning = self.last_warning
+        user_id = self.settings.telegram_chat_id or "local"
+        return {
+            "overview": overview,
+            "open_positions": trader_snapshot["open_positions"],
+            "recent_signals": self.supabase.select_recent_signals(user_id, limit=250),
+            "recent_positions": self.supabase.select_recent_positions(user_id, limit=250),
+            "events": self.supabase.select_recent_events(user_id, limit=250),
+            "logs": recent_logs,
+            "errors": [item for item in recent_logs if item["level"] in ("ERROR", "CRITICAL")],
+            "warnings": [item for item in recent_logs if item["level"] == "WARNING"],
+            "last_error": last_error,
+            "last_warning": last_warning,
+        }
 
     def _on_price(self, symbol: str, price: float) -> None:
         symbol = self._normalise_symbol(symbol)

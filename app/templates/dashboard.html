@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CT Trading Monitor</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1220; --panel:#111c2e; --panel2:#16263c; --line:#263a55; --text:#e7eef8; --muted:#91a4bb; --blue:#58a6ff; --green:#3ddc97; --red:#ff6b7a; --amber:#f4c95d; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:linear-gradient(135deg,#09111e,#0e192b 55%,#111d31); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",Tahoma,Arial,sans-serif; }
+    .wrap { max-width:1500px; margin:auto; padding:24px; }
+    header { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; margin-bottom:20px; }
+    h1 { margin:0 0 8px; font-size:clamp(24px,3vw,38px); letter-spacing:-.5px; }
+    h2 { margin:0 0 14px; font-size:18px; }
+    p { color:var(--muted); margin:5px 0; }
+    .top-actions { display:flex; gap:9px; align-items:center; flex-wrap:wrap; }
+    button { border:1px solid #315276; background:#1a3554; color:var(--text); border-radius:9px; padding:10px 15px; cursor:pointer; font-weight:700; }
+    button:hover { background:#244a73; }
+    input { background:#091321; color:var(--text); border:1px solid #365071; border-radius:8px; padding:11px 12px; min-width:240px; }
+    .pill { border-radius:999px; padding:6px 11px; font-size:12px; font-weight:800; display:inline-flex; align-items:center; gap:6px; }
+    .ok { color:#071b12; background:var(--green); } .bad { color:#2a0710; background:var(--red); } .warn { color:#251b03; background:var(--amber); }
+    .panel { background:rgba(17,28,46,.92); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 15px 40px rgba(0,0,0,.16); }
+    .token-panel { margin-bottom:18px; display:none; }
+    .token-panel.show { display:block; }
+    .token-row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+    .metric { background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:15px; min-height:90px; }
+    .metric .label { color:var(--muted); font-size:12px; margin-bottom:8px; }
+    .metric .value { font-size:22px; font-weight:800; overflow-wrap:anywhere; }
+    .metric .hint { color:var(--muted); font-size:11px; margin-top:5px; }
+    .layout { display:grid; grid-template-columns:1.25fr .75fr; gap:18px; margin-bottom:18px; }
+    .full { grid-column:1/-1; }
+    .section-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+    .table-wrap { overflow:auto; max-height:430px; border:1px solid var(--line); border-radius:10px; }
+    table { width:100%; border-collapse:collapse; min-width:700px; }
+    th,td { text-align:right; padding:10px 11px; border-bottom:1px solid rgba(38,58,85,.72); vertical-align:top; font-size:13px; }
+    th { color:var(--muted); background:#0e1a2b; position:sticky; top:0; z-index:1; }
+    tr:last-child td { border-bottom:0; }
+    code,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    .muted { color:var(--muted); } .green { color:var(--green); } .red { color:var(--red); } .amber { color:var(--amber); }
+    .empty { color:var(--muted); padding:20px; text-align:center; }
+    .alert-list { display:grid; gap:9px; max-height:340px; overflow:auto; }
+    .alert { border-right:4px solid var(--amber); background:#17243a; padding:10px 12px; border-radius:7px; }
+    .alert.error { border-right-color:var(--red); } .alert .meta { color:var(--muted); font-size:11px; margin-bottom:4px; }
+    .decision { max-width:380px; white-space:normal; line-height:1.45; }
+    footer { color:var(--muted); font-size:12px; text-align:center; padding:10px; }
+    @media (max-width:1100px) { .grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .layout { grid-template-columns:1fr; } }
+    @media (max-width:650px) { .wrap { padding:14px; } header { flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .metric .value { font-size:18px; } input { min-width:190px; width:100%; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <h1>CT Trading Monitor</h1>
+        <p>لوحة متابعة توصيات Binance Spot — لا يوجد تنفيذ أوامر حقيقية.</p>
+        <p id="last-refresh">لم يتم التحديث بعد</p>
+      </div>
+      <div class="top-actions"><span id="status-pill" class="pill warn">بانتظار المصادقة</span><button id="refresh-btn">تحديث الآن</button></div>
+    </header>
+
+    <section id="token-panel" class="panel token-panel show">
+      <h2>رمز دخول Dashboard</h2>
+      <p>ضع قيمة <code>DASHBOARD_TOKEN</code> التي أضفتها في Render. لا تضعها في GitHub أو ترسلها في Telegram.</p>
+      <div class="token-row"><input id="token-input" type="password" autocomplete="off" placeholder="Dashboard token"><button id="save-token">حفظ وفتح اللوحة</button><button id="clear-token">مسح الرمز</button></div>
+      <p id="auth-message" class="red"></p>
+    </section>
+
+    <section class="grid">
+      <div class="metric"><div class="label">حالة النظام</div><div id="m-runtime" class="value">—</div><div id="m-ws" class="hint">WebSocket: —</div></div>
+      <div class="metric"><div class="label">رأس المال المعرّف</div><div id="m-capital" class="value">—</div><div class="hint">USDT</div></div>
+      <div class="metric"><div class="label">PnL اليوم</div><div id="m-pnl" class="value">—</div><div id="m-pnl-pct" class="hint">—</div></div>
+      <div class="metric"><div class="label">العملات المتابعة</div><div id="m-coins" class="value">—</div><div class="hint">من إعداد المستخدم</div></div>
+      <div class="metric"><div class="label">الإشارات</div><div id="m-signals" class="value">—</div><div id="m-rejected" class="hint">مرفوضة: —</div></div>
+      <div class="metric"><div class="label">الصفقات المفتوحة</div><div id="m-positions" class="value">—</div><div id="m-closed" class="hint">مغلقة: —</div></div>
+    </section>
+
+    <div class="layout">
+      <section class="panel"><div class="section-head"><h2>العملات والأسعار الحية</h2><span id="strategy-label" class="pill">—</span></div><div id="coins-table" class="table-wrap"></div></section>
+      <section class="panel"><div class="section-head"><h2>آخر قرار استراتيجي</h2><span id="decision-state" class="pill warn">—</span></div><div id="last-decision" class="decision muted">لا توجد دورة مسجلة بعد.</div></section>
+    </div>
+
+    <div class="layout">
+      <section class="panel"><div class="section-head"><h2>الإشارات والقبول والرفض</h2><span class="muted">آخر 250 قراراً</span></div><div id="signals-table" class="table-wrap"></div></section>
+      <section class="panel"><div class="section-head"><h2>الصفقات الافتراضية</h2><span class="muted">المفتوحة والتاريخية</span></div><div id="positions-table" class="table-wrap"></div></section>
+    </div>
+
+    <div class="layout">
+      <section class="panel"><div class="section-head"><h2>الأخطاء والتحذيرات</h2><span id="alert-count" class="pill warn">0</span></div><div id="alerts" class="alert-list"></div></section>
+      <section class="panel"><div class="section-head"><h2>أحداث النظام</h2><span class="muted">من Supabase</span></div><div id="events-table" class="table-wrap"></div></section>
+    </div>
+
+    <section class="panel full"><div class="section-head"><h2>سجل النظام التفصيلي</h2><span class="muted">آخر السجلات من بداية الجلسة الحالية</span></div><div id="logs-table" class="table-wrap"></div></section>
+    <footer>تحديث تلقائي كل 10 ثوانٍ. البيانات المعروضة توصيات ومتابعة افتراضية فقط.</footer>
+  </main>
+<script>
+  const TOKEN_KEY = 'ct_dashboard_token';
+  const $ = (id) => document.getElementById(id);
+  const esc = (value) => String(value ?? '—').replace(/[&<>'"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;', '"':'&quot;'}[c]));
+  const num = (value, digits=4) => {
+    if (value === null || value === undefined || value === '') return '—';
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toLocaleString('en-US', {maximumFractionDigits:digits}) : esc(value);
+  };
+  const time = (value) => value ? new Date(value).toLocaleString('ar', {dateStyle:'short', timeStyle:'medium'}) : '—';
+  const token = () => localStorage.getItem(TOKEN_KEY) || '';
+  const setText = (id, value) => { $(id).textContent = value; };
+  const empty = (text) => `<div class="empty">${esc(text)}</div>`;
+  const pill = (text, type='warn') => `<span class="pill ${type}">${esc(text)}</span>`;
+
+  function authMessage(text) {
+    $('auth-message').textContent = text || '';
+    $('token-panel').classList.toggle('show', !!text || !token());
+    setText('status-pill', text ? 'تحتاج رمز الدخول' : 'متصل');
+    $('status-pill').className = `pill ${text ? 'bad' : 'ok'}`;
+  }
+
+  function renderOverview(data) {
+    const o = data.overview || {};
+    const pnl = Number(o.realized_pnl_today || 0);
+    const capital = Number(o.total_capital || 0);
+    const pnlPct = capital ? (pnl / capital * 100) : 0;
+    setText('m-runtime', o.runtime_started ? 'يعمل' : 'متوقف');
+    $('m-runtime').className = `value ${o.runtime_started ? 'green' : 'red'}`;
+    setText('m-ws', `WebSocket: ${o.websocket_connected ? 'متصل' : 'غير متصل'}`);
+    setText('m-capital', `${num(capital, 4)} USDT`);
+    setText('m-pnl', `${num(pnl, 6)} USDT`);
+    $('m-pnl').className = `value ${pnl >= 0 ? 'green' : 'red'}`;
+    setText('m-pnl-pct', `${num(pnlPct, 3)}% | الحد اليومي ${num(o.daily_loss_limit_pct * 100, 2)}%`);
+    setText('m-coins', num((o.coins || []).length, 0));
+    setText('m-signals', num(o.signals, 0));
+    setText('m-rejected', `مرفوضة: ${num(o.rejected_signals, 0)}`);
+    setText('m-positions', `${num(o.open_positions_count, 0)}/${num(o.max_concurrent_positions, 0)}`);
+    setText('m-closed', `مغلقة: ${num(o.closed_trades, 0)}`);
+    setText('strategy-label', `${o.strategy || '—'} | ${o.timeframes?.execution || '—'} / ${o.timeframes?.higher || '—'}`);
+    setText('last-refresh', `آخر تحديث: ${time(new Date().toISOString())} | آخر حدث: ${time(o.last_event_at)}`);
+    renderCoins(o.coins || []);
+    renderDecision(o.last_decision);
+    renderSignals(data);
+    renderPositions(data);
+    renderAlerts(data);
+    renderEvents(data.events || []);
+    renderLogs(data.logs || []);
+  }
+
+  function renderCoins(coins) {
+    if (!coins.length) { $('coins-table').innerHTML = empty('لم يضف المستخدم أي عملة بعد.'); return; }
+    $('coins-table').innerHTML = `<table><thead><tr><th>الزوج</th><th>رأس المال</th><th>السعر</th><th>المتابعة</th></tr></thead><tbody>${coins.map(c => `<tr><td><b>${esc(c.symbol)}</b></td><td>${num(c.capital_usdt,4)} USDT</td><td>${num(c.price,8)}</td><td>${c.position_open ? pill('صفقة مفتوحة','ok') : pill('بانتظار إشارة','warn')}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  function renderDecision(decision) {
+    if (!decision) { setText('last-decision','لا توجد دورة مسجلة بعد.'); setText('decision-state','—'); return; }
+    const state = decision.decision || '—';
+    const kind = state.includes('REJECTED') ? 'bad' : (state === 'NO_SIGNAL' ? 'warn' : 'ok');
+    $('decision-state').outerHTML = `<span id="decision-state" class="pill ${kind}">${esc(state)}</span>`;
+    $('last-decision').innerHTML = `<b>${esc(decision.symbol || '—')}</b><br>الدورة: ${num(decision.cycle,0)} | الإطار: ${esc(decision.timeframe || '—')}<br>الاستراتيجية: ${esc(decision.strategy || '—')}<br>السعر: ${num(decision.price,8)}<br>السبب: ${esc(decision.rejection_reason || decision.signal_payload?.reason || (state === 'NO_SIGNAL' ? 'لم تتحقق شروط الإشارة' : '—'))}<br>الإجراء: ${esc(decision.position_action || 'none')}`;
+  }
+
+  function decisions(data) {
+    return (data.events || []).filter(e => ['strategy_cycle','strategy_decision'].includes(e.event_type)).map(e => ({...e, payload: e.payload || {}}));
+  }
+
+  function renderSignals(data) {
+    const rows = decisions(data).slice(0,250);
+    if (!rows.length) { $('signals-table').innerHTML = empty('لا توجد دورات استراتيجية مسجلة بعد.'); return; }
+    $('signals-table').innerHTML = `<table><thead><tr><th>الوقت</th><th>الزوج</th><th>القرار</th><th>الإشارة</th><th>السبب</th><th>الدخول/الوقف/الهدف</th></tr></thead><tbody>${rows.map(e => { const p=e.payload; const state=p.decision || '—'; const k=state.includes('REJECTED')?'red':(state==='NO_SIGNAL'?'amber':'green'); const sp=p.signal_payload || {}; return `<tr><td class="mono">${time(e.created_at)}</td><td><b>${esc(p.symbol || '—')}</b></td><td class="${k}">${esc(state)}</td><td>${p.signal ? pill('نعم','ok') : pill('لا','warn')}</td><td class="decision">${esc(p.rejection_reason || sp.reason || (state==='NO_SIGNAL'?'شروط الاستراتيجية غير مكتملة':'—'))}</td><td class="mono">${num(sp.entry_price,8)} / ${num(sp.stop_loss,8)} / ${num(sp.take_profit,8)}</td></tr>`; }).join('')}</tbody></table>`;
+  }
+
+  function renderPositions(data) {
+    const rows = (data.recent_positions || []).slice(0,250);
+    if (!rows.length && !(data.open_positions || []).length) { $('positions-table').innerHTML = empty('لا توجد صفقات افتراضية بعد.'); return; }
+    const openRows = (data.open_positions || []).map(p => ({...p, status:'OPEN'}));
+    const combined = [...openRows, ...rows.filter(p => !openRows.some(o => o.id === p.id))];
+    $('positions-table').innerHTML = `<table><thead><tr><th>الزوج</th><th>الحالة</th><th>رأس المال</th><th>الدخول</th><th>الخروج</th><th>PnL</th><th>السبب</th></tr></thead><tbody>${combined.map(p => `<tr><td><b>${esc(p.symbol)}</b></td><td>${p.status==='OPEN'?pill('مفتوحة','ok'):pill('مغلقة','warn')}</td><td>${num(p.capital_allocated,4)}</td><td>${num(p.entry_price,8)}</td><td>${num(p.exit_price,8)}</td><td class="${Number(p.realized_pnl||0)>=0?'green':'red'}">${num(p.realized_pnl,6)}</td><td>${esc(p.close_reason || '—')}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  function renderAlerts(data) {
+    const alerts = [...(data.errors || []), ...(data.warnings || [])].slice(0,100);
+    setText('alert-count', String(alerts.length));
+    if (!alerts.length) { $('alerts').innerHTML = empty('لا توجد أخطاء أو تحذيرات مسجلة.'); return; }
+    $('alerts').innerHTML = alerts.map(a => `<div class="alert ${a.level==='ERROR'||a.level==='CRITICAL'?'error':''}"><div class="meta">${esc(a.level)} · ${esc(a.logger)} · ${time(a.timestamp)}</div><div>${esc(a.message)}</div></div>`).join('');
+  }
+
+  function renderEvents(events) {
+    if (!events.length) { $('events-table').innerHTML = empty('لا توجد أحداث محفوظة في Supabase بعد.'); return; }
+    $('events-table').innerHTML = `<table><thead><tr><th>الوقت</th><th>النوع</th><th>المحتوى</th></tr></thead><tbody>${events.slice(0,200).map(e => `<tr><td class="mono">${time(e.created_at)}</td><td>${esc(e.event_type)}</td><td class="decision mono">${esc(JSON.stringify(e.payload || {}))}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  function renderLogs(logs) {
+    if (!logs.length) { $('logs-table').innerHTML = empty('لم تصل سجلات runtime إلى Dashboard بعد.'); return; }
+    $('logs-table').innerHTML = `<table><thead><tr><th>الوقت</th><th>المستوى</th><th>المصدر</th><th>الرسالة</th></tr></thead><tbody>${logs.slice(0,250).map(l => `<tr><td class="mono">${time(l.timestamp)}</td><td class="${l.level==='ERROR'||l.level==='CRITICAL'?'red':(l.level==='WARNING'?'amber':'muted')}">${esc(l.level)}</td><td>${esc(l.logger)}</td><td class="decision">${esc(l.message)}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function refresh() {
+    const t = token();
+    if (!t) { authMessage('أدخل DASHBOARD_TOKEN لفتح البيانات.'); return; }
+    try {
+      const response = await fetch('/dashboard/api/overview', {headers:{'X-Dashboard-Token':t}, cache:'no-store'});
+      if (response.status === 401) { authMessage('رمز Dashboard غير صحيح.'); return; }
+      if (response.status === 503) { authMessage('DASHBOARD_TOKEN غير مضبوط في Render.'); return; }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      renderOverview(await response.json());
+      authMessage('');
+    } catch (err) {
+      $('status-pill').textContent = 'خطأ في الاتصال'; $('status-pill').className='pill bad';
+      $('auth-message').textContent = `تعذر تحديث البيانات: ${err.message}`;
+    }
+  }
+
+  $('save-token').onclick = () => { const value=$('token-input').value.trim(); if (value) { localStorage.setItem(TOKEN_KEY,value); $('token-input').value=''; refresh(); } };
+  $('clear-token').onclick = () => { localStorage.removeItem(TOKEN_KEY); refresh(); };
+  $('refresh-btn').onclick = refresh;
+  $('token-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save-token').click(); });
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>
