@@ -520,65 +520,61 @@ class BotRuntime:
             self._stop.wait(60)
 
     def status_text(self) -> str:
-        with self._lock:
-            ms = self.market.status_snapshot()
-            ready = sorted(ms["strategy_ready_symbols"])
-            return (
-                f"حالة النظام\n"
-                f"مرحلة البدء: {ms['startup_stage']}\n"
-                f"إعادة محاولة جلب الشموع: {'مطلوبة' if ms['next_bootstrap_retry_at'] else 'غير مطلوب؛ التهيئة مكتملة'}\n"
-                f"مصدر بيانات السوق: {'متصل' if self.market.live_data_available else 'غير متصل'}\n"
-                f"آخر حدث: {self.last_event_at.isoformat() if self.last_event_at else 'لا يوجد'}\n"
-                f"العملات المضافة: {', '.join(sorted(self.trader.selected_symbols))}\n"
-                f"الصفقات المفتوحة: {len(self.trader.open_positions)}/{self.settings.max_concurrent_positions}\n"
-                f"التكاملات الناقصة: {', '.join(self.settings.missing_integrations()) or 'لا يوجد'}\n"
-                f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count}\n"
-                f"العملات الجاهزة للتحليل: {', '.join(ready) or 'لا يوجد'}\n"
-                f"التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
-            )
+        # Lock-free read for Telegram responsiveness
+        ms = self.market.status_snapshot()
+        ready = sorted(ms.get("strategy_ready_symbols", []))
+        return (
+            f"حالة النظام\n"
+            f"مرحلة البدء: {ms.get('startup_stage', '—')}\n"
+            f"إعادة محاولة جلب الشموع: {'مطلوبة' if ms.get('next_bootstrap_retry_at') else 'غير مطلوب؛ التهيئة مكتملة'}\n"
+            f"مصدر بيانات السوق: {'متصل' if self.market.live_data_available else 'غير متصل'}\n"
+            f"آخر حدث: {self.last_event_at.isoformat() if self.last_event_at else 'لا يوجد'}\n"
+            f"العملات المضافة: {', '.join(sorted(self.trader.selected_symbols))}\n"
+            f"الصفقات المفتوحة: {len(self.trader.open_positions)}/{self.settings.max_concurrent_positions}\n"
+            f"التكاملات الناقصة: {', '.join(self.settings.missing_integrations()) or 'لا يوجد'}\n"
+            f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count}\n"
+            f"العملات الجاهزة للتحليل: {', '.join(ready) or 'لا يوجد'}\n"
+            f"التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
+        )
 
     def prices_text(self) -> str:
-        with self._lock:
-            lines = ["الأسعار الحية:"]
-            for symbol in sorted(self.trader.selected_symbols):
-                price = self.trader.last_prices.get(symbol)
-                lines.append(f"{symbol}: {f'{price:.8f}' if price else 'بانتظار البيانات'}")
-            return "\n".join(lines)
+        lines = ["الأسعار الحية:"]
+        for symbol in sorted(self.trader.selected_symbols):
+            price = self.trader.last_prices.get(symbol)
+            lines.append(f"{symbol}: {f'{price:.8f}' if price else 'بانتظار البيانات'}")
+        return "\n".join(lines)
 
     def performance_text(self) -> str:
-        with self._lock:
-            stats = self.trader.status_snapshot()
-            return (
-                f"أداء النظام (افتراضي)\n"
-                f"PnL اليوم: {stats['realized_pnl_today']:.2f} USDT\n"
-                f"نسبة الربح: {stats.get('win_rate', 0.0)*100:.1f}%\n"
-                f"معدل شارب: {stats.get('sharpe_ratio', 0.0):.2f}\n"
-                f"أقصى تراجع: {stats.get('max_drawdown', 0.0)*100:.1f}%\n"
-                f"إجمالي الصفقات: {self.closed_trade_count}\n"
-                f"رأس المال النشط: {stats['total_capital']:.2f} USDT"
-            )
+        stats = self.trader.status_snapshot()
+        return (
+            f"أداء النظام (افتراضي)\n"
+            f"PnL اليوم: {stats.get('realized_pnl_today', 0.0):.2f} USDT\n"
+            f"نسبة الربح: {stats.get('win_rate', 0.0)*100:.1f}%\n"
+            f"معدل شارب: {stats.get('sharpe_ratio', 0.0):.2f}\n"
+            f"أقصى تراجع: {stats.get('max_drawdown', 0.0)*100:.1f}%\n"
+            f"إجمالي الصفقات: {self.closed_trade_count}\n"
+            f"رأس المال النشط: {stats.get('total_capital', 0.0):.2f} USDT"
+        )
 
     def positions_text(self) -> str:
-        with self._lock:
-            positions = self.trader.open_positions
-            if not positions:
-                return "لا توجد صفقات مفتوحة حالياً."
-            lines = ["الصفقات المفتوحة:"]
-            for p in positions:
-                pnl = p.unrealized_pnl(self.trader.last_prices.get(p.symbol, p.entry_price))
-                lines.append(f"{p.symbol}: دخول {p.entry_price:.8f} | PnL: {pnl:.2f} USDT")
-            return "\n".join(lines)
+        positions = self.trader.open_positions
+        if not positions:
+            return "لا توجد صفقات مفتوحة حالياً."
+        lines = ["الصفقات المفتوحة:"]
+        for p in positions:
+            pnl = p.unrealized_pnl(self.trader.last_prices.get(p.symbol, p.entry_price))
+            lines.append(f"{p.symbol}: دخول {p.entry_price:.8f} | PnL: {pnl:.2f} USDT")
+        return "\n".join(lines)
 
     def coins_text(self) -> str:
-        with self._lock:
-            symbols = sorted(self.trader.selected_symbols)
-            if not symbols:
-                return "لم يتم إضافة أي عملات بعد."
-            lines = ["العملات المراقبة:"]
-            for s in symbols:
-                cap = self.trader.capital_by_symbol.get(s, 0.0)
-                lines.append(f"{s}: {cap:.2f} USDT")
-            return "\n".join(lines)
+        symbols = sorted(self.trader.selected_symbols)
+        if not symbols:
+            return "لم يتم إضافة أي عملات بعد."
+        lines = ["العملات المراقبة:"]
+        for s in symbols:
+            cap = self.trader.capital_by_symbol.get(s, 0.0)
+            lines.append(f"{s}: {cap:.2f} USDT")
+        return "\n".join(lines)
 
     def manage_coin(self, command: str) -> str:
         """Unified command handler for coin management: add:SYMBOL:CAPITAL or remove:SYMBOL"""
@@ -635,16 +631,15 @@ class BotRuntime:
 
     def symbol_status_text(self, symbol: str) -> str:
         symbol = self._normalise_symbol(symbol)
-        with self._lock:
-            if symbol not in self.trader.selected_symbols:
-                return f"العملة {symbol} غير مراقبة."
-            price = self.trader.last_prices.get(symbol)
-            cap = self.trader.capital_by_symbol.get(symbol, 0.0)
-            decision = self.last_decision_by_symbol.get(symbol, {})
-            return (
-                f"حالة {symbol}\n"
-                f"السعر: {f'{price:.8f}' if price else 'بانتظار البيانات'}\n"
-                f"رأس المال: {cap:.2f} USDT\n"
-                f"آخر قرار: {decision.get('decision', 'لا يوجد')}\n"
-                f"السبب: {decision.get('rejection_reason', '—')}"
-            )
+        if symbol not in self.trader.selected_symbols:
+            return f"العملة {symbol} غير مراقبة."
+        price = self.trader.last_prices.get(symbol)
+        cap = self.trader.capital_by_symbol.get(symbol, 0.0)
+        decision = self.last_decision_by_symbol.get(symbol, {})
+        return (
+            f"حالة {symbol}\n"
+            f"السعر: {f'{price:.8f}' if price else 'بانتظار البيانات'}\n"
+            f"رأس المال: {cap:.2f} USDT\n"
+            f"آخر قرار: {decision.get('decision', 'لا يوجد')}\n"
+            f"السبب: {decision.get('rejection_reason', '—')}"
+        )
