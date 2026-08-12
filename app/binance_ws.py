@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -105,12 +106,43 @@ class BinanceMarketData:
         }
 
     def _retry_after_seconds(self, response: requests.Response) -> int:
+        """Honor Binance retryAfter/ban-until timestamps instead of retrying early."""
+        retry_at_ms: int | None = None
+        try:
+            payload = response.json()
+            data = payload.get("data", {}) if isinstance(payload, dict) else {}
+            retry_at_ms = payload.get("retryAfter") or data.get("retryAfter")
+        except (ValueError, TypeError, AttributeError):
+            pass
+        if retry_at_ms:
+            try:
+                return max(30, int(float(retry_at_ms) / 1000 - time.time()) + 5)
+            except (TypeError, ValueError):
+                pass
         raw = response.headers.get("Retry-After", "")
         try:
             value = int(float(raw))
         except (TypeError, ValueError):
             value = 60
-        return max(30, min(value, 900))
+        return max(30, min(value, 86400))
+
+    def _update_cooldown_from_ws_error(self, error: BaseException) -> None:
+        text = str(error)
+        match = re.search(r"(?:retry-after|retryAfter)[^0-9]{1,20}(\d{2,})", text, flags=re.IGNORECASE)
+        if match:
+            try:
+                retry_at_or_seconds = int(match.group(1))
+                seconds = retry_at_or_seconds - int(time.time()) if retry_at_or_seconds > 10_000_000_000 else retry_at_or_seconds
+                self._bootstrap_rate_limited_until = max(self._bootstrap_rate_limited_until, time.time() + max(30, seconds) + 5)
+                return
+            except ValueError:
+                pass
+        ban_match = re.search(r"banned until (\d{13})", text, flags=re.IGNORECASE)
+        if ban_match:
+            try:
+                self._bootstrap_rate_limited_until = max(self._bootstrap_rate_limited_until, int(ban_match.group(1)) / 1000 + 5)
+            except ValueError:
+                pass
 
     def _fetch_klines_via_ws_api(self, symbol: str, interval: str) -> Optional[list[Any]]:
         """Fetch recent public klines through Binance WebSocket API without API keys."""
@@ -144,6 +176,7 @@ class BinanceMarketData:
                 logger.warning("market_bootstrap_ws_api_failed symbol=%s interval=%s code=%s msg=%s", symbol, interval, error.get("code"), error.get("msg"))
                 return None
         except (OSError, websocket.WebSocketException, json.JSONDecodeError, ValueError) as exc:
+            self._update_cooldown_from_ws_error(exc)
             logger.warning("market_bootstrap_ws_api_exception symbol=%s interval=%s error=%s", symbol, interval, exc)
             return None
         finally:
