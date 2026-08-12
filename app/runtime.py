@@ -49,6 +49,15 @@ class BotRuntime:
         self._sync_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._sync_thread: Optional[threading.Thread] = None
         
+        # History cache to avoid blocking HTTP requests on Supabase reads
+        self._history_cache: dict[str, Any] = {
+            "recent_signals": [],
+            "recent_positions": [],
+            "events": [],
+            "persisted_state": None,
+            "last_updated": 0
+        }
+        
         self.market = BinanceMarketData(self.settings, self._on_price, self._on_closed_candle)
         self.telegram = TelegramBot(
             self.settings,
@@ -167,7 +176,7 @@ class BotRuntime:
         }
 
     def dashboard_snapshot(self) -> dict[str, Any]:
-        """Returns lightweight overview for fast UI loading."""
+        """Returns lightweight overview for fast UI loading. NO network I/O."""
         with self._lock:
             trader_snapshot = self.trader.status_snapshot()
             symbols = sorted(self.trader.selected_symbols)
@@ -247,60 +256,58 @@ class BotRuntime:
             }
             last_error = self.last_error_log
             last_warning = self.last_warning
-        user_id = self.settings.telegram_chat_id or "local"
-        persisted_state = self.supabase.select_runtime_state(user_id)
-        database_sync: dict[str, Any] = {
-            "available": bool(persisted_state),
-            "updated_at": persisted_state.get("updated_at") if persisted_state else None,
-            "age_seconds": None,
-            "state_matches_live": False,
-            "symbols_match": False,
-        }
-        if persisted_state:
-            try:
-                persisted_at = datetime.fromisoformat(str(persisted_state["updated_at"]).replace("Z", "+00:00"))
-                database_sync["age_seconds"] = max(0.0, (datetime.now(timezone.utc) - persisted_at).total_seconds())
-            except (KeyError, TypeError, ValueError):
-                database_sync["age_seconds"] = None
-            persisted_symbols = set(persisted_state.get("selected_symbols") or [])
-            database_sync["symbols_match"] = persisted_symbols == set(symbols)
-            database_sync["state_matches_live"] = (
-                bool(persisted_state.get("runtime_started")) == bool(overview["runtime_started"])
-                and bool(persisted_state.get("websocket_connected")) == bool(overview["websocket_connected"])
-                and database_sync["symbols_match"]
-            )
-            overview["database_sync"] = database_sync
-        
-        with self._lock:
+            
             all_logs = list(self.recent_logs)
-        errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
-        warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
+            errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
+            warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
 
-        # Do not block the snapshot on heavy network I/O
-        return {
-            "overview": overview,
-            "open_positions": trader_snapshot["open_positions"],
-            "last_error": last_error,
-            "last_warning": last_warning,
-            "errors": errors,
-            "warnings": warnings,
-            "recent_signals": [], # Loaded via history endpoint
-            "recent_positions": [],
-            "events": [],
-            "logs": all_logs[-100:][::-1],
-        }
+            # Use cached history instead of calling Supabase
+            persisted_state = self._history_cache.get("persisted_state")
+            database_sync: dict[str, Any] = {
+                "available": bool(persisted_state),
+                "updated_at": persisted_state.get("updated_at") if persisted_state else None,
+                "age_seconds": None,
+                "state_matches_live": False,
+                "symbols_match": False,
+            }
+            if persisted_state:
+                try:
+                    persisted_at = datetime.fromisoformat(str(persisted_state["updated_at"]).replace("Z", "+00:00"))
+                    database_sync["age_seconds"] = max(0.0, (datetime.now(timezone.utc) - persisted_at).total_seconds())
+                except (KeyError, TypeError, ValueError):
+                    database_sync["age_seconds"] = None
+                persisted_symbols = set(persisted_state.get("selected_symbols") or [])
+                database_sync["symbols_match"] = persisted_symbols == set(symbols)
+                database_sync["state_matches_live"] = (
+                    bool(persisted_state.get("runtime_started")) == bool(overview["runtime_started"])
+                    and bool(persisted_state.get("websocket_connected")) == bool(overview["websocket_connected"])
+                    and database_sync["symbols_match"]
+                )
+                overview["database_sync"] = database_sync
+
+            return {
+                "overview": overview,
+                "open_positions": trader_snapshot["open_positions"],
+                "last_error": last_error,
+                "last_warning": last_warning,
+                "errors": errors,
+                "warnings": warnings,
+                "recent_signals": self._history_cache.get("recent_signals", []),
+                "recent_positions": self._history_cache.get("recent_positions", []),
+                "events": self._history_cache.get("events", []),
+                "logs": all_logs[-100:][::-1],
+            }
 
     def history_snapshot(self) -> dict[str, Any]:
-        """Returns heavy historical data for background loading."""
-        user_id = self.settings.telegram_chat_id or "local"
+        """Returns heavy historical data from memory cache. NO network I/O."""
         with self._lock:
             recent_logs = list(self.recent_logs)[-100:][::-1]
-        return {
-            "recent_signals": self.supabase.select_recent_signals(user_id, limit=50),
-            "recent_positions": self.supabase.select_recent_positions(user_id, limit=50),
-            "events": self.supabase.select_recent_events(user_id, limit=50),
-            "logs": recent_logs,
-        }
+            return {
+                "recent_signals": self._history_cache.get("recent_signals", []),
+                "recent_positions": self._history_cache.get("recent_positions", []),
+                "events": self._history_cache.get("events", []),
+                "logs": recent_logs,
+            }
 
     def _on_price(self, symbol: str, price: float) -> None:
         symbol = self._normalise_symbol(symbol)
@@ -431,8 +438,25 @@ class BotRuntime:
     def _sync_worker(self) -> None:
         """Background thread to process Supabase synchronization without blocking."""
         logger.info("sync_worker_started")
+        last_history_refresh = 0
+        user_id = self.settings.telegram_chat_id or "local"
+
         while not self._stop.is_set():
             try:
+                # Periodic history refresh (every 2 minutes)
+                now = time.time()
+                if now - last_history_refresh >= 120:
+                    try:
+                        self._history_cache["recent_signals"] = self.supabase.select_recent_signals(user_id, limit=50) or []
+                        self._history_cache["recent_positions"] = self.supabase.select_recent_positions(user_id, limit=50) or []
+                        self._history_cache["events"] = self.supabase.select_recent_events(user_id, limit=50) or []
+                        self._history_cache["persisted_state"] = self.supabase.select_runtime_state(user_id)
+                        self._history_cache["last_updated"] = now
+                        last_history_refresh = now
+                        logger.info("sync_worker_history_refreshed")
+                    except Exception as e:
+                        logger.warning("sync_worker_history_refresh_failed error=%s", e)
+
                 try:
                     task = self._sync_queue.get(timeout=1.0)
                 except queue.Empty:

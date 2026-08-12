@@ -83,6 +83,10 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }), 200
 
+    @app.get("/ping")
+    def ping() -> Any:
+        return "pong", 200
+
     @app.get("/healthz")
     def healthz() -> Any:
         status = runtime.health()
