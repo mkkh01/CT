@@ -4,6 +4,7 @@ import atexit
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,7 +25,6 @@ def create_app():
 
     @app.get("/ping")
     def ping():
-        logger.info("Ping received")
         return "pong", 200
 
     @app.get("/healthz")
@@ -56,11 +56,8 @@ def create_app():
     if os.getenv("DISABLE_AUTO_START", "0") != "1":
         def start_async():
             try:
-                # Small delay to let Gunicorn finish binding
-                time_to_wait = 5
-                logger.info(f"Waiting {time_to_wait}s before starting BotRuntime...")
-                import time
-                time.sleep(time_to_wait)
+                # Small delay to let server finish binding
+                time.sleep(5)
                 logger.info("Starting BotRuntime...")
                 runtime.start()
                 logger.info("BotRuntime started successfully.")
@@ -73,7 +70,7 @@ def create_app():
         atexit.register(runtime.stop)
 
     logger.info("Flask app created successfully.")
-    return app, runtime
+    return app
 
-# Gunicorn entry point
-app, runtime = create_app()
+# Entry point for Waitress/Gunicorn
+app = create_app()

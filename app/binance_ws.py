@@ -671,20 +671,60 @@ class BinanceMarketData:
             if self._thread and not self._thread.is_alive() and not self._stop.is_set():
                 self._force_reconnect("binance_ws_thread_not_alive")
 
+    def _combined_loop(self) -> None:
+        """Combined loop for watchdog and bootstrap retry to save threads."""
+        last_watchdog = 0
+        while not self._stop.is_set():
+            now = time.time()
+            
+            # Watchdog (every 10s)
+            if now - last_watchdog >= 10:
+                self._watchdog_step()
+                last_watchdog = now
+                
+            # Bootstrap retry check
+            if self.symbols:
+                state = self.status_snapshot()
+                all_data_ready = bool(self.symbols) and set(state.get("data_ready_symbols", [])) == set(self.symbols)
+                if not all_data_ready:
+                    wait_seconds = max(0.0, self._next_bootstrap_retry_at - time.time())
+                    if wait_seconds <= 0:
+                        logger.info("market_bootstrap_retry_due symbols=%s", self.symbols)
+                        self.bootstrap()
+            
+            self._stop.wait(5)
+
+    def _watchdog_step(self) -> None:
+        stale_after = max(30, self.settings.stale_data_seconds)
+        reconnect_grace = max(15, self.settings.websocket_reconnect_grace_seconds)
+        now = time.time()
+        message_age = (now - self._last_message_at) if self._last_message_at else None
+        attempt_age = None
+        if self._last_ws_attempt_at:
+            try:
+                attempt_age = now - datetime.fromisoformat(self._last_ws_attempt_at).timestamp()
+            except ValueError:
+                attempt_age = None
+        if self._connected and message_age is not None and message_age > stale_after:
+            self._force_reconnect(f"stale_market_data age_seconds={message_age:.1f}")
+        elif not self._connected and (attempt_age is None or attempt_age > reconnect_grace):
+            self._force_reconnect(f"no_live_market_data age_seconds={attempt_age if attempt_age is not None else 'unknown'}")
+        if self._thread and not self._thread.is_alive() and not self._stop.is_set():
+            self._force_reconnect("binance_ws_thread_not_alive")
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        # Launch bootstrap in a background thread to avoid blocking the main app startup.
-        # This is critical for cloud platforms like Render where startup timeouts are strict.
+        # Launch bootstrap in a background thread
         threading.Thread(target=self.bootstrap, name="binance-initial-bootstrap", daemon=True).start()
         
         self._thread = threading.Thread(target=self._run, name="binance-ws", daemon=True)
         self._thread.start()
-        self._bootstrap_thread = threading.Thread(target=self._bootstrap_retry_loop, name="binance-bootstrap-retry", daemon=True)
-        self._bootstrap_thread.start()
-        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="binance-ws-watchdog", daemon=True)
+        
+        self._watchdog_thread = threading.Thread(target=self._combined_loop, name="binance-combined", daemon=True)
         self._watchdog_thread.start()
+        
         self._poll_thread = threading.Thread(target=self._poll_loop, name="binance-rest-fallback", daemon=True)
         self._poll_thread.start()
 

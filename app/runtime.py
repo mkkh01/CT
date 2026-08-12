@@ -436,15 +436,22 @@ class BotRuntime:
         self._sync_queue.put(("upsert_runtime_state", row))
 
     def _sync_worker(self) -> None:
-        """Background thread to process Supabase synchronization without blocking."""
+        """Background thread to process Supabase sync and summary cycle."""
         logger.info("sync_worker_started")
         last_history_refresh = 0
+        last_summary_cycle = 0
         user_id = self.settings.telegram_chat_id or "local"
 
         while not self._stop.is_set():
             try:
-                # Periodic history refresh (every 2 minutes)
                 now = time.time()
+                
+                # Summary Cycle (every 60s) - moved here to save a thread
+                if now - last_summary_cycle >= 60:
+                    self._summary_step()
+                    last_summary_cycle = now
+
+                # Periodic history refresh (every 2 minutes)
                 if now - last_history_refresh >= 120:
                     try:
                         self._history_cache["recent_signals"] = self.supabase.select_recent_signals(user_id, limit=50) or []
@@ -484,6 +491,30 @@ class BotRuntime:
                 logger.error("sync_worker_error op=%s error=%s", locals().get('op', 'unknown'), exc)
                 time.sleep(2)
 
+    def _summary_step(self) -> None:
+        """Single step of the summary cycle."""
+        try:
+            now_ts = time.time()
+            with self._lock:
+                # Persist state less frequently to reduce lock contention
+                # We use a simple attribute to track last persist inside summary step
+                if not hasattr(self, '_last_persist_at'): self._last_persist_at = 0
+                if now_ts - self._last_persist_at >= 300:
+                    self._persist_runtime_state()
+                    self._last_persist_at = now_ts
+
+                # Watchdog: If no live data for 5 minutes, force reconnect
+                if self.market.live_data_available:
+                    ms = self.market.status_snapshot()
+                    last_msg = ms.get("last_message_at") or ms.get("last_rest_message_at")
+                    if last_msg:
+                        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(last_msg))).total_seconds()
+                        if age > 300:
+                            logger.warning("runtime_watchdog_triggered reason=stale_data age=%ds", age)
+                            self.market._force_reconnect("stale_data_watchdog")
+        except Exception as exc:
+            logger.error("summary_step_error error=%s", exc)
+
     def start(self) -> None:
         with self._lock:
             if self._started and self.is_alive():
@@ -491,22 +522,19 @@ class BotRuntime:
             self._started = True
             self._stop.clear()
             
-            # Load settings in background to avoid blocking startup
+            # Load settings in background
             threading.Thread(target=self._load_persisted_settings, name="load-settings", daemon=True).start()
             
             self.market.start()
             self.telegram.start()
             
-            # Start sync worker
+            # Start combined sync and summary worker
             self._sync_thread = threading.Thread(target=self._sync_worker, name="sync-worker", daemon=True)
             self._sync_thread.start()
-            
-            self._summary_thread = threading.Thread(target=self._run_forever, name="bot-runtime", daemon=True)
-            self._summary_thread.start()
             logger.info("runtime_started")
 
     def is_alive(self) -> bool:
-        return bool(self._summary_thread and self._summary_thread.is_alive())
+        return bool(self._sync_thread and self._sync_thread.is_alive())
 
     def stop(self) -> None:
         with self._lock:
@@ -514,34 +542,9 @@ class BotRuntime:
             self._stop.set()
             self.market.stop()
             self.telegram.stop()
-            if self._summary_thread:
-                self._summary_thread.join(timeout=5)
             if self._sync_thread:
                 self._sync_thread.join(timeout=5)
             logger.info("runtime_stopped")
-
-    def _run_forever(self) -> None:
-        last_persist = 0
-        while not self._stop.is_set():
-            try:
-                now_ts = time.time()
-                with self._lock:
-                    # Persist state less frequently to reduce lock contention
-                    if now_ts - last_persist >= 300:
-                        self._persist_runtime_state()
-                        last_persist = now_ts
-
-                    # Watchdog: If no live data for 5 minutes, force reconnect
-                    if self.market.live_data_available:
-                        last_msg = self.market.status_snapshot().get("last_message_at") or self.market.status_snapshot().get("last_rest_message_at")
-                        if last_msg:
-                            age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(last_msg))).total_seconds()
-                            if age > 300:
-                                logger.warning("runtime_watchdog_triggered reason=stale_data age=%ds", age)
-                                self.market._force_reconnect()
-            except Exception as exc:
-                logger.error("runtime_loop_error error=%s", exc)
-            self._stop.wait(60)
 
     def status_text(self) -> str:
         # Lock-free read for Telegram responsiveness
