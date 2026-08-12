@@ -13,8 +13,14 @@ def test_health_endpoints_are_available_without_starting_runtime(monkeypatch):
     assert response.status_code == 200
     body = response.get_json()
     assert body["status"] == "ok"
-    assert client.get("/", follow_redirects=False).status_code == 302
-    assert client.get("/", follow_redirects=False).headers["Location"].endswith("/dashboard")
+    index = client.get("/", follow_redirects=False)
+    assert index.status_code == 200
+    assert "CT Trading Monitor" in index.get_data(as_text=True)
+    assert "Location" not in index.headers
+    heartbeat = client.get("/cron/heartbeat", follow_redirects=False)
+    assert heartbeat.status_code == 200
+    assert heartbeat.get_json()["status"] == "ok"
+    assert "Location" not in heartbeat.headers
     assert client.get("/api/status").status_code == 200
     assert client.get("/api/snapshot").status_code == 401
     assert client.get("/api/snapshot", headers={"X-Dashboard-Token": "test-dashboard-token"}).status_code == 200

@@ -3,11 +3,12 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+from datetime import datetime, timezone
 from functools import wraps
 from hmac import compare_digest
 from typing import Any, Callable
 
-from flask import Flask, jsonify, redirect, render_template, request
+from flask import Flask, jsonify, render_template, request
 
 from .config import Settings
 from .runtime import BotRuntime
@@ -74,7 +75,22 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
 
     @app.get("/")
     def index() -> Any:
-        return redirect("/dashboard")
+        # Serve the dashboard at the root so browsers and simple monitors do not
+        # receive a redirect when opening the Render service URL.
+        return render_template("dashboard.html")
+
+    @app.get("/cron/heartbeat")
+    def cron_heartbeat() -> Any:
+        # Public, minimal keep-alive endpoint for external Cron services.
+        # It intentionally exposes no capital, symbol, token, or database data.
+        health = runtime.health()
+        return jsonify({
+            "status": "ok",
+            "service": "CT Binance Spot Live Recommendations",
+            "runtime_started": health.get("runtime_started", False),
+            "websocket_connected": health.get("websocket_connected", False),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }), 200
 
     @app.get("/healthz")
     def healthz() -> Any:
