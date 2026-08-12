@@ -145,6 +145,18 @@ class BotRuntime:
                 finally:
                     self._persisting_runtime_log = False
 
+    def health(self) -> dict[str, Any]:
+        """Minimal health status for Render and external monitors."""
+        with self._lock:
+            return {
+                "status": "ok",
+                "runtime_started": self._started,
+                "websocket_connected": self.market.connected,
+                "selected_symbols": sorted(self.trader.selected_symbols),
+                "open_positions": len(self.trader.open_positions),
+                "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
+            }
+
     def dashboard_snapshot(self) -> dict[str, Any]:
         """Returns lightweight overview for fast UI loading."""
         with self._lock:
