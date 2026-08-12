@@ -104,9 +104,21 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
     def dashboard_overview() -> Any:
         return jsonify(runtime.dashboard_snapshot())
 
-    if start_runtime and os.getenv("DISABLE_AUTO_START", "0") != "1":
-        runtime.start()
-        atexit.register(runtime.stop)
+    def _ensure_runtime_running():
+        if start_runtime and os.getenv("DISABLE_AUTO_START", "0") != "1":
+            # Ensure runtime is started and its background threads are alive.
+            # Gunicorn forks workers, which can leave the runtime in a "started" state
+            # but without the actual background threads from the master process.
+            if not runtime._started or not runtime.is_alive():
+                runtime.start()
+                # Use a flag to avoid multiple registrations
+                if not hasattr(app, "_atexit_registered"):
+                    atexit.register(runtime.stop)
+                    app._atexit_registered = True
+
+    @app.before_request
+    def lazy_start_runtime():
+        _ensure_runtime_running()
 
     return app, runtime
 

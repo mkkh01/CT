@@ -623,8 +623,16 @@ class BotRuntime:
                     self.market.restart()
                     last_live_at = time.time() # Reset to avoid immediate repeat
 
+    def is_alive(self) -> bool:
+        # Check if the main background threads are running.
+        return bool(
+            self._started and
+            self.market._thread and self.market._thread.is_alive() and
+            self._summary_thread and self._summary_thread.is_alive()
+        )
+
     def start(self) -> None:
-        if self._started:
+        if self.is_alive():
             return
         self._load_persisted_settings()
         self.market.update_symbols(sorted(self.trader.selected_symbols))
