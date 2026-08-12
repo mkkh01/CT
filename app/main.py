@@ -124,10 +124,8 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
                     atexit.register(runtime.stop)
                     app._atexit_registered = True
 
-    @app.before_request
-    def lazy_start_runtime():
-        # Do not block the request for startup logic
-        _ensure_runtime_running()
+    # Start runtime immediately in background but outside the request context
+    _ensure_runtime_running()
 
     return app, runtime
 
