@@ -607,8 +607,21 @@ class BotRuntime:
             self._log_event("summary_cycle", snapshot)
 
     def _summary_loop(self) -> None:
+        # Self-healing watchdog: if live data is missing for too long, restart market connection.
+        last_live_at = time.time()
         while not self._stop.wait(60):
             self._emit_summary_cycle()
+            
+            # Check liveness
+            status = self.market.status_snapshot()
+            if status.get("live_data_available"):
+                last_live_at = time.time()
+            else:
+                missing_duration = time.time() - last_live_at
+                if missing_duration > 300: # 5 minutes
+                    logger.warning("runtime_watchdog_restarting_market reason=no_live_data duration_seconds=%.1f", missing_duration)
+                    self.market.restart()
+                    last_live_at = time.time() # Reset to avoid immediate repeat
 
     def start(self) -> None:
         if self._started:

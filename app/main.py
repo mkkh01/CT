@@ -90,6 +90,12 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
     def api_snapshot() -> Any:
         return jsonify(runtime.trader.snapshot())
 
+    @app.post("/api/market/refresh")
+    def market_refresh() -> Any:
+        # Manually trigger a REST poll cycle to recover from silent disconnects.
+        runtime.market._poll_once()
+        return jsonify({"status": "ok", "source": runtime.market.live_data_source}), 200
+
     @app.get("/dashboard")
     def dashboard() -> Any:
         return render_template("dashboard.html")

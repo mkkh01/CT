@@ -221,6 +221,8 @@ class TelegramBot:
         if not self.enabled:
             logger.warning("telegram_disabled_missing_credentials")
             return
+        # Wait a few seconds for any previous instance to release the polling lock on Render.
+        time.sleep(5)
         self._call("deleteWebhook", {"drop_pending_updates": False})
         self.send_message("تم تشغيل نظام التوصيات. استخدم زر إضافة عملة لإدخال الزوج ثم رأس المال.", with_keyboard=True)
         while not self._stop.is_set():

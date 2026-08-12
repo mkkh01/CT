@@ -289,6 +289,7 @@ class BinanceMarketData:
             return
         received = False
         symbols = list(self.symbols)
+        logger.debug("market_rest_poll_start symbols=%s", symbols)
         # Prices are the minimum viable live feed. Fetch them first so a slow
         # kline endpoint cannot hide usable market prices from the dashboard.
         for symbol in symbols:
@@ -299,6 +300,9 @@ class BinanceMarketData:
                 self._live_data_source = "rest_polling_fallback"
                 self._latest_prices[symbol] = price
                 self.on_price(symbol, price)
+        
+        # Only fetch klines if bootstrap is done or we need live candles to complete startup.
+        # This reduces API pressure during the critical first few seconds.
         for symbol in symbols:
             for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
                 raw_klines = self._fetch_klines(symbol, interval, limit=2)
@@ -658,7 +662,10 @@ class BinanceMarketData:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self.bootstrap()
+        # Launch bootstrap in a background thread to avoid blocking the main app startup.
+        # This is critical for cloud platforms like Render where startup timeouts are strict.
+        threading.Thread(target=self.bootstrap, name="binance-initial-bootstrap", daemon=True).start()
+        
         self._thread = threading.Thread(target=self._run, name="binance-ws", daemon=True)
         self._thread.start()
         self._bootstrap_thread = threading.Thread(target=self._bootstrap_retry_loop, name="binance-bootstrap-retry", daemon=True)
