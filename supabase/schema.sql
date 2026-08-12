@@ -92,5 +92,8 @@ alter table public.trade_events enable row level security;
 alter table public.system_events enable row level security;
 alter table public.runtime_state enable row level security;
 
+grant usage on schema public to service_role;
+grant select, insert, update, delete on table public.runtime_state to service_role;
+
 -- The server uses SUPABASE_KEY only on Render. Use the Supabase service-role key
 -- server-side if RLS is enabled; never expose it to Telegram or a browser.

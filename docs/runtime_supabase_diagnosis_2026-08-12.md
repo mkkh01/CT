@@ -31,3 +31,16 @@ Before the new Render code is deployed, the table is empty (`[]`), which is expe
 ## Final local verification
 
 Full test suite: `25 passed`. Dashboard inline JavaScript syntax check: passed. Python compileall and `git diff --check`: passed.
+
+## Final Supabase permission finding
+
+The deployed Dashboard logs identified the exact failure: both `runtime_state` SELECT and UPSERT requests returned HTTP 403 Forbidden from PostgREST. The table existed, but the migration that created it did not grant the Render service role explicit table privileges. Existing application tables continued to work, which is why this appeared as `Supabase غير متاح` only for the new state row.
+
+The privilege migration was applied successfully:
+
+```sql
+grant usage on schema public to service_role;
+grant select, insert, update, delete on table public.runtime_state to service_role;
+```
+
+After the grant, Supabase contained the expected current row for user `1503808643`: `runtime_started=true`, `websocket_connected=true`, `startup_stage=waiting_for_live_candle_close`, with fresh WebSocket and update timestamps. The remaining code change makes a transport handshake without a market message report as not live, preventing a false green state during the first connection seconds.

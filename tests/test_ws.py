@@ -69,3 +69,13 @@ def test_connected_property_expires_stale_market_data():
     client._connected = True
     client._last_message_at = time.time() - 61
     assert client.connected is False
+
+
+def test_transport_handshake_without_market_message_is_not_live():
+    from datetime import datetime, timezone
+
+    client = BinanceMarketData(Settings(selected_symbols=["BTCUSDT"]), lambda *_: None, lambda *_: None)
+    client._connected = True
+    client._connected_at = datetime.now(timezone.utc).isoformat()
+    client._last_message_at = None
+    assert client.connected is False

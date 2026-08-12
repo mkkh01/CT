@@ -19,3 +19,5 @@ create table if not exists public.runtime_state (
 
 create index if not exists runtime_state_updated_idx on public.runtime_state(updated_at desc);
 alter table public.runtime_state enable row level security;
+grant usage on schema public to service_role;
+grant select, insert, update, delete on table public.runtime_state to service_role;

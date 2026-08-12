@@ -85,17 +85,10 @@ class BinanceMarketData:
 
     @property
     def connected(self) -> bool:
-        if not self._connected:
+        """Return true only after the socket has delivered fresh market data."""
+        if not self._connected or self._last_message_at is None:
             return False
-        reference = self._last_message_at
-        if reference is None and self._connected_at:
-            try:
-                reference = datetime.fromisoformat(self._connected_at).timestamp()
-            except ValueError:
-                reference = None
-        if reference is None:
-            return False
-        return (time.time() - reference) <= max(30, self.settings.stale_data_seconds)
+        return (time.time() - self._last_message_at) <= max(30, self.settings.stale_data_seconds)
 
     @property
     def last_message_at(self) -> Optional[float]:
