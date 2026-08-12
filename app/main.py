@@ -48,6 +48,13 @@ def create_app():
         def healthz():
             return jsonify(runtime.health()), 200
 
+        @app.get("/debug/env")
+        def debug_env():
+            keys = list(os.environ.keys())
+            important = ["TELEGRAM_CHAT_ID", "TELEGRAM_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY", "REDIS_URL"]
+            status = {k: (k in keys and bool(os.environ[k])) for k in important}
+            return jsonify({"env_status": status, "all_keys": keys}), 200
+
         @app.get("/")
         @app.get("/dashboard")
         def dashboard_page():
@@ -95,13 +102,13 @@ def create_app():
         logger.info("Flask app created successfully.")
         return app
     except Exception as e:
-        logger.error(f"Failed to create app: {e}\n{traceback.format_exc()}")
-        # Create a fallback app to show the error
+        tb = traceback.format_exc()
+        logger.error(f"Failed to create app: {e}\n{tb}")
         fallback_app = Flask(__name__)
         @fallback_app.route("/<path:path>")
         @fallback_app.route("/")
         def error_fallback(path=""):
-            return f"<h1>Critical Startup Error</h1><pre>{traceback.format_exc()}</pre>", 500
+            return f"<h1>Critical Startup Error</h1><pre>{tb}</pre>", 500
         return fallback_app
 
 # Entry point for Gunicorn
