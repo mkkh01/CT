@@ -122,10 +122,18 @@ class BinanceMarketData:
                 self._bootstrap_state.setdefault((symbol, interval), {"status": "pending", "count": 0, "last_error": None, "updated_at": None})
 
     def update_symbols(self, symbols: list[str]) -> None:
-        self.symbols = sorted({symbol.upper() for symbol in symbols})
+        new_symbols = sorted({symbol.upper() for symbol in symbols})
+        if new_symbols == self.symbols:
+            return
+            
+        self.symbols = new_symbols
         self._live_execution_closed_symbols.clear()
         self._prepare_bootstrap_state()
-        logger.info("market_symbols_updated symbols=%s restart_required=true", self.symbols)
+        logger.info("market_symbols_updated symbols=%s", self.symbols)
+        
+        # Force a reconnection to subscribe to new streams if already running
+        if self._thread and self._thread.is_alive():
+            self._force_reconnect("symbols_updated")
 
     def candles(self, symbol: str, interval: str) -> list[dict[str, Any]]:
         return [candle for candle in self._candles[(symbol.upper(), interval)] if candle.get("closed")]

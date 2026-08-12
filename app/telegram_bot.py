@@ -79,7 +79,8 @@ class TelegramBot:
         self.send_message(text, with_keyboard=True)
 
     def _get_updates(self) -> list[dict[str, Any]]:
-        body = self._call("getUpdates", {"offset": self._offset, "timeout": 25, "allowed_updates": ["message"]})
+        # Use a longer timeout for long polling to be more efficient
+        body = self._call("getUpdates", {"offset": self._offset, "timeout": 30, "allowed_updates": ["message"]})
         result = body.get("result", []) if body else []
         return result if isinstance(result, list) else []
 
@@ -222,16 +223,24 @@ class TelegramBot:
             logger.warning("telegram_disabled_missing_credentials")
             return
         # Wait a few seconds for any previous instance to release the polling lock on Render.
-        time.sleep(5)
-        self._call("deleteWebhook", {"drop_pending_updates": False})
-        self.send_message("تم تشغيل نظام التوصيات. استخدم زر إضافة عملة لإدخال الزوج ثم رأس المال.", with_keyboard=True)
+        time.sleep(10)
+        try:
+            self._call("deleteWebhook", {"drop_pending_updates": False})
+            self.send_message("تم تشغيل نظام التوصيات بنجاح. البوت جاهز الآن لاستلام أوامرك.", with_keyboard=True)
+        except Exception as exc:
+            logger.warning("telegram_init_error error=%s", exc)
+
         while not self._stop.is_set():
             try:
-                for update in self._get_updates():
-                    self._handle_update(update)
+                updates = self._get_updates()
+                for update in updates:
+                    try:
+                        self._handle_update(update)
+                    except Exception as inner_exc:
+                        logger.error("telegram_update_handle_error error=%s", inner_exc)
             except Exception as exc:
                 logger.warning("telegram_polling_error error=%s", exc)
-                self._stop.wait(5)
+                self._stop.wait(10)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
+import queue
 import re
 import threading
 import time
@@ -43,7 +44,11 @@ class BotRuntime:
         self.recent_logs: deque[dict[str, Any]] = deque(maxlen=500)
         self.last_warning: dict[str, Any] | None = None
         self.last_error_log: dict[str, Any] | None = None
-        self._persisting_runtime_log = False
+        
+        # Background sync queue to avoid blocking main threads on Supabase I/O
+        self._sync_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._sync_thread: Optional[threading.Thread] = None
+        
         self.market = BinanceMarketData(self.settings, self._on_price, self._on_closed_candle)
         self.telegram = TelegramBot(
             self.settings,
@@ -84,6 +89,10 @@ class BotRuntime:
                 self.trader.add_symbol(str(symbol))
             for symbol, amount in (row.get("capital_by_symbol") or {}).items():
                 self.trader.set_capital(str(symbol), float(amount))
+            
+            # Sync with market client
+            self.market.update_symbols(list(self.trader.selected_symbols))
+            
             logger.info("persisted_settings_loaded symbols=%s", sorted(self.trader.selected_symbols))
         except (TypeError, ValueError) as exc:
             logger.warning("persisted_settings_invalid error=%s", exc)
@@ -99,29 +108,29 @@ class BotRuntime:
             "daily_loss_limit_pct": self.settings.daily_loss_limit_pct,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.supabase.upsert("bot_settings", row, "chat_id")
+        self._sync_queue.put(("upsert_settings", row))
         self.redis.set_json(f"bot:settings:{self.settings.telegram_chat_id}", row, ex=86400)
 
     def _persist_signal(self, signal: Signal) -> None:
         row = signal.to_dict()
         row["user_id"] = self.settings.telegram_chat_id or "local"
-        self.supabase.insert("signals", row)
+        self._sync_queue.put(("insert_signal", row))
         self.redis.set_json(f"bot:last-signal:{signal.symbol}", row, ex=86400)
 
     def _persist_open_position(self, position: VirtualPosition) -> None:
         row = position.to_dict()
         row["user_id"] = self.settings.telegram_chat_id or "local"
-        self.supabase.insert("virtual_positions", row)
+        self._sync_queue.put(("insert_position", row))
 
     def _persist_closed_position(self, position: VirtualPosition) -> None:
         row = position.to_dict()
         row["user_id"] = self.settings.telegram_chat_id or "local"
-        self.supabase.update_position(position.id, row)
-        self.supabase.insert("trade_events", {"user_id": row["user_id"], "position_id": position.id, "event_type": "CLOSED", "payload": row})
+        self._sync_queue.put(("update_position", (position.id, row)))
+        self._sync_queue.put(("insert_trade_event", {"user_id": row["user_id"], "position_id": position.id, "event_type": "CLOSED", "payload": row}))
 
     def _log_event(self, event_type: str, payload: dict[str, Any]) -> None:
         row = {"user_id": self.settings.telegram_chat_id or "local", "event_type": event_type, "payload": payload}
-        self.supabase.insert("system_events", row)
+        self._sync_queue.put(("insert_event", row))
 
     @staticmethod
     def _redact_log_message(message: str) -> str:
@@ -143,12 +152,9 @@ class BotRuntime:
                 self.last_error_log = record
             elif level == "WARNING":
                 self.last_warning = record
-            if persist and level in ("WARNING", "ERROR", "CRITICAL") and not self._persisting_runtime_log:
-                self._persisting_runtime_log = True
-                try:
-                    self._log_event("runtime_log", record)
-                finally:
-                    self._persisting_runtime_log = False
+        
+        if persist and level in ("WARNING", "ERROR", "CRITICAL"):
+            self._log_event("runtime_log", record)
 
     def health(self) -> dict[str, Any]:
         """Minimal health status for Render and external monitors."""
@@ -312,14 +318,21 @@ class BotRuntime:
                 self._persist_closed_position(position)
                 close_payload = position.to_dict()
                 logger.info("virtual_trade_closed %s", json.dumps(close_payload, ensure_ascii=False, default=str))
-                self.telegram.alert(
-                    f"انتهت الصفقة الافتراضية {position.symbol}\n"
-                    f"السبب: {position.close_reason}\n"
-                    f"الدخول: {position.entry_price:.8f}\n"
-                    f"الخروج: {position.exit_price:.8f}\n"
-                    f"النتيجة الافتراضية: {position.realized_pnl:.8f} USDT\n"
-                    f"أداء اليوم: {self.trader.realized_pnl_today:.8f} USDT"
-                )
+                
+                # Send alert without holding the lock for too long
+                threading.Thread(
+                    target=self.telegram.alert,
+                    args=(
+                        f"انتهت الصفقة الافتراضية {position.symbol}\n"
+                        f"السبب: {position.close_reason}\n"
+                        f"الدخول: {position.entry_price:.8f}\n"
+                        f"الخروج: {position.exit_price:.8f}\n"
+                        f"النتيجة الافتراضية: {position.realized_pnl:.8f} USDT\n"
+                        f"أداء اليوم: {self.trader.realized_pnl_today:.8f} USDT",
+                    ),
+                    daemon=True
+                ).start()
+                
                 self._log_event("virtual_position_closed", close_payload)
 
     def _on_closed_candle(self, symbol: str, interval: str, candle: dict[str, Any]) -> None:
@@ -378,15 +391,22 @@ class BotRuntime:
                         self._persist_signal(signal)
                         position = self.trader.open_position(symbol, signal.entry_price, signal.stop_loss, signal.take_profit)
                         if position:
-                            self._persist_open_position(position)
-                            logger.info("virtual_trade_opened symbol=%s entry=%.8f", symbol, signal.entry_price)
-                            self.telegram.alert(
+                                                    self._persist_open_position(position)
+                        logger.info("virtual_trade_opened symbol=%s entry=%.8f", symbol, signal.entry_price)
+                        
+                        # Non-blocking alert
+                        threading.Thread(
+                            target=self.telegram.alert,
+                            args=(
                                 f"توصية شراء جديدة: {symbol}\n"
                                 f"السعر: {signal.entry_price:.8f}\n"
                                 f"الوقف: {signal.stop_loss:.8f}\n"
                                 f"الهدف: {signal.take_profit:.8f}\n"
-                                f"السبب: {signal.reason}"
-                            )
+                                f"السبب: {signal.reason}",
+                            ),
+                            daemon=True
+                        ).start()
+
                 elif decision.get("decision") != "DATA_NOT_READY":
                     self.rejected_signal_count += 1
                 
@@ -406,7 +426,39 @@ class BotRuntime:
             "closed_trade_count": self.closed_trade_count,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.supabase.upsert("runtime_state", row, "user_id")
+        self._sync_queue.put(("upsert_runtime_state", row))
+
+    def _sync_worker(self) -> None:
+        """Background thread to process Supabase synchronization without blocking."""
+        logger.info("sync_worker_started")
+        while not self._stop.is_set():
+            try:
+                try:
+                    task = self._sync_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                
+                op, data = task
+                if op == "upsert_settings":
+                    self.supabase.upsert("bot_settings", data, "chat_id")
+                elif op == "insert_signal":
+                    self.supabase.insert("signals", data)
+                elif op == "insert_position":
+                    self.supabase.insert("virtual_positions", data)
+                elif op == "update_position":
+                    pos_id, row = data
+                    self.supabase.update_position(pos_id, row)
+                elif op == "insert_trade_event":
+                    self.supabase.insert("trade_events", data)
+                elif op == "insert_event":
+                    self.supabase.insert("system_events", data)
+                elif op == "upsert_runtime_state":
+                    self.supabase.upsert("runtime_state", data, "user_id")
+                
+                self._sync_queue.task_done()
+            except Exception as exc:
+                logger.error("sync_worker_error op=%s error=%s", locals().get('op', 'unknown'), exc)
+                time.sleep(2)
 
     def start(self) -> None:
         with self._lock:
@@ -414,9 +466,17 @@ class BotRuntime:
                 return
             self._started = True
             self._stop.clear()
-            self._load_persisted_settings()
+            
+            # Load settings in background to avoid blocking startup
+            threading.Thread(target=self._load_persisted_settings, name="load-settings", daemon=True).start()
+            
             self.market.start()
             self.telegram.start()
+            
+            # Start sync worker
+            self._sync_thread = threading.Thread(target=self._sync_worker, name="sync-worker", daemon=True)
+            self._sync_thread.start()
+            
             self._summary_thread = threading.Thread(target=self._run_forever, name="bot-runtime", daemon=True)
             self._summary_thread.start()
             logger.info("runtime_started")
@@ -432,6 +492,8 @@ class BotRuntime:
             self.telegram.stop()
             if self._summary_thread:
                 self._summary_thread.join(timeout=5)
+            if self._sync_thread:
+                self._sync_thread.join(timeout=5)
             logger.info("runtime_stopped")
 
     def _run_forever(self) -> None:
@@ -518,29 +580,58 @@ class BotRuntime:
                 lines.append(f"{s}: {cap:.2f} USDT")
             return "\n".join(lines)
 
-    def manage_coin(self, symbol: str, capital: float | None = None) -> str:
-        symbol = self._normalise_symbol(symbol)
-        with self._lock:
-            if capital is None:
-                if symbol in self.trader.selected_symbols:
-                    self.trader.remove_symbol(symbol)
+    def manage_coin(self, command: str) -> str:
+        """Unified command handler for coin management: add:SYMBOL:CAPITAL or remove:SYMBOL"""
+        try:
+            parts = command.split(":")
+            action = parts[0].lower()
+            symbol = self._normalise_symbol(parts[1])
+            
+            with self._lock:
+                if action == "remove":
+                    if symbol in self.trader.selected_symbols:
+                        self.trader.remove_symbol(symbol)
+                        self._persist_settings()
+                        return f"✅ تم حذف العملة {symbol} بنجاح من المراقبة."
+                    return f"❌ العملة {symbol} غير موجودة في القائمة حالياً."
+                
+                elif action in ("add", "update"):
+                    capital = float(parts[2])
+                    self.trader.add_symbol(symbol)
+                    self.trader.set_capital(symbol, capital)
                     self._persist_settings()
-                    return f"تم حذف العملة {symbol} بنجاح."
-                return f"العملة {symbol} غير موجودة."
-            else:
-                self.trader.add_symbol(symbol)
-                self.trader.set_capital(symbol, capital)
-                self._persist_settings()
-                self.market.start()  # Ensure market data client is updated
-                return f"تم إضافة {symbol} برأس مال {capital} USDT."
+                    # Signal market data to update its subscription
+                    self.market.update_symbols(list(self.trader.selected_symbols))
+                    self.market.start() 
+                    return f"✅ تم {'إضافة' if action == 'add' else 'تحديث'} {symbol} برأس مال {capital} USDT."
+            
+            return "❌ أمر غير معروف."
+        except Exception as exc:
+            logger.error("manage_coin_error command=%s error=%s", command, exc)
+            return f"❌ حدث خطأ أثناء تنفيذ الأمر: {str(exc)}"
 
-    def telegram_keyboard(self) -> list[list[str]]:
+    def telegram_keyboard(self) -> dict[str, Any]:
         with self._lock:
             symbols = sorted(self.trader.selected_symbols)
-            rows = []
-            for i in range(0, len(symbols), 2):
-                rows.append(symbols[i:i+2])
-            return rows
+            keyboard = [
+                ["➕ إضافة عملة", "🧾 العملات المضافة"],
+                ["📈 الأسعار الحية", "📊 أداء النظام"],
+                ["📂 الصفقات", "ℹ️ الحالة"]
+            ]
+            
+            # Add individual coin status buttons
+            symbol_rows = []
+            for i in range(0, len(symbols), 3):
+                row = [f"🔎 {s}" for s in symbols[i:i+3]]
+                symbol_rows.append(row)
+            
+            keyboard.extend(symbol_rows)
+            
+            return {
+                "keyboard": keyboard,
+                "resize_keyboard": True,
+                "one_time_keyboard": False
+            }
 
     def symbol_status_text(self, symbol: str) -> str:
         symbol = self._normalise_symbol(symbol)
