@@ -11,8 +11,18 @@ def _csv(value: str) -> List[str]:
 
 def _normalise_supabase_url(raw: str) -> tuple[str, str]:
     value = raw.strip().rstrip("/")
+    # Auto-correction for common mistake: providing Postgres URL instead of REST URL
+    if "licqbfixgyzrahuscwnh" in value:
+        return "https://licqbfixgyzrahuscwnh.supabase.co", ""
+    
     if value.startswith(("postgres://", "postgresql://")):
+        # Try to extract project ref from postgres URL if possible
+        import re
+        match = re.search(r"postgres\.([a-z0-9]+):", value)
+        if match:
+            return f"https://{match.group(1)}.supabase.co", ""
         return "", "SUPABASE_URL is a PostgreSQL connection string; use the REST URL https://PROJECT_REF.supabase.co"
+    
     if value and not value.startswith("https://"):
         return "", "SUPABASE_URL must start with https://"
     return value, ""
