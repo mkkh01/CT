@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+if os.getenv("GUNICORN_GEVENT", "0") == "1":
+    from gevent import monkey
+    monkey.patch_all()
+
 import atexit
 import logging
 import os
