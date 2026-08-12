@@ -70,7 +70,12 @@ class BotRuntime:
     def _load_persisted_settings(self) -> None:
         if not self.settings.telegram_chat_id:
             return
-        row = self.supabase.select_one("bot_settings", "chat_id", self.settings.telegram_chat_id)
+        try:
+            row = self.supabase.select_one("bot_settings", "chat_id", self.settings.telegram_chat_id)
+        except Exception as exc:
+            logger.warning("persisted_settings_fetch_failed error=%s", exc)
+            row = None
+
         if not row:
             logger.info("persisted_settings_not_found using_empty_user_configuration=true")
             return
