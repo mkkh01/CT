@@ -529,18 +529,20 @@ class BotRuntime:
 
     def status_text(self) -> str:
         snapshot = self.trader.snapshot()
-        ws = "متصل" if self.market.connected else "غير متصل"
+        market_status = self.market.status_snapshot()
+        live_source = market_status.get("live_data_source") or "none"
+        live_available = bool(market_status.get("live_data_available"))
+        ws = "متصل" if self.market.connected else ("REST fallback حي" if live_available and live_source == "rest_polling_fallback" else "غير متصل")
         last_event = self.last_event_at.isoformat() if self.last_event_at else "لا يوجد"
         missing = ", ".join(snapshot.get("selected_symbols", [])) or "لا توجد عملات مضافة"
         integration_missing = ", ".join(self.settings.missing_integrations()) or "لا يوجد"
-        market_status = self.market.status_snapshot()
         ready_symbols = ", ".join(market_status.get("strategy_ready_symbols", [])) or "لا توجد عملات جاهزة بعد"
         next_retry = market_status.get("next_bootstrap_retry_at") or "غير مطلوب؛ التهيئة مكتملة"
         return (
             "حالة النظام\n"
             f"مرحلة البدء: {market_status.get('startup_stage', 'unknown')}\n"
             f"إعادة محاولة جلب الشموع: {next_retry}\n"
-            f"Binance WebSocket: {ws}\n"
+            f"مصدر بيانات السوق: {ws}\n"
             f"آخر حدث: {last_event}\n"
             f"العملات المضافة: {missing}\n"
             f"الصفقات المفتوحة: {len(snapshot['open_positions'])}/{self.settings.max_concurrent_positions}\n"
@@ -556,6 +558,8 @@ class BotRuntime:
             "user_id": user_id,
             "runtime_started": self._started,
             "websocket_connected": bool(market_status.get("connected")),
+            "live_data_available": bool(market_status.get("live_data_available")),
+            "live_data_source": market_status.get("live_data_source"),
             "startup_stage": market_status.get("startup_stage") or "idle",
             "websocket_last_message_at": market_status.get("last_message_at"),
             "websocket_connected_at": market_status.get("connected_at"),
@@ -578,6 +582,8 @@ class BotRuntime:
             market_status = self.market.status_snapshot()
             snapshot.update({
                 "websocket_connected": self.market.connected,
+                "live_data_available": self.market.live_data_available,
+                "live_data_source": self.market.live_data_source,
                 "startup_stage": market_status.get("startup_stage"),
                 "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
                 "strategy": "ema_breakout_4h_filter_v1",
@@ -629,6 +635,8 @@ class BotRuntime:
             "status": "ok",
             "runtime_started": self._started,
             "websocket_connected": self.market.connected,
+            "live_data_available": self.market.live_data_available,
+            "live_data_source": self.market.live_data_source,
             "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
             "open_positions": len(self.trader.positions),
             "selected_symbols": sorted(self.trader.selected_symbols),

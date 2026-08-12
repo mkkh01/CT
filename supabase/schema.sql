@@ -75,6 +75,8 @@ create table if not exists public.runtime_state (
   selected_symbols jsonb not null default '[]'::jsonb,
   capital_by_symbol jsonb not null default '{}'::jsonb,
   strategy_ready_symbols jsonb not null default '[]'::jsonb,
+  live_data_available boolean not null default false,
+  live_data_source text not null default 'none',
   market_status jsonb not null default '{}'::jsonb,
   metrics jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now()

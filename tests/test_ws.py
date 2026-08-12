@@ -53,7 +53,7 @@ def test_data_readiness_is_separate_from_live_strategy_readiness():
     disconnected = client.status_snapshot()
     assert disconnected["data_ready_symbols"] == ["BTCUSDT"]
     assert disconnected["strategy_ready_symbols"] == []
-    assert disconnected["symbols"]["BTCUSDT"]["readiness_reason"] == "waiting_for_live_websocket"
+    assert disconnected["symbols"]["BTCUSDT"]["readiness_reason"] == "waiting_for_live_market_data"
 
     client._connected = True
     import time
@@ -79,3 +79,49 @@ def test_transport_handshake_without_market_message_is_not_live():
     client._connected_at = datetime.now(timezone.utc).isoformat()
     client._last_message_at = None
     assert client.connected is False
+
+
+def test_rest_fallback_marks_live_data_and_updates_price_and_candle(monkeypatch):
+    from collections import deque
+    import time
+
+    prices = []
+    closed = []
+    client = BinanceMarketData(
+        Settings(selected_symbols=["BTCUSDT"], heartbeat_interval_seconds=10),
+        lambda symbol, price: prices.append((symbol, price)),
+        lambda symbol, interval, candle: closed.append((symbol, interval, candle)),
+    )
+    history = [{
+        "open_time": index,
+        "close_time": index + 1,
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 10.0,
+        "closed": True,
+    } for index in range(55)]
+    client._candles[("BTCUSDT", "1h")] = deque(history, maxlen=300)
+    client._candles[("BTCUSDT", "4h")] = deque(history, maxlen=300)
+
+    def fake_price(symbol):
+        return 104.5
+
+    def fake_klines(symbol, interval, limit=200):
+        base = 1000 if interval == "1h" else 2000
+        return [
+            [base, "100", "105", "99", "104", "10", base + 3599999 if interval == "1h" else base + 14399999],
+            [base + 3600000 if interval == "1h" else base + 14400000, "104", "106", "103", "105", "12", int(time.time() * 1000) + 3600000],
+        ]
+
+    monkeypatch.setattr(client, "_fetch_price", fake_price)
+    monkeypatch.setattr(client, "_fetch_klines", fake_klines)
+    client._poll_once()
+
+    assert prices == [("BTCUSDT", 104.5)]
+    assert client.live_data_available is True
+    assert client.live_data_source == "rest_polling_fallback"
+    assert client.status_snapshot()["symbols"]["BTCUSDT"]["price"] == 104.5
+    assert client.status_snapshot()["strategy_ready_symbols"] == ["BTCUSDT"]
+    assert closed

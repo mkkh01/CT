@@ -36,6 +36,7 @@ class BinanceMarketData:
         self._thread: Optional[threading.Thread] = None
         self._bootstrap_thread: Optional[threading.Thread] = None
         self._watchdog_thread: Optional[threading.Thread] = None
+        self._poll_thread: Optional[threading.Thread] = None
         self._bootstrap_lock = threading.Lock()
         self._ws: Optional[websocket.WebSocketApp] = None
         self._last_message_at: Optional[float] = None
@@ -48,6 +49,11 @@ class BinanceMarketData:
         self._last_ws_attempt_at: Optional[str] = None
         self._last_liveness_log_at = 0.0
         self._last_forced_reconnect_at = 0.0
+        self._last_rest_message_at: Optional[float] = None
+        self._last_rest_error: Optional[str] = None
+        self._live_data_source = "none"
+        self._last_notified_closed: dict[tuple[str, str], int] = {}
+        self._latest_prices: dict[str, float] = {}
         self._rest_session = requests.Session()
         self._rest_session.headers.update({
             "User-Agent": "CT-Spot-Monitor/1.0",
@@ -94,6 +100,21 @@ class BinanceMarketData:
     @property
     def last_message_at(self) -> Optional[float]:
         return self._last_message_at
+
+    @property
+    def live_data_available(self) -> bool:
+        timestamps = [value for value in (self._last_message_at, self._last_rest_message_at) if value]
+        if not timestamps:
+            return False
+        return (time.time() - max(timestamps)) <= max(30, self.settings.stale_data_seconds)
+
+    @property
+    def live_data_source(self) -> str:
+        if self.connected:
+            return "websocket"
+        if self._last_rest_message_at and (time.time() - self._last_rest_message_at) <= max(30, self.settings.stale_data_seconds):
+            return "rest_polling_fallback"
+        return "none"
 
     def _prepare_bootstrap_state(self) -> None:
         for symbol in self.symbols:
@@ -199,7 +220,7 @@ class BinanceMarketData:
                     pass
         return None
 
-    def _fetch_klines(self, symbol: str, interval: str) -> Optional[list[Any]]:
+    def _fetch_klines(self, symbol: str, interval: str, limit: int = 200) -> Optional[list[Any]]:
         now = time.time()
         if now < self._bootstrap_rate_limited_until:
             self._set_bootstrap_state(symbol, interval, "rate_limited_cooldown", "binance_rest_cooldown")
@@ -208,7 +229,7 @@ class BinanceMarketData:
         last_error: str | None = None
         for base_url in [self._active_rest_url] + [url for url in self._rest_urls if url != self._active_rest_url]:
             try:
-                params = {"symbol": symbol, "interval": interval, "limit": 200}
+                params = {"symbol": symbol, "interval": interval, "limit": max(2, min(int(limit), 200))}
                 response = self._rest_session.get(f"{base_url}/klines", params=params, timeout=15)
                 if response.status_code in (418, 429):
                     cooldown = self._retry_after_seconds(response)
@@ -240,8 +261,85 @@ class BinanceMarketData:
                 last_error = str(exc)
                 continue
         if last_error:
+            self._last_rest_error = last_error
             self._set_bootstrap_state(symbol, interval, "unavailable", last_error)
         return None
+
+    def _fetch_price(self, symbol: str) -> Optional[float]:
+        last_error: str | None = None
+        for base_url in [self._active_rest_url] + [url for url in self._rest_urls if url != self._active_rest_url]:
+            try:
+                response = self._rest_session.get(f"{base_url}/ticker/price", params={"symbol": symbol}, timeout=10)
+                if response.status_code in (418, 429):
+                    last_error = f"HTTP_{response.status_code}"
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                price = float(payload["price"])
+                self._active_rest_url = base_url
+                self._last_rest_error = None
+                return price
+            except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+                last_error = str(exc)
+        self._last_rest_error = last_error
+        return None
+
+    def _poll_once(self) -> None:
+        if not self.symbols:
+            return
+        received = False
+        for symbol in list(self.symbols):
+            price = self._fetch_price(symbol)
+            if price is not None:
+                received = True
+                self._last_rest_message_at = time.time()
+                self._live_data_source = "rest_polling_fallback"
+                self._latest_prices[symbol] = price
+                self.on_price(symbol, price)
+            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
+                raw_klines = self._fetch_klines(symbol, interval, limit=2)
+                if not raw_klines:
+                    continue
+                received = True
+                self._last_rest_message_at = time.time()
+                self._live_data_source = "rest_polling_fallback"
+                for raw in raw_klines[-2:]:
+                    candle = self._normalise_rest_kline(raw)
+                    self._store_candle(symbol, interval, candle)
+                    if not candle["closed"]:
+                        continue
+                    received = True
+                    key = (symbol, interval)
+                    open_time = candle["open_time"]
+                    if open_time <= self._last_notified_closed.get(key, -1):
+                        continue
+                    self._last_notified_closed[key] = open_time
+                    self._last_closed_candle = {
+                        "symbol": symbol,
+                        "interval": interval,
+                        "open_time": candle["open_time"],
+                        "close_time": candle["close_time"],
+                        "close": candle["close"],
+                    }
+                    if interval == self.settings.execution_timeframe and symbol in self.symbols:
+                        self._live_execution_closed_symbols.add(symbol)
+                        if self._live_execution_closed_symbols == set(self.symbols):
+                            self._startup_stage = "ready"
+                    self.on_closed_candle(symbol, interval, candle)
+        if received:
+            self._last_rest_message_at = time.time()
+            self._live_data_source = "rest_polling_fallback"
+            self._last_rest_error = None
+
+    def _poll_loop(self) -> None:
+        interval = max(10, self.settings.heartbeat_interval_seconds)
+        while not self._stop.is_set():
+            try:
+                self._poll_once()
+            except Exception as exc:
+                self._last_rest_error = str(exc)
+                logger.warning("market_rest_poll_failed error=%s", exc)
+            self._stop.wait(interval)
 
     def bootstrap(self) -> None:
         if not self._bootstrap_lock.acquire(blocking=False):
@@ -339,16 +437,16 @@ class BinanceMarketData:
                 intervals[interval] = state
             required = 55
             data_ready = all(item.get("count", 0) >= required for item in intervals.values())
-            live_ready = data_ready and self.connected
+            live_ready = data_ready and self.live_data_available
             by_symbol[symbol] = {
-                "price": None,
+                "price": self._latest_prices.get(symbol),
                 "intervals": intervals,
                 "required_closed_candles": required,
                 "data_ready_for_strategy": data_ready,
                 "ready_for_strategy": live_ready,
                 "readiness_reason": (
                     "ready" if live_ready else
-                    ("waiting_for_live_websocket" if data_ready else "waiting_for_55_closed_candles_on_1h_and_4h")
+                    ("waiting_for_live_market_data" if data_ready else "waiting_for_55_closed_candles_on_1h_and_4h")
                 ),
             }
         last_message_age = None
@@ -357,6 +455,10 @@ class BinanceMarketData:
         return {
             "connected": self.connected,
             "transport_connected": self._connected,
+            "live_data_available": self.live_data_available,
+            "live_data_source": self.live_data_source,
+            "last_rest_message_at": datetime.fromtimestamp(self._last_rest_message_at, timezone.utc).isoformat() if self._last_rest_message_at else None,
+            "last_rest_error": self._last_rest_error,
             "message_age_seconds": last_message_age,
             "startup_stage": self._startup_stage,
             "startup_started_at": self._startup_started_at,
@@ -386,9 +488,12 @@ class BinanceMarketData:
         data = message.get("data", message)
         event_type = data.get("e")
         self._last_message_at = time.time()
+        self._live_data_source = "websocket"
         if event_type == "24hrMiniTicker":
             symbol = str(data["s"]).upper()
-            self.on_price(symbol, float(data["c"]))
+            price = float(data["c"])
+            self._latest_prices[symbol] = price
+            self.on_price(symbol, price)
             return
         if event_type == "kline":
             kline = data["k"]
@@ -556,6 +661,8 @@ class BinanceMarketData:
         self._bootstrap_thread.start()
         self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="binance-ws-watchdog", daemon=True)
         self._watchdog_thread.start()
+        self._poll_thread = threading.Thread(target=self._poll_loop, name="binance-rest-fallback", daemon=True)
+        self._poll_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -570,6 +677,8 @@ class BinanceMarketData:
             self._bootstrap_thread.join(timeout=5)
         if self._watchdog_thread and self._watchdog_thread.is_alive():
             self._watchdog_thread.join(timeout=5)
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=5)
 
     def restart(self) -> None:
         """Reconnect with the current symbol list after a Telegram settings change."""
