@@ -160,10 +160,13 @@ setText('s-cycles',num(o.cycles||s?.metrics?.cycles,0));setText('s-signals',num(
   }
   async function refreshHistory(){
     try {
-      const r=await fetch('/dashboard/api/overview',{cache:'no-store'});
+      const r=await fetch('/dashboard/api/history',{cache:'no-store'});
       if(!r.ok) return;
       const data = await r.json();
-      currentData = { ...currentData, ...data };
+      currentData.events = data.events || [];
+      currentData.logs = data.logs || [];
+      currentData.recent_signals = data.recent_signals || [];
+      currentData.recent_positions = data.recent_positions || [];
       renderOverview(currentData);
     } catch(e) {
       console.error('History fetch failed:', e);
