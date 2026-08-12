@@ -255,7 +255,7 @@ class BotRuntime:
             "open_positions": trader_snapshot["open_positions"],
             "recent_signals": self.supabase.select_recent_signals(user_id, limit=20),
             "recent_positions": self.supabase.select_recent_positions(user_id, limit=20),
-            "events": self.supabase.select_recent_events(user_id, limit=20),
+            "events": [{k: v for k, v in e.items() if k != 'payload'} for e in self.supabase.select_recent_events(user_id, limit=50)],
             "logs": recent_logs[:20],
             "errors": [item for item in recent_logs if item["level"] in ("ERROR", "CRITICAL")],
             "warnings": [item for item in recent_logs if item["level"] == "WARNING"],
