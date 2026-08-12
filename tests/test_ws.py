@@ -24,3 +24,19 @@ def test_binance_combined_stream_message_is_parsed():
     ticker = {"stream": "btcusdt@miniTicker", "data": {"e": "24hrMiniTicker", "s": "BTCUSDT", "c": "104.5"}}
     client._handle_message(json.dumps(ticker))
     assert prices == [("BTCUSDT", 104.5)]
+
+
+def test_stream_endpoints_include_market_data_primary_and_fallbacks():
+    client = BinanceMarketData(Settings(selected_symbols=["BTCUSDT"]), lambda *_: None, lambda *_: None)
+    endpoints = client._build_stream_urls()
+    assert endpoints[0] == "wss://data-stream.binance.vision:443/stream"
+    assert "wss://stream.binance.com:443/stream" in endpoints
+    assert "wss://stream.binance.com:9443/stream" in endpoints
+
+
+def test_stream_url_contains_all_dynamic_user_symbols():
+    client = BinanceMarketData(Settings(selected_symbols=["BTCUSDT", "XRPUSDT"]), lambda *_: None, lambda *_: None)
+    url = client._build_url()
+    assert "btcusdt@kline_1h" in url
+    assert "xrpusdt@kline_4h" in url
+    assert "xrpusdt@miniTicker" in url

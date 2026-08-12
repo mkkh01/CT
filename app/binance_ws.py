@@ -39,6 +39,12 @@ class BinanceMarketData:
         self._ws: Optional[websocket.WebSocketApp] = None
         self._last_message_at: Optional[float] = None
         self._connected = False
+        self._connected_at: Optional[str] = None
+        self._last_ws_error: Optional[str] = None
+        self._last_ws_close_code: Any = None
+        self._last_ws_close_reason: Optional[str] = None
+        self._active_stream_url: Optional[str] = None
+        self._last_ws_attempt_at: Optional[str] = None
         self._rest_session = requests.Session()
         self._rest_session.headers.update({
             "User-Agent": "CT-Spot-Monitor/1.0",
@@ -345,6 +351,13 @@ class BinanceMarketData:
             "historical_candles_required": 55,
             "next_bootstrap_retry_at": datetime.fromtimestamp(self._next_bootstrap_retry_at, timezone.utc).isoformat() if self._next_bootstrap_retry_at else None,
             "last_message_at": datetime.fromtimestamp(self._last_message_at, timezone.utc).isoformat() if self._last_message_at else None,
+            "connected_at": self._connected_at,
+            "last_ws_attempt_at": self._last_ws_attempt_at,
+            "last_ws_error": self._last_ws_error,
+            "last_ws_close_code": self._last_ws_close_code,
+            "last_ws_close_reason": self._last_ws_close_reason,
+            "active_stream_url": self._active_stream_url,
+            "stream_endpoints": self._build_stream_urls(),
             "active_rest_url": self._active_rest_url,
             "rest_cooldown_until": datetime.fromtimestamp(self._bootstrap_rate_limited_until, timezone.utc).isoformat() if self._bootstrap_rate_limited_until > time.time() else None,
             "symbols": by_symbol,
@@ -374,12 +387,23 @@ class BinanceMarketData:
                         self._startup_stage = "ready"
                 self.on_closed_candle(symbol, interval, candle)
 
-    def _build_url(self) -> str:
+    def _build_stream_urls(self) -> list[str]:
+        configured = self.settings.binance_stream_url.rstrip("/")
+        candidates = [
+            configured,
+            "wss://data-stream.binance.vision:443/stream",
+            "wss://stream.binance.com:443/stream",
+            "wss://stream.binance.com:9443/stream",
+        ]
+        return list(dict.fromkeys(url for url in candidates if url))
+
+    def _build_url(self, base_url: str | None = None) -> str:
         streams = []
         for symbol in self.symbols:
             lower = symbol.lower()
             streams.extend([f"{lower}@kline_{self.settings.execution_timeframe}", f"{lower}@kline_{self.settings.higher_timeframe}", f"{lower}@miniTicker"])
-        return f"{self.settings.binance_stream_url}?streams={'/'.join(streams)}"
+        base = (base_url or self.settings.binance_stream_url).rstrip("/")
+        return f"{base}?streams={'/'.join(streams)}"
 
     def _bootstrap_retry_loop(self) -> None:
         while not self._stop.is_set():
@@ -401,31 +425,43 @@ class BinanceMarketData:
 
     def _run(self) -> None:
         backoff = 2
+        endpoint_index = 0
         while not self._stop.is_set():
             if not self.symbols:
                 self._stop.wait(5)
                 continue
-            url = self._build_url()
-            logger.info("binance_ws_connecting streams=%s", url.split("?streams=")[-1])
+            endpoints = self._build_stream_urls()
+            base_url = endpoints[endpoint_index % len(endpoints)]
+            url = self._build_url(base_url)
+            self._last_ws_attempt_at = datetime.now(timezone.utc).isoformat()
+            self._active_stream_url = base_url
+            logger.info("binance_ws_connecting endpoint=%s streams=%s", base_url, url.split("?streams=")[-1])
 
             def on_open(_ws: websocket.WebSocketApp) -> None:
                 nonlocal backoff
                 self._connected = True
+                self._connected_at = datetime.now(timezone.utc).isoformat()
+                self._last_ws_error = None
+                self._last_ws_close_code = None
+                self._last_ws_close_reason = None
                 backoff = 2
-                logger.info("binance_ws_connected")
+                logger.info("binance_ws_connected endpoint=%s", base_url)
 
             def on_message(_ws: websocket.WebSocketApp, message: str) -> None:
                 try:
                     self._handle_message(message)
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                    logger.warning("binance_ws_message_invalid error=%s", exc)
+                    logger.warning("binance_ws_message_invalid endpoint=%s error=%s", base_url, exc)
 
             def on_error(_ws: websocket.WebSocketApp, error: Any) -> None:
-                logger.warning("binance_ws_error error=%s", error)
+                self._last_ws_error = str(error)
+                logger.warning("binance_ws_error endpoint=%s error=%s", base_url, error)
 
             def on_close(_ws: websocket.WebSocketApp, code: Any, reason: Any) -> None:
                 self._connected = False
-                logger.warning("binance_ws_closed code=%s reason=%s", code, reason)
+                self._last_ws_close_code = code
+                self._last_ws_close_reason = str(reason) if reason is not None else None
+                logger.warning("binance_ws_closed endpoint=%s code=%s reason=%s", base_url, code, reason)
 
             def on_ping(ws: websocket.WebSocketApp, message: str) -> None:
                 try:
@@ -437,13 +473,15 @@ class BinanceMarketData:
             try:
                 self._ws.run_forever(ping_interval=15, ping_timeout=10, ping_payload="")
             except Exception as exc:
-                logger.warning("binance_ws_run_failed error=%s", exc)
+                self._last_ws_error = str(exc)
+                logger.warning("binance_ws_run_failed endpoint=%s error=%s", base_url, exc)
             finally:
                 self._connected = False
+            endpoint_index = (endpoint_index + 1) % len(endpoints)
             wait_seconds = min(backoff, 30)
             backoff = min(backoff * 2, 30)
             if not self._stop.wait(wait_seconds):
-                logger.info("binance_ws_reconnect_wait_seconds=%s", wait_seconds)
+                logger.info("binance_ws_reconnect_wait_seconds=%s endpoint=%s", wait_seconds, base_url)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

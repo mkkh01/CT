@@ -21,6 +21,8 @@ services:
         sync: false
       - key: BINANCE_REST_URL
         value: https://data-api.binance.vision/api/v3
+      - key: BINANCE_STREAM_URL
+        value: wss://data-stream.binance.vision:443/stream
       - key: SELECTED_SYMBOLS
         value: ""
       - key: INITIAL_CAPITAL_USDT
