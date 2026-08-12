@@ -411,10 +411,16 @@ class BotRuntime:
             logger.info("runtime_stopped")
 
     def _run_forever(self) -> None:
+        last_persist = 0
         while not self._stop.is_set():
             try:
+                now_ts = time.time()
                 with self._lock:
-                    self._persist_runtime_state()
+                    # Persist state less frequently to reduce lock contention
+                    if now_ts - last_persist >= 300:
+                        self._persist_runtime_state()
+                        last_persist = now_ts
+
                     # Watchdog: If no live data for 5 minutes, force reconnect
                     if self.market.live_data_available:
                         last_msg = self.market.status_snapshot().get("last_message_at") or self.market.status_snapshot().get("last_rest_message_at")

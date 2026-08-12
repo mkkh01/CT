@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -110,18 +111,17 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
 
     def _ensure_runtime_running():
         if start_runtime and os.getenv("DISABLE_AUTO_START", "0") != "1":
-            # Ensure runtime is started and its background threads are alive.
-            # Gunicorn forks workers, which can leave the runtime in a "started" state
-            # but without the actual background threads from the master process.
+            # Non-blocking check to ensure runtime is started
             if not runtime._started or not runtime.is_alive():
-                runtime.start()
-                # Use a flag to avoid multiple registrations
+                # Start in a background thread to avoid blocking the HTTP request
+                threading.Thread(target=runtime.start, name="deferred-runtime-start", daemon=True).start()
                 if not hasattr(app, "_atexit_registered"):
                     atexit.register(runtime.stop)
                     app._atexit_registered = True
 
     @app.before_request
     def lazy_start_runtime():
+        # Do not block the request for startup logic
         _ensure_runtime_running()
 
     return app, runtime
