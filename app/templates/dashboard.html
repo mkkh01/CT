@@ -12,9 +12,8 @@
 </head>
 <body>
 <main class="wrap">
-  <header class="topbar"><div class="brand"><div class="logo">CT</div><div><h1>CT Trading Monitor</h1><p>لوحة مراقبة احترافية لتوصيات Binance Spot — بدون تنفيذ أوامر حقيقية</p><p id="last-refresh" class="muted">لم يتم التحديث بعد</p></div></div><div class="top-actions"><span id="status-pill" class="pill warn">بانتظار المصادقة</span><button id="refresh-btn">تحديث الآن</button></div></header>
+  <header class="topbar"><div class="brand"><div class="logo">CT</div><div><h1>CT Trading Monitor</h1><p>لوحة مراقبة احترافية لتوصيات Binance Spot — بدون تنفيذ أوامر حقيقية</p><p id="last-refresh" class="muted">لم يتم التحديث بعد</p></div></div><div class="top-actions"><span id="status-pill" class="pill info">متصل</span><button id="refresh-btn">تحديث الآن</button></div></header>
 
-  <section id="token-panel" class="panel token-panel show"><div class="section-head"><div><h2>فتح لوحة المراقبة</h2><div class="sub">أدخل قيمة <code>DASHBOARD_TOKEN</code> الموجودة في Render. لا تُحفظ إلا محلياً في المتصفح.</div></div></div><div class="token-row"><input id="token-input" type="password" autocomplete="off" placeholder="Dashboard token"><button id="save-token">حفظ وفتح اللوحة</button><button id="clear-token" class="secondary">مسح الرمز</button></div><p id="auth-message" class="red"></p></section>
 
   <section class="kpis">
     <div class="kpi"><div class="label">حالة النظام</div><div id="m-runtime" class="value">—</div><div id="m-ws" class="hint">WebSocket: —</div></div>
@@ -42,14 +41,12 @@
   <footer>تحديث تلقائي كل 10 ثوانٍ · آخر تحديث يعكس حالة النظام الحية · Binance Spot · بدون تنفيذ أوامر</footer>
 </main>
 <script>
-  const TOKEN_KEY='ct_dashboard_token', $=id=>document.getElementById(id);
+  const $=id=>document.getElementById(id);
   const esc=v=>String(v??'—').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const num=(v,d=4)=>{if(v===null||v===undefined||v==='')return'—';const n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:d}):esc(v)};
   const time=v=>v?new Date(v).toLocaleString('ar',{dateStyle:'short',timeStyle:'medium'}):'—';
   const pill=(text,type='warn')=>`<span class="pill ${type}">${esc(text)}</span>`;
   const empty=text=>`<div class="empty">${esc(text)}</div>`;
-  const token=()=>localStorage.getItem(TOKEN_KEY)||'';
-  function authMessage(text){$('auth-message').textContent=text||'';$('token-panel').classList.toggle('show',!!text||!token());$('status-pill').textContent=text?'تحتاج رمز الدخول':'متصل';$('status-pill').className=`pill ${text?'bad':'ok'}`}
   function allDecisions(data){return(data.events||[]).filter(e=>['strategy_cycle','strategy_decision'].includes(e.event_type)).map(e=>({...e,payload:e.payload||{}}));}
   function latestSummary(data){return(data.events||[]).find(e=>e.event_type==='summary_cycle')?.payload||null}
   function decisionStats(rows){let accepted=0,rejected=0,notReady=0,noSignal=0,duplicate=0,explicitRejected=0,marketFilter=0,signalTypes={};rows.forEach(e=>{const p=e.payload||{},d=String(p.decision||'').toUpperCase();if(p.signal||d.includes('ACCEPT')||d.includes('ENTER'))accepted++;if(d==='MARKET_FILTER_REJECTED'){rejected++;marketFilter++}else if(d.includes('REJECT')){rejected++;explicitRejected++}if(d==='DATA_NOT_READY'){rejected++;notReady++}if(d==='NO_SIGNAL'){rejected++;noSignal++}if(d.includes('DUPLICATE')){rejected++;duplicate++}const type=p.signal_type||p.signal?.type||p.signal_payload?.signal_type||p.strategy_signal_type;if(type)signalTypes[type]=(signalTypes[type]||0)+1});return{accepted,rejected,notReady,noSignal,duplicate,explicitRejected,marketFilter,signalTypes}}
@@ -69,8 +66,8 @@
   function renderEvents(events){if(!events.length){$('events-table').innerHTML=empty('لا توجد أحداث محفوظة في Supabase بعد.');return}$('events-table').innerHTML=`<table><thead><tr><th>الوقت</th><th>نوع الحدث</th><th>الملخص</th><th>الحالة</th></tr></thead><tbody>${events.slice(0,250).map(e=>{const p=e.payload||{},summary=e.event_type==='summary_cycle'?`دورة ${num(p.metrics?.cycles,0)} · جاهزية ${num((p.strategy_ready_symbols||[]).length,0)} · أسعار ${Object.keys(p.last_prices||{}).length}`:(p.message||p.decision||p.symbol||'تم تسجيل حدث');return`<tr><td class="mono">${time(e.created_at)}</td><td><span class="tag">${esc(eventLabel(e.event_type))}</span></td><td class="reason">${esc(summary)}</td><td>${e.event_type==='runtime_log'?pill(p.level||'INFO',p.level==='ERROR'?'bad':(p.level==='WARNING'?'warn':'neutral')):pill('محفوظ','ok')}</td></tr>`}).join('')}</tbody></table>`}
   function renderLogs(logs){if(!logs.length){$('logs-table').innerHTML=empty('لم تصل سجلات runtime إلى Dashboard بعد.');return}$('logs-table').innerHTML=`<table><thead><tr><th>الوقت</th><th>المستوى</th><th>المصدر</th><th>الرسالة</th></tr></thead><tbody>${logs.slice(0,250).map(l=>`<tr><td class="mono">${time(l.timestamp)}</td><td>${pill(l.level,l.level==='ERROR'||l.level==='CRITICAL'?'bad':(l.level==='WARNING'?'warn':'neutral'))}</td><td>${esc(l.logger)}</td><td class="reason">${esc(l.message)}</td></tr>`).join('')}</tbody></table>`}
   function setText(id,v){$(id).textContent=v??'—'}
-  async function refresh(){const t=token();if(!t){authMessage('أدخل DASHBOARD_TOKEN لفتح البيانات.');return}try{const r=await fetch('/dashboard/api/overview',{headers:{'X-Dashboard-Token':t},cache:'no-store'});if(r.status===401){authMessage('رمز Dashboard غير صحيح.');return}if(r.status===503){authMessage('DASHBOARD_TOKEN غير مضبوط في Render.');return}if(!r.ok)throw new Error(`HTTP ${r.status}`);renderOverview(await r.json());authMessage('')}catch(e){$('status-pill').textContent='خطأ في الاتصال';$('status-pill').className='pill bad';$('auth-message').textContent=`تعذر تحديث البيانات: ${e.message}`}}
-  document.querySelectorAll('.tab').forEach(tab=>tab.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));tab.classList.add('active');$('events-table').classList.toggle('hidden',tab.dataset.tab!=='events');$('logs-table').classList.toggle('hidden',tab.dataset.tab!=='logs')});$('save-token').onclick=()=>{const v=$('token-input').value.trim();if(v){localStorage.setItem(TOKEN_KEY,v);$('token-input').value='';refresh()}};$('clear-token').onclick=()=>{localStorage.removeItem(TOKEN_KEY);refresh()};$('refresh-btn').onclick=refresh;$('token-input').addEventListener('keydown',e=>{if(e.key==='Enter')$('save-token').click()});refresh();setInterval(refresh,10000);
+  async function refresh(){try{const r=await fetch('/dashboard/api/overview',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);renderOverview(await r.json());$('status-pill').textContent='متصل';$('status-pill').className='pill ok'}catch(e){$('status-pill').textContent='خطأ في الاتصال';$('status-pill').className='pill bad';console.error(`تعذر تحديث البيانات: ${e.message}`)}}
+  document.querySelectorAll('.tab').forEach(tab=>tab.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));tab.classList.add('active');$('events-table').classList.toggle('hidden',tab.dataset.tab!=='events');$('logs-table').classList.toggle('hidden',tab.dataset.tab!=='logs')});$('refresh-btn').onclick=refresh;refresh();setInterval(refresh,10000);
 </script>
 </body>
 </html>

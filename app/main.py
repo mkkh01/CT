@@ -4,11 +4,9 @@ import atexit
 import logging
 import os
 from datetime import datetime, timezone
-from functools import wraps
-from hmac import compare_digest
-from typing import Any, Callable
+from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template
 
 from .config import Settings
 from .runtime import BotRuntime
@@ -60,19 +58,6 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
     runtime = BotRuntime(settings)
     _attach_runtime_log_handler(runtime)
 
-    def dashboard_auth(view: Callable[..., Any]) -> Callable[..., Any]:
-        @wraps(view)
-        def wrapped(*args: Any, **kwargs: Any) -> Any:
-            expected = settings.dashboard_token
-            supplied = request.headers.get("X-Dashboard-Token", "")
-            if not expected:
-                return jsonify({"error": "DASHBOARD_TOKEN is not configured on Render"}), 503
-            if not supplied or not compare_digest(supplied, expected):
-                return jsonify({"error": "dashboard authentication required"}), 401
-            return view(*args, **kwargs)
-
-        return wrapped
-
     @app.get("/")
     def index() -> Any:
         # Serve the dashboard at the root so browsers and simple monitors do not
@@ -102,7 +87,6 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
         return jsonify(runtime.health())
 
     @app.get("/api/snapshot")
-    @dashboard_auth
     def api_snapshot() -> Any:
         return jsonify(runtime.trader.snapshot())
 
@@ -111,7 +95,6 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
         return render_template("dashboard.html")
 
     @app.get("/dashboard/api/overview")
-    @dashboard_auth
     def dashboard_overview() -> Any:
         return jsonify(runtime.dashboard_snapshot())
 
