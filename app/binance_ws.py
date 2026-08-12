@@ -78,18 +78,17 @@ class BinanceMarketData:
         self._prepare_bootstrap_state()
 
     def _build_rest_urls(self) -> list[str]:
-        configured = self.settings.binance_rest_url.rstrip("/")
-        urls = [configured]
-        if configured in {
+        # Prefer the standard api.binance.com endpoints first for fast price polling,
+        # followed by data-api and numbered endpoints.
+        primary = [
             "https://api.binance.com/api/v3",
             "https://data-api.binance.vision/api/v3",
-        }:
-            urls.extend([
-                "https://api.binance.com/api/v3",
-                *[f"https://api{i}.binance.com/api/v3" for i in range(1, 5)],
-                "https://data-api.binance.vision/api/v3",
-            ])
-        return list(dict.fromkeys(urls))
+            *[f"https://api{i}.binance.com/api/v3" for i in range(1, 5)],
+        ]
+        configured = self.settings.binance_rest_url.rstrip("/")
+        if configured:
+            primary.insert(0, configured)
+        return list(dict.fromkeys(primary))
 
     @property
     def connected(self) -> bool:
