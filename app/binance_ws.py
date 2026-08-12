@@ -33,6 +33,8 @@ class BinanceMarketData:
         self._bootstrap_state: dict[tuple[str, str], dict[str, Any]] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._bootstrap_thread: Optional[threading.Thread] = None
+        self._bootstrap_lock = threading.Lock()
         self._ws: Optional[websocket.WebSocketApp] = None
         self._last_message_at: Optional[float] = None
         self._connected = False
@@ -60,6 +62,9 @@ class BinanceMarketData:
         self._startup_started_at: Optional[str] = None
         self._startup_completed_at: Optional[str] = None
         self._last_closed_candle: dict[str, Any] | None = None
+        self._live_execution_closed_symbols: set[str] = set()
+        self._next_bootstrap_retry_at = 0.0
+        self._bootstrap_attempt = 0
         self._prepare_bootstrap_state()
 
     def _build_rest_urls(self) -> list[str]:
@@ -84,6 +89,7 @@ class BinanceMarketData:
 
     def update_symbols(self, symbols: list[str]) -> None:
         self.symbols = sorted({symbol.upper() for symbol in symbols})
+        self._live_execution_closed_symbols.clear()
         self._prepare_bootstrap_state()
         logger.info("market_symbols_updated symbols=%s restart_required=true", self.symbols)
 
@@ -105,6 +111,48 @@ class BinanceMarketData:
         except (TypeError, ValueError):
             value = 60
         return max(30, min(value, 900))
+
+    def _fetch_klines_via_ws_api(self, symbol: str, interval: str) -> Optional[list[Any]]:
+        """Fetch recent public klines through Binance WebSocket API without API keys."""
+        request_id = f"ct-bootstrap-{symbol}-{interval}-{int(time.time() * 1000)}"
+        payload = {
+            "id": request_id,
+            "method": "klines",
+            "params": {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": 200,
+                "returnRateLimits": False,
+            },
+        }
+        ws = None
+        try:
+            ws = websocket.create_connection("wss://ws-api.binance.com:443/ws-api/v3", timeout=15, enable_multithread=True)
+            ws.send(json.dumps(payload))
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                raw = ws.recv()
+                if not raw:
+                    continue
+                response = json.loads(raw)
+                if str(response.get("id")) != request_id:
+                    continue
+                if response.get("status") == 200 and isinstance(response.get("result"), list):
+                    logger.info("market_bootstrap_ws_api_complete symbol=%s interval=%s count=%s", symbol, interval, len(response["result"]))
+                    return response["result"]
+                error = response.get("error") or {}
+                logger.warning("market_bootstrap_ws_api_failed symbol=%s interval=%s code=%s msg=%s", symbol, interval, error.get("code"), error.get("msg"))
+                return None
+        except (OSError, websocket.WebSocketException, json.JSONDecodeError, ValueError) as exc:
+            logger.warning("market_bootstrap_ws_api_exception symbol=%s interval=%s error=%s", symbol, interval, exc)
+            return None
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+        return None
 
     def _fetch_klines(self, symbol: str, interval: str) -> Optional[list[Any]]:
         now = time.time()
@@ -132,7 +180,10 @@ class BinanceMarketData:
                             cooldown,
                         )
                         self._last_rate_limit_log_at = now
-                    # Do not hammer the remaining endpoints after a ban response.
+                    # Use the public WebSocket API immediately; do not hammer REST endpoints during the ban.
+                    ws_result = self._fetch_klines_via_ws_api(symbol, interval)
+                    if ws_result is not None:
+                        return ws_result
                     break
                 if response.status_code >= 500:
                     last_error = f"HTTP_{response.status_code}"
@@ -148,12 +199,26 @@ class BinanceMarketData:
         return None
 
     def bootstrap(self) -> None:
+        if not self._bootstrap_lock.acquire(blocking=False):
+            logger.info("market_bootstrap_skipped reason=already_running")
+            return
+        try:
+            self._bootstrap_once()
+        finally:
+            self._bootstrap_lock.release()
+
+    def _bootstrap_once(self) -> None:
+        self._bootstrap_attempt += 1
         self._startup_stage = "bootstrapping_history"
         self._startup_started_at = datetime.now(timezone.utc).isoformat()
         self._startup_completed_at = None
+        self._live_execution_closed_symbols.clear()
         self._prepare_bootstrap_state()
         for symbol in self.symbols:
             for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
+                if len(self.candles(symbol, interval)) >= 55:
+                    self._set_bootstrap_state(symbol, interval, "ready")
+                    continue
                 raw_klines = self._fetch_klines(symbol, interval)
                 if raw_klines is None:
                     state = self._bootstrap_state[(symbol, interval)]
@@ -167,9 +232,16 @@ class BinanceMarketData:
                 self._set_bootstrap_state(symbol, interval, "ready")
                 logger.info("market_bootstrap_complete symbol=%s interval=%s count=%s endpoint=%s", symbol, interval, len(self.candles(symbol, interval)), self._active_rest_url)
         state = self.status_snapshot()
-        self._startup_stage = "waiting_for_live_candle_close" if state["strategy_ready_symbols"] else "history_incomplete"
+        all_ready = bool(self.symbols) and set(state["strategy_ready_symbols"]) == set(self.symbols)
+        self._startup_stage = "waiting_for_live_candle_close" if all_ready else "history_incomplete"
         self._startup_completed_at = datetime.now(timezone.utc).isoformat()
-        logger.info("market_bootstrap_summary stage=%s strategy_ready_symbols=%s", self._startup_stage, state["strategy_ready_symbols"])
+        if all_ready:
+            self._next_bootstrap_retry_at = 0.0
+        elif self._bootstrap_rate_limited_until > time.time():
+            self._next_bootstrap_retry_at = self._bootstrap_rate_limited_until
+        else:
+            self._next_bootstrap_retry_at = time.time() + 30
+        logger.info("market_bootstrap_summary attempt=%s stage=%s strategy_ready_symbols=%s next_retry_at=%s", self._bootstrap_attempt, self._startup_stage, state["strategy_ready_symbols"], self._next_bootstrap_retry_at)
 
     @staticmethod
     def _normalise_rest_kline(raw: list[Any]) -> dict[str, Any]:
@@ -235,6 +307,10 @@ class BinanceMarketData:
             "startup_started_at": self._startup_started_at,
             "startup_completed_at": self._startup_completed_at,
             "last_closed_candle": self._last_closed_candle,
+            "live_execution_closed_symbols": sorted(self._live_execution_closed_symbols),
+            "bootstrap_attempt": self._bootstrap_attempt,
+            "historical_candles_required": 55,
+            "next_bootstrap_retry_at": datetime.fromtimestamp(self._next_bootstrap_retry_at, timezone.utc).isoformat() if self._next_bootstrap_retry_at else None,
             "last_message_at": datetime.fromtimestamp(self._last_message_at, timezone.utc).isoformat() if self._last_message_at else None,
             "active_rest_url": self._active_rest_url,
             "rest_cooldown_until": datetime.fromtimestamp(self._bootstrap_rate_limited_until, timezone.utc).isoformat() if self._bootstrap_rate_limited_until > time.time() else None,
@@ -259,8 +335,10 @@ class BinanceMarketData:
             self._store_candle(symbol, interval, candle)
             if candle["closed"]:
                 self._last_closed_candle = {"symbol": symbol, "interval": interval, "open_time": candle["open_time"], "close_time": candle["close_time"], "close": candle["close"]}
-                if self._startup_stage == "waiting_for_live_candle_close" and symbol in self.status_snapshot()["strategy_ready_symbols"]:
-                    self._startup_stage = "ready"
+                if interval == self.settings.execution_timeframe and symbol in self.symbols:
+                    self._live_execution_closed_symbols.add(symbol)
+                    if self._startup_stage == "waiting_for_live_candle_close" and self._live_execution_closed_symbols == set(self.symbols):
+                        self._startup_stage = "ready"
                 self.on_closed_candle(symbol, interval, candle)
 
     def _build_url(self) -> str:
@@ -269,6 +347,24 @@ class BinanceMarketData:
             lower = symbol.lower()
             streams.extend([f"{lower}@kline_{self.settings.execution_timeframe}", f"{lower}@kline_{self.settings.higher_timeframe}", f"{lower}@miniTicker"])
         return f"{self.settings.binance_stream_url}?streams={'/'.join(streams)}"
+
+    def _bootstrap_retry_loop(self) -> None:
+        while not self._stop.is_set():
+            if not self.symbols:
+                self._stop.wait(5)
+                continue
+            state = self.status_snapshot()
+            all_ready = bool(self.symbols) and set(state["strategy_ready_symbols"]) == set(self.symbols)
+            if all_ready:
+                self._stop.wait(30)
+                continue
+            wait_seconds = max(0.0, self._next_bootstrap_retry_at - time.time())
+            if wait_seconds > 0:
+                self._stop.wait(min(wait_seconds, 30.0))
+                continue
+            logger.info("market_bootstrap_retry_due symbols=%s", self.symbols)
+            self.bootstrap()
+            self._stop.wait(1)
 
     def _run(self) -> None:
         backoff = 2
@@ -323,6 +419,8 @@ class BinanceMarketData:
         self.bootstrap()
         self._thread = threading.Thread(target=self._run, name="binance-ws", daemon=True)
         self._thread.start()
+        self._bootstrap_thread = threading.Thread(target=self._bootstrap_retry_loop, name="binance-bootstrap-retry", daemon=True)
+        self._bootstrap_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -333,6 +431,8 @@ class BinanceMarketData:
                 pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
+        if self._bootstrap_thread and self._bootstrap_thread.is_alive():
+            self._bootstrap_thread.join(timeout=5)
 
     def restart(self) -> None:
         """Reconnect with the current symbol list after a Telegram settings change."""

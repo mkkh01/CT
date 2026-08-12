@@ -389,6 +389,7 @@ class BotRuntime:
         lines = [
             "الأسعار الحية للعملات المضافة فقط:",
             f"مرحلة النظام: {market_status.get('startup_stage', 'unknown')}",
+            f"آخر شمعة مغلقة: {market_status.get('last_closed_candle') or 'بانتظار WebSocket'}",
         ]
         for symbol in symbols:
             price = self.trader.last_prices.get(symbol)
@@ -431,9 +432,11 @@ class BotRuntime:
         integration_missing = ", ".join(self.settings.missing_integrations()) or "لا يوجد"
         market_status = self.market.status_snapshot()
         ready_symbols = ", ".join(market_status.get("strategy_ready_symbols", [])) or "لا توجد عملات جاهزة بعد"
+        next_retry = market_status.get("next_bootstrap_retry_at") or "غير مطلوب؛ التهيئة مكتملة"
         return (
             "حالة النظام\n"
             f"مرحلة البدء: {market_status.get('startup_stage', 'unknown')}\n"
+            f"إعادة محاولة جلب الشموع: {next_retry}\n"
             f"Binance WebSocket: {ws}\n"
             f"آخر حدث: {last_event}\n"
             f"العملات المضافة: {missing}\n"
