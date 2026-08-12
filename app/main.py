@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+import traceback
 from datetime import datetime, date, timezone
 from typing import Any
 
@@ -31,69 +32,77 @@ class CustomJSONProvider(DefaultJSONProvider):
 
 def create_app():
     logger.info("Creating Flask app...")
-    settings = Settings.from_env()
-    app = Flask(__name__)
-    app.json = CustomJSONProvider(app)
-    
-    # Initialize runtime
-    runtime = BotRuntime(settings)
+    try:
+        settings = Settings.from_env()
+        app = Flask(__name__)
+        app.json = CustomJSONProvider(app)
+        
+        # Initialize runtime
+        runtime = BotRuntime(settings)
 
-    @app.get("/ping")
-    def ping():
-        return "pong", 200
+        @app.get("/ping")
+        def ping():
+            return "pong", 200
 
-    @app.get("/healthz")
-    def healthz():
-        return jsonify(runtime.health()), 200
+        @app.get("/healthz")
+        def healthz():
+            return jsonify(runtime.health()), 200
 
-    @app.get("/")
-    @app.get("/dashboard")
-    def dashboard_page():
-        return render_template("dashboard.html")
+        @app.get("/")
+        @app.get("/dashboard")
+        def dashboard_page():
+            return render_template("dashboard.html")
 
-    @app.get("/dashboard/api/overview")
-    def dashboard_overview():
-        try:
-            return jsonify(runtime.dashboard_snapshot())
-        except Exception as e:
-            logger.error(f"API Error /overview: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
-
-    @app.get("/dashboard/api/history")
-    def dashboard_history():
-        try:
-            return jsonify(runtime.history_snapshot())
-        except Exception as e:
-            logger.error(f"API Error /history: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
-
-    @app.get("/cron/heartbeat")
-    def cron_heartbeat():
-        return jsonify({
-            "status": "ok", 
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "runtime_started": runtime._started
-        }), 200
-
-    # Start runtime in a safe background thread
-    if os.getenv("DISABLE_AUTO_START", "0") != "1":
-        def start_async():
+        @app.get("/dashboard/api/overview")
+        def dashboard_overview():
             try:
-                # Small delay to let server finish binding
-                time.sleep(5)
-                logger.info("Starting BotRuntime...")
-                runtime.start()
-                logger.info("BotRuntime started successfully.")
+                return jsonify(runtime.dashboard_snapshot())
             except Exception as e:
-                logger.error(f"Failed to start BotRuntime: {e}")
-        
-        t = threading.Thread(target=start_async, name="runtime-init", daemon=True)
-        t.start()
-        
-        atexit.register(runtime.stop)
+                error_details = {
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                    "endpoint": "/overview"
+                }
+                logger.error(f"API Error /overview: {e}\n{error_details['traceback']}")
+                return jsonify(error_details), 500
 
-    logger.info("Flask app created successfully.")
-    return app
+        @app.get("/dashboard/api/history")
+        def dashboard_history():
+            try:
+                return jsonify(runtime.history_snapshot())
+            except Exception as e:
+                error_details = {
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                    "endpoint": "/history"
+                }
+                logger.error(f"API Error /history: {e}\n{error_details['traceback']}")
+                return jsonify(error_details), 500
+
+        # Start runtime in a safe background thread
+        if os.getenv("DISABLE_AUTO_START", "0") != "1":
+            def start_async():
+                try:
+                    time.sleep(5)
+                    runtime.start()
+                except Exception as e:
+                    logger.error(f"Failed to start BotRuntime: {e}")
+            
+            t = threading.Thread(target=start_async, name="runtime-init", daemon=True)
+            t.start()
+            atexit.register(runtime.stop)
+
+        logger.info("Flask app created successfully.")
+        return app
+    except Exception as e:
+        logger.error(f"Failed to create app: {e}\n{traceback.format_exc()}")
+        # Create a fallback app to show the error
+        fallback_app = Flask(__name__)
+        @fallback_app.route("/<path:path>")
+        @fallback_app.route("/")
+        def error_fallback(path=""):
+            return f"<h1>Critical Startup Error</h1><pre>{traceback.format_exc()}</pre>", 500
+        return fallback_app
 
 # Entry point for Gunicorn
 app = create_app()
