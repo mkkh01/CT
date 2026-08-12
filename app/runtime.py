@@ -255,6 +255,11 @@ class BotRuntime:
         errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
         warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
 
+        user_id = self.settings.telegram_chat_id or "local"
+        recent_signals = self.supabase.select_recent_signals(user_id, limit=50)
+        recent_positions = self.supabase.select_recent_positions(user_id, limit=50)
+        events = self.supabase.select_recent_events(user_id, limit=50)
+
         return {
             "overview": overview,
             "open_positions": trader_snapshot["open_positions"],
@@ -262,6 +267,10 @@ class BotRuntime:
             "last_warning": last_warning,
             "errors": errors,
             "warnings": warnings,
+            "recent_signals": recent_signals,
+            "recent_positions": recent_positions,
+            "events": events,
+            "logs": all_logs[-100:][::-1],
         }
 
     def history_snapshot(self) -> dict[str, Any]:
