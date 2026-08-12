@@ -248,23 +248,31 @@ class BotRuntime:
                 and bool(persisted_state.get("websocket_connected")) == bool(overview["websocket_connected"])
                 and database_sync["symbols_match"]
             )
-        overview["database_sync"] = database_sync
+            overview["database_sync"] = database_sync
+        
+        with self._lock:
+            all_logs = list(self.recent_logs)
+        errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
+        warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
+
         return {
             "overview": overview,
             "open_positions": trader_snapshot["open_positions"],
             "last_error": last_error,
             "last_warning": last_warning,
+            "errors": errors,
+            "warnings": warnings,
         }
 
     def history_snapshot(self) -> dict[str, Any]:
         """Returns heavy historical data for background loading."""
         user_id = self.settings.telegram_chat_id or "local"
         with self._lock:
-            recent_logs = list(self.recent_logs)[-50:][::-1]
+            recent_logs = list(self.recent_logs)[-100:][::-1]
         return {
-            "recent_signals": self.supabase.select_recent_signals(user_id, limit=20),
-            "recent_positions": self.supabase.select_recent_positions(user_id, limit=20),
-            "events": [{k: v for k, v in e.items() if k != 'payload'} for e in self.supabase.select_recent_events(user_id, limit=30)],
+            "recent_signals": self.supabase.select_recent_signals(user_id, limit=50),
+            "recent_positions": self.supabase.select_recent_positions(user_id, limit=50),
+            "events": self.supabase.select_recent_events(user_id, limit=50),
             "logs": recent_logs,
         }
 
