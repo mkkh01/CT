@@ -63,7 +63,7 @@ class BinanceMarketData:
         # Fail fast here: endpoint failover and the next polling cycle provide
         # retries without blocking the live-data thread for minutes.
         self._rest_session.mount("https://", HTTPAdapter(max_retries=Retry(total=0)))
-        self._rest_timeout = (3, 5)
+        self._rest_timeout = (2, 3)
         self._rest_urls = self._build_rest_urls()
         self._active_rest_url = self._rest_urls[0]
         self._bootstrap_rate_limited_until = 0.0
