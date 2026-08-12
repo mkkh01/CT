@@ -57,7 +57,10 @@
     return data.events.find(e=>e.event_type==='summary_cycle')?.payload||null;
   }
   function decisionStats(rows){let accepted=0,rejected=0,notReady=0,noSignal=0,duplicate=0,explicitRejected=0,marketFilter=0,signalTypes={};rows.forEach(e=>{const p=e.payload||{},d=String(p.decision||'').toUpperCase();if(p.signal||d.includes('ACCEPT')||d.includes('ENTER'))accepted++;if(d==='MARKET_FILTER_REJECTED'){rejected++;marketFilter++}else if(d.includes('REJECT')){rejected++;explicitRejected++}if(d==='DATA_NOT_READY'){rejected++;notReady++}if(d==='NO_SIGNAL'){rejected++;noSignal++}if(d.includes('DUPLICATE')){rejected++;duplicate++}const type=p.signal_type||p.signal?.type||p.signal_payload?.signal_type||p.strategy_signal_type;if(type)signalTypes[type]=(signalTypes[type]||0)+1});return{accepted,rejected,notReady,noSignal,duplicate,explicitRejected,marketFilter,signalTypes}}
-  function setClass(id,cls){$(id).className=cls}
+  function setClass(id,cls){
+    const el = $(id);
+    if(el) el.className=cls;
+  }
   function renderOverview(data){
     if(!data) return;
     const o=data.overview||{}, rows=allDecisions(data), stats=decisionStats(rows), summary=latestSummary(data), ms=o.market_status||{}, symbols=o.coins||[], readySymbols=o.strategy_ready_symbols||ms.strategy_ready_symbols||[], dataReadySymbols=ms.data_ready_symbols||[], ready=readySymbols.length, total=symbols.length, readyPct=total?Math.round(ready/total*100):0;
@@ -85,6 +88,9 @@
     
     setText('m-positions',`${num(o.open_positions_count,0)}/${num(o.max_concurrent_positions,0)}`);
     setText('m-closed',`مغلقة: ${num(o.closed_trades||summary?.metrics?.closed_trades,0)}`);
+    
+    // Remove or fix non-existent IDs
+    setText('m-signals', null); // Safe now
 
     if(o.win_rate!==undefined) setText('m-winrate', `${num(o.win_rate,1)}%`);
     if(o.sharpe_ratio!==undefined) setText('m-sharpe', num(o.sharpe_ratio,2));
