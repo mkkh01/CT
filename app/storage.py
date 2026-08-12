@@ -110,6 +110,16 @@ class SupabaseStore:
         )
         return result if isinstance(result, list) else []
 
+    def select_runtime_state(self, user_id: str) -> Optional[dict[str, Any]]:
+        result = self._request(
+            "GET",
+            f"runtime_state?select=*&user_id=eq.{self._user_filter(user_id)}&limit=1",
+        )
+        return result[0] if isinstance(result, list) and result else None
+
+    def upsert_runtime_state(self, row: dict[str, Any]) -> Optional[Any]:
+        return self.upsert("runtime_state", row, "user_id")
+
 
 class RedisStore:
     def __init__(self, settings: Settings):

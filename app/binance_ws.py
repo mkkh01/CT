@@ -35,6 +35,7 @@ class BinanceMarketData:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._bootstrap_thread: Optional[threading.Thread] = None
+        self._watchdog_thread: Optional[threading.Thread] = None
         self._bootstrap_lock = threading.Lock()
         self._ws: Optional[websocket.WebSocketApp] = None
         self._last_message_at: Optional[float] = None
@@ -45,6 +46,7 @@ class BinanceMarketData:
         self._last_ws_close_reason: Optional[str] = None
         self._active_stream_url: Optional[str] = None
         self._last_ws_attempt_at: Optional[str] = None
+        self._last_liveness_log_at = 0.0
         self._rest_session = requests.Session()
         self._rest_session.headers.update({
             "User-Agent": "CT-Spot-Monitor/1.0",
@@ -83,7 +85,17 @@ class BinanceMarketData:
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        if not self._connected:
+            return False
+        reference = self._last_message_at
+        if reference is None and self._connected_at:
+            try:
+                reference = datetime.fromisoformat(self._connected_at).timestamp()
+            except ValueError:
+                reference = None
+        if reference is None:
+            return False
+        return (time.time() - reference) <= max(30, self.settings.stale_data_seconds)
 
     @property
     def last_message_at(self) -> Optional[float]:
@@ -271,16 +283,16 @@ class BinanceMarketData:
                 self._set_bootstrap_state(symbol, interval, "ready")
                 logger.info("market_bootstrap_complete symbol=%s interval=%s count=%s endpoint=%s", symbol, interval, len(self.candles(symbol, interval)), self._active_rest_url)
         state = self.status_snapshot()
-        all_ready = bool(self.symbols) and set(state["strategy_ready_symbols"]) == set(self.symbols)
-        self._startup_stage = "waiting_for_live_candle_close" if all_ready else "history_incomplete"
+        all_data_ready = bool(self.symbols) and set(state["data_ready_symbols"]) == set(self.symbols)
+        self._startup_stage = "waiting_for_live_candle_close" if all_data_ready else "history_incomplete"
         self._startup_completed_at = datetime.now(timezone.utc).isoformat()
-        if all_ready:
+        if all_data_ready:
             self._next_bootstrap_retry_at = 0.0
         elif self._bootstrap_rate_limited_until > time.time():
             self._next_bootstrap_retry_at = self._bootstrap_rate_limited_until
         else:
             self._next_bootstrap_retry_at = time.time() + 30
-        logger.info("market_bootstrap_summary attempt=%s stage=%s strategy_ready_symbols=%s next_retry_at=%s", self._bootstrap_attempt, self._startup_stage, state["strategy_ready_symbols"], self._next_bootstrap_retry_at)
+        logger.info("market_bootstrap_summary attempt=%s stage=%s data_ready_symbols=%s strategy_ready_symbols=%s next_retry_at=%s", self._bootstrap_attempt, self._startup_stage, state["data_ready_symbols"], state["strategy_ready_symbols"], self._next_bootstrap_retry_at)
 
     @staticmethod
     def _normalise_rest_kline(raw: list[Any]) -> dict[str, Any]:
@@ -332,16 +344,26 @@ class BinanceMarketData:
                 state["count"] = len(self.candles(symbol, interval))
                 intervals[interval] = state
             required = 55
-            ready = all(item.get("count", 0) >= required for item in intervals.values())
+            data_ready = all(item.get("count", 0) >= required for item in intervals.values())
+            live_ready = data_ready and self.connected
             by_symbol[symbol] = {
                 "price": None,
                 "intervals": intervals,
                 "required_closed_candles": required,
-                "ready_for_strategy": ready,
-                "readiness_reason": "ready" if ready else "waiting_for_55_closed_candles_on_1h_and_4h",
+                "data_ready_for_strategy": data_ready,
+                "ready_for_strategy": live_ready,
+                "readiness_reason": (
+                    "ready" if live_ready else
+                    ("waiting_for_live_websocket" if data_ready else "waiting_for_55_closed_candles_on_1h_and_4h")
+                ),
             }
+        last_message_age = None
+        if self._last_message_at:
+            last_message_age = max(0.0, time.time() - self._last_message_at)
         return {
             "connected": self.connected,
+            "transport_connected": self._connected,
+            "message_age_seconds": last_message_age,
             "startup_stage": self._startup_stage,
             "startup_started_at": self._startup_started_at,
             "startup_completed_at": self._startup_completed_at,
@@ -361,6 +383,7 @@ class BinanceMarketData:
             "active_rest_url": self._active_rest_url,
             "rest_cooldown_until": datetime.fromtimestamp(self._bootstrap_rate_limited_until, timezone.utc).isoformat() if self._bootstrap_rate_limited_until > time.time() else None,
             "symbols": by_symbol,
+            "data_ready_symbols": sorted(symbol for symbol, state in by_symbol.items() if state["data_ready_for_strategy"]),
             "strategy_ready_symbols": sorted(symbol for symbol, state in by_symbol.items() if state["ready_for_strategy"]),
         }
 
@@ -411,8 +434,8 @@ class BinanceMarketData:
                 self._stop.wait(5)
                 continue
             state = self.status_snapshot()
-            all_ready = bool(self.symbols) and set(state["strategy_ready_symbols"]) == set(self.symbols)
-            if all_ready:
+            all_data_ready = bool(self.symbols) and set(state["data_ready_symbols"]) == set(self.symbols)
+            if all_data_ready:
                 self._stop.wait(30)
                 continue
             wait_seconds = max(0.0, self._next_bootstrap_retry_at - time.time())
@@ -483,6 +506,34 @@ class BinanceMarketData:
             if not self._stop.wait(wait_seconds):
                 logger.info("binance_ws_reconnect_wait_seconds=%s endpoint=%s", wait_seconds, base_url)
 
+    def _watchdog_loop(self) -> None:
+        stale_after = max(30, self.settings.stale_data_seconds)
+        while not self._stop.wait(10):
+            if self._connected:
+                reference = self._last_message_at
+                if reference is None and self._connected_at:
+                    try:
+                        reference = datetime.fromisoformat(self._connected_at).timestamp()
+                    except ValueError:
+                        reference = None
+                age = (time.time() - reference) if reference else None
+                if age is not None and age > stale_after:
+                    now = time.time()
+                    if now - self._last_liveness_log_at >= 30:
+                        self._last_liveness_log_at = now
+                        self._last_ws_error = f"stale_market_data age_seconds={age:.1f}"
+                        logger.warning("binance_ws_stale endpoint=%s age_seconds=%.1f", self._active_stream_url, age)
+                    ws = self._ws
+                    if ws:
+                        try:
+                            ws.close()
+                        except Exception:
+                            pass
+            if self._thread and not self._thread.is_alive() and not self._stop.is_set():
+                logger.error("binance_ws_thread_not_alive restarting=true")
+                self._thread = threading.Thread(target=self._run, name="binance-ws", daemon=True)
+                self._thread.start()
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -492,6 +543,8 @@ class BinanceMarketData:
         self._thread.start()
         self._bootstrap_thread = threading.Thread(target=self._bootstrap_retry_loop, name="binance-bootstrap-retry", daemon=True)
         self._bootstrap_thread.start()
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="binance-ws-watchdog", daemon=True)
+        self._watchdog_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -504,6 +557,8 @@ class BinanceMarketData:
             self._thread.join(timeout=5)
         if self._bootstrap_thread and self._bootstrap_thread.is_alive():
             self._bootstrap_thread.join(timeout=5)
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=5)
 
     def restart(self) -> None:
         """Reconnect with the current symbol list after a Telegram settings change."""

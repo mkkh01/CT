@@ -226,6 +226,28 @@ class BotRuntime:
             last_error = self.last_error_log
             last_warning = self.last_warning
         user_id = self.settings.telegram_chat_id or "local"
+        persisted_state = self.supabase.select_runtime_state(user_id)
+        database_sync: dict[str, Any] = {
+            "available": bool(persisted_state),
+            "updated_at": persisted_state.get("updated_at") if persisted_state else None,
+            "age_seconds": None,
+            "state_matches_live": False,
+            "symbols_match": False,
+        }
+        if persisted_state:
+            try:
+                persisted_at = datetime.fromisoformat(str(persisted_state["updated_at"]).replace("Z", "+00:00"))
+                database_sync["age_seconds"] = max(0.0, (datetime.now(timezone.utc) - persisted_at).total_seconds())
+            except (KeyError, TypeError, ValueError):
+                database_sync["age_seconds"] = None
+            persisted_symbols = set(persisted_state.get("selected_symbols") or [])
+            database_sync["symbols_match"] = persisted_symbols == set(symbols)
+            database_sync["state_matches_live"] = (
+                bool(persisted_state.get("runtime_started")) == bool(overview["runtime_started"])
+                and bool(persisted_state.get("websocket_connected")) == bool(overview["websocket_connected"])
+                and database_sync["symbols_match"]
+            )
+        overview["database_sync"] = database_sync
         return {
             "overview": overview,
             "open_positions": trader_snapshot["open_positions"],
@@ -235,6 +257,7 @@ class BotRuntime:
             "logs": recent_logs,
             "errors": [item for item in recent_logs if item["level"] in ("ERROR", "CRITICAL")],
             "warnings": [item for item in recent_logs if item["level"] == "WARNING"],
+            "persisted_runtime_state": persisted_state,
             "last_error": last_error,
             "last_warning": last_warning,
         }
@@ -527,6 +550,28 @@ class BotRuntime:
             "التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
         )
 
+    def _persist_runtime_state(self, market_status: dict[str, Any], snapshot: dict[str, Any]) -> None:
+        user_id = self.settings.telegram_chat_id or "local"
+        row = {
+            "user_id": user_id,
+            "runtime_started": self._started,
+            "websocket_connected": bool(market_status.get("connected")),
+            "startup_stage": market_status.get("startup_stage") or "idle",
+            "websocket_last_message_at": market_status.get("last_message_at"),
+            "websocket_connected_at": market_status.get("connected_at"),
+            "websocket_last_error": market_status.get("last_ws_error"),
+            "websocket_last_close_code": str(market_status.get("last_ws_close_code")) if market_status.get("last_ws_close_code") is not None else None,
+            "websocket_last_close_reason": market_status.get("last_ws_close_reason"),
+            "websocket_active_stream_url": market_status.get("active_stream_url"),
+            "selected_symbols": snapshot.get("selected_symbols", []),
+            "capital_by_symbol": snapshot.get("capital_by_symbol", {}),
+            "strategy_ready_symbols": market_status.get("strategy_ready_symbols", []),
+            "market_status": market_status,
+            "metrics": snapshot.get("metrics", {}),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.supabase.upsert_runtime_state(row)
+
     def _emit_summary_cycle(self) -> None:
         with self._lock:
             snapshot = self.trader.snapshot()
@@ -550,6 +595,7 @@ class BotRuntime:
             })
             logger.info("summary_cycle %s", json.dumps(snapshot, ensure_ascii=False, default=str))
             self.redis.set_json("bot:summary", snapshot, ex=300)
+            self._persist_runtime_state(market_status, snapshot)
             self._log_event("summary_cycle", snapshot)
 
     def _summary_loop(self) -> None:

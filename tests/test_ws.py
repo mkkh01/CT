@@ -40,3 +40,32 @@ def test_stream_url_contains_all_dynamic_user_symbols():
     assert "btcusdt@kline_1h" in url
     assert "xrpusdt@kline_4h" in url
     assert "xrpusdt@miniTicker" in url
+
+
+def test_data_readiness_is_separate_from_live_strategy_readiness():
+    from collections import deque
+
+    client = BinanceMarketData(Settings(selected_symbols=["BTCUSDT"]), lambda *_: None, lambda *_: None)
+    candles = [{"open_time": index, "close_time": index + 1, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0, "closed": True} for index in range(55)]
+    client._candles[("BTCUSDT", "1h")] = deque(candles, maxlen=300)
+    client._candles[("BTCUSDT", "4h")] = deque(candles, maxlen=300)
+
+    disconnected = client.status_snapshot()
+    assert disconnected["data_ready_symbols"] == ["BTCUSDT"]
+    assert disconnected["strategy_ready_symbols"] == []
+    assert disconnected["symbols"]["BTCUSDT"]["readiness_reason"] == "waiting_for_live_websocket"
+
+    client._connected = True
+    import time
+    client._last_message_at = time.time()
+    connected = client.status_snapshot()
+    assert connected["strategy_ready_symbols"] == ["BTCUSDT"]
+
+
+def test_connected_property_expires_stale_market_data():
+    import time
+
+    client = BinanceMarketData(Settings(selected_symbols=["BTCUSDT"], stale_data_seconds=60), lambda *_: None, lambda *_: None)
+    client._connected = True
+    client._last_message_at = time.time() - 61
+    assert client.connected is False
