@@ -37,6 +37,11 @@ class Settings:
     execution_timeframe: str = "1h"
     higher_timeframe: str = "4h"
     signal_cooldown_seconds: int = 3600
+    adx_period: int = 14
+    adx_min: float = 25.0
+    atr_period: int = 14
+    atr_min_pct: float = 0.003
+    atr_max_pct: float = 0.08
     binance_stream_url: str = "wss://data-stream.binance.vision:443/stream"
     binance_rest_url: str = "https://data-api.binance.vision/api/v3"
     heartbeat_interval_seconds: int = 15
@@ -64,6 +69,11 @@ class Settings:
             execution_timeframe=os.getenv("EXECUTION_TIMEFRAME", "1h").strip(),
             higher_timeframe=os.getenv("HIGHER_TIMEFRAME", "4h").strip(),
             signal_cooldown_seconds=int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "3600")),
+            adx_period=int(os.getenv("ADX_PERIOD", "14")),
+            adx_min=float(os.getenv("ADX_MIN", "25.0")),
+            atr_period=int(os.getenv("ATR_PERIOD", "14")),
+            atr_min_pct=float(os.getenv("ATR_MIN_PCT", "0.003")),
+            atr_max_pct=float(os.getenv("ATR_MAX_PCT", "0.08")),
             binance_stream_url=os.getenv("BINANCE_STREAM_URL", "wss://data-stream.binance.vision:443/stream").strip(),
             binance_rest_url=os.getenv("BINANCE_REST_URL", "https://data-api.binance.vision/api/v3").strip().rstrip("/"),
             heartbeat_interval_seconds=int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "15")),

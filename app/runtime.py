@@ -13,7 +13,7 @@ from .binance_ws import BinanceMarketData
 from .config import Settings
 from .models import Signal, VirtualPosition
 from .storage import RedisStore, SupabaseStore
-from .strategy import evaluate_signal
+from .strategy import evaluate_signal_diagnostics
 from .telegram_bot import TelegramBot
 from .virtual_trading import VirtualTradingEngine
 
@@ -34,6 +34,7 @@ class BotRuntime:
         self.last_error: str | None = None
         self.last_event_at: datetime | None = None
         self.last_decision: dict[str, Any] | None = None
+        self.last_decision_by_symbol: dict[str, dict[str, Any]] = {}
         self.cycle_count = 0
         self.signal_count = 0
         self.rejected_signal_count = 0
@@ -59,6 +60,12 @@ class BotRuntime:
     @staticmethod
     def _normalise_symbol(symbol: str) -> str:
         return re.sub(r"[^A-Z0-9]", "", symbol.upper())
+
+    def _record_decision(self, decision: dict[str, Any]) -> None:
+        self.last_decision = decision
+        symbol = decision.get("symbol")
+        if symbol:
+            self.last_decision_by_symbol[str(symbol)] = decision
 
     def _load_persisted_settings(self) -> None:
         if not self.settings.telegram_chat_id:
@@ -154,6 +161,31 @@ class BotRuntime:
             market_status = self.market.status_snapshot()
             for coin in coins:
                 coin["market"] = market_status["symbols"].get(coin["symbol"], {})
+                decision = self.last_decision_by_symbol.get(coin["symbol"])
+                if decision:
+                    metrics = decision.get("indicator_metrics") or {}
+                    coin["analysis"] = {
+                        "decision": decision.get("decision"),
+                        "chart_regime": decision.get("market_regime"),
+                        "chart_regime_label": decision.get("market_regime_label"),
+                        "chart_regime_1h": decision.get("chart_regime_1h"),
+                        "chart_regime_1h_label": decision.get("chart_regime_1h_label"),
+                        "chart_regime_4h": decision.get("chart_regime_4h"),
+                        "chart_regime_4h_label": decision.get("chart_regime_4h_label"),
+                        "candle_pattern": decision.get("candle_pattern"),
+                        "candle_pattern_label": decision.get("candle_pattern_label"),
+                        "candle_direction": decision.get("candle_direction"),
+                        "candle_pattern_1h": decision.get("candle_pattern_1h"),
+                        "candle_direction_1h": decision.get("candle_direction_1h"),
+                        "candle_pattern_4h": decision.get("candle_pattern_4h"),
+                        "candle_direction_4h": decision.get("candle_direction_4h"),
+                        "rejection_reason": decision.get("rejection_reason"),
+                        "rejection_detail": decision.get("rejection_detail"),
+                        "adx": metrics.get("adx"),
+                        "atr_pct": metrics.get("atr_pct"),
+                    }
+                else:
+                    coin["analysis"] = None
             overview = {
                 "service": "CT Binance Spot Live Recommendations",
                 "execution": "disabled",
@@ -176,11 +208,19 @@ class BotRuntime:
                 "rejected_signals": self.rejected_signal_count,
                 "closed_trades": self.closed_trade_count,
                 "last_decision": self.last_decision,
+                "last_decision_by_symbol": self.last_decision_by_symbol,
                 "last_signal": self.last_signal.to_dict() if self.last_signal else None,
                 "missing_integrations": self.settings.missing_integrations(),
                 "market_status": market_status,
                 "strategy_ready": bool(market_status["strategy_ready_symbols"]) and set(market_status["strategy_ready_symbols"]) == set(symbols),
                 "strategy_required_closed_candles": 55,
+                "market_filter": {
+                    "adx_period": self.settings.adx_period,
+                    "adx_min": self.settings.adx_min,
+                    "atr_period": self.settings.atr_period,
+                    "atr_min_pct": self.settings.atr_min_pct,
+                    "atr_max_pct": self.settings.atr_max_pct,
+                },
             }
             recent_logs = list(self.recent_logs)[-250:][::-1]
             last_error = self.last_error_log
@@ -252,26 +292,55 @@ class BotRuntime:
             }
             if not market_state.get("ready_for_strategy"):
                 decision["decision"] = "DATA_NOT_READY"
-                self.last_decision = decision
+                self._record_decision(decision)
                 logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
                 self._log_event("strategy_cycle", decision)
                 return
-            signal = evaluate_signal(
+            signal, diagnostics = evaluate_signal_diagnostics(
                 symbol,
                 execution,
                 higher,
                 stop_loss_pct=self.settings.stop_loss_pct,
                 take_profit_r_multiple=self.settings.take_profit_r_multiple,
+                adx_period=self.settings.adx_period,
+                adx_min=self.settings.adx_min,
+                atr_period=self.settings.atr_period,
+                atr_min_pct=self.settings.atr_min_pct,
+                atr_max_pct=self.settings.atr_max_pct,
             )
+            decision.update({
+                "market_regime": diagnostics.get("chart_regime"),
+                "market_regime_label": diagnostics.get("chart_regime_label"),
+                "chart_regime_1h": diagnostics.get("chart_regime_1h"),
+                "chart_regime_1h_label": diagnostics.get("chart_regime_1h_label"),
+                "chart_regime_4h": diagnostics.get("chart_regime_4h"),
+                "chart_regime_4h_label": diagnostics.get("chart_regime_4h_label"),
+                "candle_pattern": diagnostics.get("candle_pattern"),
+                "candle_pattern_label": diagnostics.get("candle_pattern_label"),
+                "candle_direction": diagnostics.get("candle_direction"),
+                "candle_pattern_1h": diagnostics.get("candle_pattern_label_1h"),
+                "candle_direction_1h": diagnostics.get("candle_direction_1h"),
+                "candle_pattern_4h": diagnostics.get("candle_pattern_label_4h"),
+                "candle_direction_4h": diagnostics.get("candle_direction_4h"),
+                "indicator_metrics": diagnostics,
+            })
             if signal is None:
-                decision["decision"] = "NO_SIGNAL"
-                self.last_decision = decision
+                decision["decision"] = "MARKET_FILTER_REJECTED" if diagnostics.get("rejection_reason") in {
+                    "SIDEWAYS_ADX_LOW",
+                    "SIDEWAYS_ATR_LOW",
+                    "EMA_ALIGNMENT_SIDEWAYS",
+                    "VOLATILITY_TOO_HIGH",
+                    "BEARISH_DIRECTIONAL_MOVEMENT",
+                } else "NO_SIGNAL"
+                decision["rejection_reason"] = diagnostics.get("rejection_reason")
+                decision["rejection_detail"] = diagnostics.get("rejection_detail")
+                self._record_decision(decision)
                 logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
                 self._log_event("strategy_cycle", decision)
                 return
             if self.trader.last_signal_at.get(symbol) == signal.candle_open_time:
                 decision["decision"] = "DUPLICATE_SIGNAL_IGNORED"
-                self.last_decision = decision
+                self._record_decision(decision)
                 logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
                 return
 
@@ -379,6 +448,17 @@ class BotRuntime:
             lines.append(f"الدخول {position.entry_price:.8f} | الوقف {position.stop_loss:.8f} | الهدف {position.take_profit:.8f}")
         if signal:
             lines.append(f"آخر إشارة: دخول {signal.entry_price:.8f} | {signal.reason}")
+        decision = self.last_decision_by_symbol.get(symbol)
+        if decision:
+            metrics = decision.get("indicator_metrics") or {}
+            lines.extend([
+                f"حالة الشارت: {decision.get('market_regime_label') or decision.get('market_regime') or 'غير متاح'}",
+                f"شمعة 1H: {decision.get('candle_pattern_1h') or decision.get('candle_pattern_label') or decision.get('candle_pattern') or 'غير متاح'} ({decision.get('candle_direction_1h') or decision.get('candle_direction') or '—'})",
+                f"شمعة 4H: {decision.get('candle_pattern_4h') or 'غير متاح'} ({decision.get('candle_direction_4h') or '—'})",
+                f"ADX: {float(metrics['adx']):.2f}" if metrics.get("adx") is not None else "ADX: غير متاح",
+                f"ATR/السعر: {float(metrics['atr_pct']) * 100:.3f}%" if metrics.get("atr_pct") is not None else "ATR/السعر: غير متاح",
+                f"سبب القرار: {decision.get('rejection_detail') or decision.get('rejection_reason') or decision.get('decision') or '—'}",
+            ])
         return "\n".join(lines)
 
     def prices_text(self) -> str:
@@ -464,6 +544,7 @@ class BotRuntime:
                     "closed_trades": self.closed_trade_count,
                 },
                 "last_decision": self.last_decision,
+                "last_decision_by_symbol": self.last_decision_by_symbol,
                 "last_signal": self.last_signal.to_dict() if self.last_signal else None,
                 "market_status": market_status,
             })

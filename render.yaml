@@ -41,5 +41,15 @@ services:
         value: 1h
       - key: HIGHER_TIMEFRAME
         value: 4h
+      - key: ADX_PERIOD
+        value: "14"
+      - key: ADX_MIN
+        value: "25.0"
+      - key: ATR_PERIOD
+        value: "14"
+      - key: ATR_MIN_PCT
+        value: "0.003"
+      - key: ATR_MAX_PCT
+        value: "0.08"
       - key: LOG_LEVEL
         value: INFO
