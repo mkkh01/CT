@@ -1,35 +1,86 @@
-from flask import Flask, jsonify
+from __future__ import annotations
 
-app = Flask(__name__)
+import atexit
+import logging
+import os
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Any
 
-@app.route("/")
-@app.route("/ping")
-@app.route("/healthz")
-def hello():
-    return "Hello, the server is alive!", 200
+from flask import Flask, jsonify, render_template
 
-@app.route("/dashboard/api/overview")
-def overview():
-    return jsonify({
-        "overview": {
-            "service": "CT Binance Spot Live Recommendations",
-            "runtime_started": True,
-            "websocket_connected": True,
-            "live_data_available": True,
-            "coins": [],
-            "total_capital": 0.0,
-            "realized_pnl_today": 0.0,
-            "open_positions_count": 0,
-            "cycles": 0,
-            "signals": 0,
-            "win_rate": 0.0,
-            "sharpe_ratio": 0.0,
-            "max_drawdown": 0.0,
-            "market_status": {}
-        },
-        "open_positions": [],
-        "recent_signals": [],
-        "recent_positions": [],
-        "events": [],
-        "logs": []
-    })
+from .config import Settings
+from .runtime import BotRuntime
+
+# Basic logging to stdout
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger(__name__)
+
+def create_app():
+    logger.info("Creating Flask app...")
+    settings = Settings.from_env()
+    app = Flask(__name__)
+    
+    # Initialize runtime
+    runtime = BotRuntime(settings)
+
+    @app.get("/ping")
+    def ping():
+        return "pong", 200
+
+    @app.get("/healthz")
+    def healthz():
+        return jsonify(runtime.health()), 200
+
+    @app.get("/")
+    @app.get("/dashboard")
+    def dashboard_page():
+        return render_template("dashboard.html")
+
+    @app.get("/dashboard/api/overview")
+    def dashboard_overview():
+        try:
+            return jsonify(runtime.dashboard_snapshot())
+        except Exception as e:
+            logger.error(f"API Error /overview: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.get("/dashboard/api/history")
+    def dashboard_history():
+        try:
+            return jsonify(runtime.history_snapshot())
+        except Exception as e:
+            logger.error(f"API Error /history: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.get("/cron/heartbeat")
+    def cron_heartbeat():
+        return jsonify({
+            "status": "ok", 
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "runtime_started": runtime._started
+        }), 200
+
+    # Start runtime in a safe background thread
+    if os.getenv("DISABLE_AUTO_START", "0") != "1":
+        def start_async():
+            try:
+                # Small delay to let server finish binding
+                time.sleep(5)
+                logger.info("Starting BotRuntime...")
+                runtime.start()
+                logger.info("BotRuntime started successfully.")
+            except Exception as e:
+                logger.error(f"Failed to start BotRuntime: {e}")
+        
+        t = threading.Thread(target=start_async, name="runtime-init", daemon=True)
+        t.start()
+        
+        atexit.register(runtime.stop)
+
+    logger.info("Flask app created successfully.")
+    return app
+
+# Entry point for Gunicorn
+app = create_app()
