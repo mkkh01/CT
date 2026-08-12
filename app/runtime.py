@@ -176,127 +176,128 @@ class BotRuntime:
         }
 
     def dashboard_snapshot(self) -> dict[str, Any]:
-        """Returns lightweight overview for fast UI loading. NO network I/O."""
-        with self._lock:
-            trader_snapshot = self.trader.status_snapshot()
-            symbols = sorted(self.trader.selected_symbols)
-            coins = []
-            market_status = self.market.status_snapshot()
-            for symbol in symbols:
-                price = market_status["symbols"].get(symbol, {}).get("price")
-                decision = self.last_decision_by_symbol.get(symbol, {})
-                metrics = decision.get("indicator_metrics", {})
-                coin = {
-                    "symbol": symbol,
-                    "capital_usdt": self.trader.capital_by_symbol.get(symbol, 0.0),
-                    "price": price,
-                    "position_open": bool(self.trader.position_for_symbol(symbol)),
-                    "market": market_status["symbols"].get(symbol),
+        """Returns lightweight overview for fast UI loading. NO network I/O. NO locks."""
+        # Minimal lock read for consistency, but if it fails or blocks, we should be careful.
+        # Actually, let's avoid the lock entirely for the web request.
+        trader_snapshot = self.trader.status_snapshot()
+        symbols = sorted(self.trader.selected_symbols)
+        coins = []
+        market_status = self.market.status_snapshot()
+        for symbol in symbols:
+            price = market_status.get("symbols", {}).get(symbol, {}).get("price")
+            decision = self.last_decision_by_symbol.get(symbol, {})
+            metrics = decision.get("indicator_metrics", {})
+            coin = {
+                "symbol": symbol,
+                "capital_usdt": self.trader.capital_by_symbol.get(symbol, 0.0),
+                "price": price,
+                "position_open": bool(self.trader.position_for_symbol(symbol)),
+                "market": market_status.get("symbols", {}).get(symbol),
+            }
+            if decision:
+                coin["analysis"] = {
+                    "chart_regime_1h_label": decision.get("chart_regime_1h_label"),
+                    "chart_regime_4h_label": decision.get("chart_regime_4h_label"),
+                    "candle_pattern_1h": decision.get("candle_pattern_1h"),
+                    "candle_pattern_4h": decision.get("candle_pattern_4h"),
+                    "candle_direction_1h": decision.get("candle_direction_1h"),
+                    "candle_direction_4h": decision.get("candle_direction_4h"),
+                    "rejection_reason": decision.get("rejection_reason"),
+                    "rejection_detail": decision.get("rejection_detail"),
+                    "adx": metrics.get("adx"),
+                    "atr_pct": metrics.get("atr_pct"),
                 }
-                if decision:
-                    coin["analysis"] = {
-                        "chart_regime_1h_label": decision.get("chart_regime_1h_label"),
-                        "chart_regime_4h_label": decision.get("chart_regime_4h_label"),
-                        "candle_pattern_1h": decision.get("candle_pattern_1h"),
-                        "candle_pattern_4h": decision.get("candle_pattern_4h"),
-                        "candle_direction_1h": decision.get("candle_direction_1h"),
-                        "candle_direction_4h": decision.get("candle_direction_4h"),
-                        "rejection_reason": decision.get("rejection_reason"),
-                        "rejection_detail": decision.get("rejection_detail"),
-                        "adx": metrics.get("adx"),
-                        "atr_pct": metrics.get("atr_pct"),
-                    }
-                else:
-                    coin["analysis"] = None
-                coins.append(coin)
-            overview = {
-                "service": "CT Binance Spot Live Recommendations",
-                "execution": "disabled",
-                "runtime_started": self._started,
-                "websocket_connected": self.market.connected,
-                "live_data_available": self.market.live_data_available,
-                "live_data_source": self.market.live_data_source,
-                "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
-                "strategy": "ema_breakout_4h_filter_v1",
-                "timeframes": {
-                    "trigger": self.settings.trigger_timeframe,
-                    "execution": self.settings.execution_timeframe,
-                    "higher": self.settings.higher_timeframe
-                },
-                "coins": coins,
-                "capital_by_symbol": self.trader.capital_by_symbol,
-                "total_capital": trader_snapshot["total_capital"],
-                "realized_pnl_today": trader_snapshot["realized_pnl_today"],
-                "daily_loss_limit_pct": trader_snapshot["daily_loss_limit_pct"],
-                "daily_loss_limit_amount": trader_snapshot["daily_loss_limit_amount"],
-                "daily_loss_limit_hit": trader_snapshot["daily_loss_limit_hit"],
-                "open_positions_count": len(trader_snapshot["open_positions"]),
-                "max_concurrent_positions": self.settings.max_concurrent_positions,
-                "cycles": self.cycle_count,
-                "signals": self.signal_count,
-                "rejected_signals": self.rejected_signal_count,
-                "closed_trades": self.closed_trade_count,
-                "last_decision": self.last_decision,
-                "last_decision_by_symbol": self.last_decision_by_symbol,
-                "last_signal": self.last_signal.to_dict() if self.last_signal else None,
-                "missing_integrations": self.settings.missing_integrations(),
-                "market_status": market_status,
-                "strategy_ready": bool(market_status["strategy_ready_symbols"]) and set(market_status["strategy_ready_symbols"]) == set(symbols),
-                "strategy_required_closed_candles": 55,
-                "market_filter": {
-                    "adx_period": self.settings.adx_period,
-                    "adx_min": self.settings.adx_min,
-                    "atr_period": self.settings.atr_period,
-                    "atr_min_pct": self.settings.atr_min_pct,
-                    "atr_max_pct": self.settings.atr_max_pct,
-                },
-                "win_rate": trader_snapshot.get("win_rate", 0.0),
-                "sharpe_ratio": trader_snapshot.get("sharpe_ratio", 0.0),
-                "max_drawdown": trader_snapshot.get("max_drawdown", 0.0),
-            }
-            last_error = self.last_error_log
-            last_warning = self.last_warning
-            
-            all_logs = list(self.recent_logs)
-            errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
-            warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
+            else:
+                coin["analysis"] = None
+            coins.append(coin)
+        overview = {
+            "service": "CT Binance Spot Live Recommendations",
+            "execution": "disabled",
+            "runtime_started": self._started,
+            "websocket_connected": self.market.connected,
+            "live_data_available": self.market.live_data_available,
+            "live_data_source": self.market.live_data_source,
+            "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
+            "strategy": "ema_breakout_4h_filter_v1",
+            "timeframes": {
+                "trigger": self.settings.trigger_timeframe,
+                "execution": self.settings.execution_timeframe,
+                "higher": self.settings.higher_timeframe
+            },
+            "coins": coins,
+            "capital_by_symbol": self.trader.capital_by_symbol,
+            "total_capital": trader_snapshot.get("total_capital", 0.0),
+            "realized_pnl_today": trader_snapshot.get("realized_pnl_today", 0.0),
+            "daily_loss_limit_pct": trader_snapshot.get("daily_loss_limit_pct", 0.0),
+            "daily_loss_limit_amount": trader_snapshot.get("daily_loss_limit_amount", 0.0),
+            "daily_loss_limit_hit": trader_snapshot.get("daily_loss_limit_hit", False),
+            "open_positions_count": len(trader_snapshot.get("open_positions", [])),
+            "max_concurrent_positions": self.settings.max_concurrent_positions,
+            "cycles": self.cycle_count,
+            "signals": self.signal_count,
+            "rejected_signals": self.rejected_signal_count,
+            "closed_trades": self.closed_trade_count,
+            "last_decision": self.last_decision,
+            "last_decision_by_symbol": self.last_decision_by_symbol,
+            "last_signal": self.last_signal.to_dict() if self.last_signal else None,
+            "missing_integrations": self.settings.missing_integrations(),
+            "market_status": market_status,
+            "strategy_ready": bool(market_status.get("strategy_ready_symbols")) and set(market_status.get("strategy_ready_symbols", [])) == set(symbols),
+            "strategy_required_closed_candles": 55,
+            "market_filter": {
+                "adx_period": self.settings.adx_period,
+                "adx_min": self.settings.adx_min,
+                "atr_period": self.settings.atr_period,
+                "atr_min_pct": self.settings.atr_min_pct,
+                "atr_max_pct": self.settings.atr_max_pct,
+            },
+            "win_rate": trader_snapshot.get("win_rate", 0.0),
+            "sharpe_ratio": trader_snapshot.get("sharpe_ratio", 0.0),
+            "max_drawdown": trader_snapshot.get("max_drawdown", 0.0),
+        }
+        last_error = self.last_error_log
+        last_warning = self.last_warning
+        
+        all_logs = list(self.recent_logs)
+        errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
+        warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
 
-            # Use cached history instead of calling Supabase
-            persisted_state = self._history_cache.get("persisted_state")
-            database_sync: dict[str, Any] = {
-                "available": bool(persisted_state),
-                "updated_at": persisted_state.get("updated_at") if persisted_state else None,
-                "age_seconds": None,
-                "state_matches_live": False,
-                "symbols_match": False,
-            }
-            if persisted_state:
-                try:
-                    persisted_at = datetime.fromisoformat(str(persisted_state["updated_at"]).replace("Z", "+00:00"))
-                    database_sync["age_seconds"] = max(0.0, (datetime.now(timezone.utc) - persisted_at).total_seconds())
-                except (KeyError, TypeError, ValueError):
-                    database_sync["age_seconds"] = None
-                persisted_symbols = set(persisted_state.get("selected_symbols") or [])
-                database_sync["symbols_match"] = persisted_symbols == set(symbols)
-                database_sync["state_matches_live"] = (
-                    bool(persisted_state.get("runtime_started")) == bool(overview["runtime_started"])
-                    and bool(persisted_state.get("websocket_connected")) == bool(overview["websocket_connected"])
-                    and database_sync["symbols_match"]
-                )
-                overview["database_sync"] = database_sync
+        # Use cached history instead of calling Supabase
+        persisted_state = self._history_cache.get("persisted_state")
+        database_sync: dict[str, Any] = {
+            "available": bool(persisted_state),
+            "updated_at": persisted_state.get("updated_at") if persisted_state else None,
+            "age_seconds": None,
+            "state_matches_live": False,
+            "symbols_match": False,
+        }
+        if persisted_state:
+            try:
+                persisted_at = datetime.fromisoformat(str(persisted_state["updated_at"]).replace("Z", "+00:00"))
+                database_sync["age_seconds"] = max(0.0, (datetime.now(timezone.utc) - persisted_at).total_seconds())
+            except (KeyError, TypeError, ValueError):
+                database_sync["age_seconds"] = None
+            persisted_symbols = set(persisted_state.get("selected_symbols") or [])
+            database_sync["symbols_match"] = persisted_symbols == set(symbols)
+            database_sync["state_matches_live"] = (
+                bool(persisted_state.get("runtime_started")) == bool(overview["runtime_started"])
+                and bool(persisted_state.get("websocket_connected")) == bool(overview["websocket_connected"])
+                and database_sync["symbols_match"]
+            )
+            overview["database_sync"] = database_sync
 
-            return {
-                "overview": overview,
-                "open_positions": trader_snapshot["open_positions"],
-                "last_error": last_error,
-                "last_warning": last_warning,
-                "errors": errors,
-                "warnings": warnings,
-                "recent_signals": self._history_cache.get("recent_signals", []),
-                "recent_positions": self._history_cache.get("recent_positions", []),
-                "events": self._history_cache.get("events", []),
-                "logs": all_logs[-100:][::-1],
-            }
+        return {
+            "overview": overview,
+            "open_positions": trader_snapshot.get("open_positions", []),
+            "last_error": last_error,
+            "last_warning": last_warning,
+            "errors": errors,
+            "warnings": warnings,
+            "recent_signals": self._history_cache.get("recent_signals", []),
+            "recent_positions": self._history_cache.get("recent_positions", []),
+            "events": self._history_cache.get("events", []),
+            "logs": all_logs[-100:][::-1],
+        }
 
     def history_snapshot(self) -> dict[str, Any]:
         """Returns heavy historical data from memory cache. NO network I/O."""
@@ -548,21 +549,25 @@ class BotRuntime:
 
     def status_text(self) -> str:
         # Lock-free read for Telegram responsiveness
-        ms = self.market.status_snapshot()
-        ready = sorted(ms.get("strategy_ready_symbols", []))
-        return (
-            f"حالة النظام\n"
-            f"مرحلة البدء: {ms.get('startup_stage', '—')}\n"
-            f"إعادة محاولة جلب الشموع: {'مطلوبة' if ms.get('next_bootstrap_retry_at') else 'غير مطلوب؛ التهيئة مكتملة'}\n"
-            f"مصدر بيانات السوق: {'متصل' if self.market.live_data_available else 'غير متصل'}\n"
-            f"آخر حدث: {self.last_event_at.isoformat() if self.last_event_at else 'لا يوجد'}\n"
-            f"العملات المضافة: {', '.join(sorted(self.trader.selected_symbols))}\n"
-            f"الصفقات المفتوحة: {len(self.trader.open_positions)}/{self.settings.max_concurrent_positions}\n"
-            f"التكاملات الناقصة: {', '.join(self.settings.missing_integrations()) or 'لا يوجد'}\n"
-            f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count}\n"
-            f"العملات الجاهزة للتحليل: {', '.join(ready) or 'لا يوجد'}\n"
-            f"التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
-        )
+        try:
+            ms = self.market.status_snapshot()
+            ready = sorted(ms.get("strategy_ready_symbols", []))
+            symbols = sorted(list(self.trader.selected_symbols))
+            return (
+                f"حالة النظام\n"
+                f"مرحلة البدء: {ms.get('startup_stage', '—')}\n"
+                f"إعادة محاولة جلب الشموع: {'مطلوبة' if ms.get('next_bootstrap_retry_at') else 'غير مطلوب؛ التهيئة مكتملة'}\n"
+                f"مصدر بيانات السوق: {'متصل' if self.market.live_data_available else 'غير متصل'}\n"
+                f"آخر حدث: {self.last_event_at.isoformat() if self.last_event_at else 'لا يوجد'}\n"
+                f"العملات المضافة: {', '.join(symbols)}\n"
+                f"الصفقات المفتوحة: {len(self.trader.open_positions)}/{self.settings.max_concurrent_positions}\n"
+                f"التكاملات الناقصة: {', '.join(self.settings.missing_integrations()) or 'لا يوجد'}\n"
+                f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count}\n"
+                f"العملات الجاهزة للتحليل: {', '.join(ready) or 'لا يوجد'}\n"
+                f"التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
+            )
+        except Exception as e:
+            return f"خطأ في جلب الحالة: {e}"
 
     def prices_text(self) -> str:
         lines = ["الأسعار الحية:"]

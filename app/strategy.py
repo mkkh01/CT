@@ -412,12 +412,15 @@ def evaluate_signal_diagnostics(
     atr_max_pct: float = 0.08,
 ) -> tuple[Optional[Signal], dict[str, Any]]:
     """Evaluate the long breakout and return a machine-readable reason when it fails."""
-    if len(execution_candles) < 55 or len(higher_candles) < 55:
+    exec_len = len(execution_candles) if execution_candles else 0
+    high_len = len(higher_candles) if higher_candles else 0
+    
+    if exec_len < 55 or high_len < 55:
         return None, {
             "market_regime": "UNAVAILABLE",
             "filter_passed": False,
             "rejection_reason": "DATA_NOT_READY",
-            "rejection_detail": "أقل من 55 شمعة مغلقة على أحد الإطارين",
+            "rejection_detail": f"أقل من 55 شمعة مغلقة (1h:{exec_len}, 4h:{high_len})",
         }
 
     last = execution_candles[-1]
