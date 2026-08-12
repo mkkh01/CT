@@ -125,3 +125,17 @@ def test_rest_fallback_marks_live_data_and_updates_price_and_candle(monkeypatch)
     assert client.status_snapshot()["symbols"]["BTCUSDT"]["price"] == 104.5
     assert client.status_snapshot()["strategy_ready_symbols"] == ["BTCUSDT"]
     assert closed
+
+
+def test_binance_rest_urls_include_failover_endpoints():
+    client = BinanceMarketData(
+        Settings(
+            selected_symbols=["BTCUSDT"],
+            binance_rest_url="https://data-api.binance.vision/api/v3",
+        ),
+        lambda *_: None,
+        lambda *_: None,
+    )
+    assert client._rest_urls[0] == "https://data-api.binance.vision/api/v3"
+    assert "https://api.binance.com/api/v3" in client._rest_urls
+    assert "https://api1.binance.com/api/v3" in client._rest_urls

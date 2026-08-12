@@ -60,16 +60,10 @@ class BinanceMarketData:
             "Accept": "application/json",
             "Connection": "close",
         })
-        retry = Retry(
-            total=2,
-            connect=2,
-            read=2,
-            backoff_factor=0.35,
-            status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=frozenset({"GET"}),
-            raise_on_status=False,
-        )
-        self._rest_session.mount("https://", HTTPAdapter(max_retries=retry))
+        # Fail fast here: endpoint failover and the next polling cycle provide
+        # retries without blocking the live-data thread for minutes.
+        self._rest_session.mount("https://", HTTPAdapter(max_retries=Retry(total=0)))
+        self._rest_timeout = (3, 5)
         self._rest_urls = self._build_rest_urls()
         self._active_rest_url = self._rest_urls[0]
         self._bootstrap_rate_limited_until = 0.0
@@ -86,8 +80,15 @@ class BinanceMarketData:
     def _build_rest_urls(self) -> list[str]:
         configured = self.settings.binance_rest_url.rstrip("/")
         urls = [configured]
-        if configured == "https://api.binance.com/api/v3":
-            urls.extend([f"https://api{i}.binance.com/api/v3" for i in range(1, 5)])
+        if configured in {
+            "https://api.binance.com/api/v3",
+            "https://data-api.binance.vision/api/v3",
+        }:
+            urls.extend([
+                "https://api.binance.com/api/v3",
+                *[f"https://api{i}.binance.com/api/v3" for i in range(1, 5)],
+                "https://data-api.binance.vision/api/v3",
+            ])
         return list(dict.fromkeys(urls))
 
     @property
@@ -230,7 +231,7 @@ class BinanceMarketData:
         for base_url in [self._active_rest_url] + [url for url in self._rest_urls if url != self._active_rest_url]:
             try:
                 params = {"symbol": symbol, "interval": interval, "limit": max(2, min(int(limit), 200))}
-                response = self._rest_session.get(f"{base_url}/klines", params=params, timeout=15)
+                response = self._rest_session.get(f"{base_url}/klines", params=params, timeout=self._rest_timeout)
                 if response.status_code in (418, 429):
                     cooldown = self._retry_after_seconds(response)
                     self._bootstrap_rate_limited_until = time.time() + cooldown
@@ -269,7 +270,7 @@ class BinanceMarketData:
         last_error: str | None = None
         for base_url in [self._active_rest_url] + [url for url in self._rest_urls if url != self._active_rest_url]:
             try:
-                response = self._rest_session.get(f"{base_url}/ticker/price", params={"symbol": symbol}, timeout=10)
+                response = self._rest_session.get(f"{base_url}/ticker/price", params={"symbol": symbol}, timeout=self._rest_timeout)
                 if response.status_code in (418, 429):
                     last_error = f"HTTP_{response.status_code}"
                     continue
@@ -288,7 +289,10 @@ class BinanceMarketData:
         if not self.symbols:
             return
         received = False
-        for symbol in list(self.symbols):
+        symbols = list(self.symbols)
+        # Prices are the minimum viable live feed. Fetch them first so a slow
+        # kline endpoint cannot hide usable market prices from the dashboard.
+        for symbol in symbols:
             price = self._fetch_price(symbol)
             if price is not None:
                 received = True
@@ -296,6 +300,7 @@ class BinanceMarketData:
                 self._live_data_source = "rest_polling_fallback"
                 self._latest_prices[symbol] = price
                 self.on_price(symbol, price)
+        for symbol in symbols:
             for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
                 raw_klines = self._fetch_klines(symbol, interval, limit=2)
                 if not raw_klines:
