@@ -7,7 +7,7 @@ from functools import wraps
 from hmac import compare_digest
 from typing import Any, Callable
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request
 
 from .config import Settings
 from .runtime import BotRuntime
@@ -74,13 +74,7 @@ def create_app(start_runtime: bool = True) -> tuple[Flask, BotRuntime]:
 
     @app.get("/")
     def index() -> Any:
-        return jsonify({
-            "service": "CT Binance Spot Live Recommendations",
-            "mode": "recommendations_only",
-            "execution": "disabled",
-            "health": runtime.health(),
-            "dashboard": "/dashboard",
-        })
+        return redirect("/dashboard")
 
     @app.get("/healthz")
     def healthz() -> Any:
