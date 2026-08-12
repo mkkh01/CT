@@ -191,19 +191,11 @@ setText('s-cycles',num(o.cycles||s?.metrics?.cycles,0));setText('s-signals',num(
       btn.disabled = false;
     }
   };
-  document.addEventListener('DOMContentLoaded', () => {
-    refreshOverview();
-    refreshHistory();
-    setInterval(refreshOverview, 10000);
-    setInterval(refreshHistory, 60000);
-  });
-  // Fallback if DOMContentLoaded already fired
-  if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    refreshOverview();
-    refreshHistory();
-    setInterval(refreshOverview, 10000);
-    setInterval(refreshHistory, 60000);
-  }
+  // Execute immediately and set intervals
+  refreshOverview();
+  refreshHistory();
+  setInterval(refreshOverview, 10000);
+  setInterval(refreshHistory, 60000);
 
 </script>
 </body>
