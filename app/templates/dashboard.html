@@ -123,7 +123,7 @@
     const pnlPct = capital ? (pnl / capital * 100) : 0;
     setText('m-runtime', o.runtime_started ? 'يعمل' : 'متوقف');
     $('m-runtime').className = `value ${o.runtime_started ? 'green' : 'red'}`;
-    setText('m-ws', `WebSocket: ${o.websocket_connected ? 'متصل' : 'غير متصل'}`);
+    setText('m-ws', `WebSocket: ${o.websocket_connected ? 'متصل' : 'غير متصل'} | ${o.market_status?.startup_stage || '—'}`);
     setText('m-capital', `${num(capital, 4)} USDT`);
     setText('m-pnl', `${num(pnl, 6)} USDT`);
     $('m-pnl').className = `value ${pnl >= 0 ? 'green' : 'red'}`;

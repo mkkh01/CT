@@ -385,7 +385,11 @@ class BotRuntime:
         symbols = sorted(self.trader.selected_symbols)
         if not symbols:
             return "لا توجد عملات للعرض. أضف عملة ورأس مالها من الزر الديناميكي أولاً."
-        lines = ["الأسعار الحية للعملات المضافة فقط:"]
+        market_status = self.market.status_snapshot()
+        lines = [
+            "الأسعار الحية للعملات المضافة فقط:",
+            f"مرحلة النظام: {market_status.get('startup_stage', 'unknown')}",
+        ]
         for symbol in symbols:
             price = self.trader.last_prices.get(symbol)
             lines.append(f"{symbol}: {price:.8f}" if price is not None else f"{symbol}: بانتظار WebSocket")
@@ -425,38 +429,48 @@ class BotRuntime:
         last_event = self.last_event_at.isoformat() if self.last_event_at else "لا يوجد"
         missing = ", ".join(snapshot.get("selected_symbols", [])) or "لا توجد عملات مضافة"
         integration_missing = ", ".join(self.settings.missing_integrations()) or "لا يوجد"
+        market_status = self.market.status_snapshot()
+        ready_symbols = ", ".join(market_status.get("strategy_ready_symbols", [])) or "لا توجد عملات جاهزة بعد"
         return (
             "حالة النظام\n"
+            f"مرحلة البدء: {market_status.get('startup_stage', 'unknown')}\n"
             f"Binance WebSocket: {ws}\n"
             f"آخر حدث: {last_event}\n"
             f"العملات المضافة: {missing}\n"
             f"الصفقات المفتوحة: {len(snapshot['open_positions'])}/{self.settings.max_concurrent_positions}\n"
             f"التكاملات الناقصة: {integration_missing}\n"
             f"دورات الاستراتيجية: {self.cycle_count} | الإشارات: {self.signal_count}\n"
+            f"العملات الجاهزة للتحليل: {ready_symbols}\n"
             "التنفيذ: توصيات ومتابعة افتراضية فقط، بلا أوامر Binance"
         )
 
+    def _emit_summary_cycle(self) -> None:
+        with self._lock:
+            snapshot = self.trader.snapshot()
+            market_status = self.market.status_snapshot()
+            snapshot.update({
+                "websocket_connected": self.market.connected,
+                "startup_stage": market_status.get("startup_stage"),
+                "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
+                "strategy": "ema_breakout_4h_filter_v1",
+                "strategy_ready_symbols": market_status.get("strategy_ready_symbols", []),
+                "metrics": {
+                    "cycles": self.cycle_count,
+                    "signals": self.signal_count,
+                    "rejected_signals": self.rejected_signal_count,
+                    "closed_trades": self.closed_trade_count,
+                },
+                "last_decision": self.last_decision,
+                "last_signal": self.last_signal.to_dict() if self.last_signal else None,
+                "market_status": market_status,
+            })
+            logger.info("summary_cycle %s", json.dumps(snapshot, ensure_ascii=False, default=str))
+            self.redis.set_json("bot:summary", snapshot, ex=300)
+            self._log_event("summary_cycle", snapshot)
+
     def _summary_loop(self) -> None:
         while not self._stop.wait(60):
-            with self._lock:
-                snapshot = self.trader.snapshot()
-                snapshot.update({
-                    "websocket_connected": self.market.connected,
-                    "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
-                    "strategy": "ema_breakout_4h_filter_v1",
-                    "metrics": {
-                        "cycles": self.cycle_count,
-                        "signals": self.signal_count,
-                        "rejected_signals": self.rejected_signal_count,
-                        "closed_trades": self.closed_trade_count,
-                    },
-                    "last_decision": self.last_decision,
-                    "last_signal": self.last_signal.to_dict() if self.last_signal else None,
-                    "market_status": self.market.status_snapshot(),
-                })
-                logger.info("summary_cycle %s", json.dumps(snapshot, ensure_ascii=False, default=str))
-                self.redis.set_json("bot:summary", snapshot, ex=300)
-                self._log_event("summary_cycle", snapshot)
+            self._emit_summary_cycle()
 
     def start(self) -> None:
         if self._started:
@@ -466,9 +480,10 @@ class BotRuntime:
         self.market.start()
         self.telegram.start()
         self._stop.clear()
+        self._started = True
+        self._emit_summary_cycle()
         self._summary_thread = threading.Thread(target=self._summary_loop, name="summary-cycle", daemon=True)
         self._summary_thread.start()
-        self._started = True
         logger.info("runtime_started symbols=%s capital_by_symbol=%s strategy=ema_breakout_4h_filter_v1", sorted(self.trader.selected_symbols), self.trader.capital_by_symbol)
 
     def stop(self) -> None:

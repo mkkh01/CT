@@ -56,6 +56,10 @@ class BinanceMarketData:
         self._active_rest_url = self._rest_urls[0]
         self._bootstrap_rate_limited_until = 0.0
         self._last_rate_limit_log_at = 0.0
+        self._startup_stage = "idle"
+        self._startup_started_at: Optional[str] = None
+        self._startup_completed_at: Optional[str] = None
+        self._last_closed_candle: dict[str, Any] | None = None
         self._prepare_bootstrap_state()
 
     def _build_rest_urls(self) -> list[str]:
@@ -144,6 +148,9 @@ class BinanceMarketData:
         return None
 
     def bootstrap(self) -> None:
+        self._startup_stage = "bootstrapping_history"
+        self._startup_started_at = datetime.now(timezone.utc).isoformat()
+        self._startup_completed_at = None
         self._prepare_bootstrap_state()
         for symbol in self.symbols:
             for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
@@ -159,6 +166,10 @@ class BinanceMarketData:
                     self._store_candle(symbol, interval, self._normalise_rest_kline(raw))
                 self._set_bootstrap_state(symbol, interval, "ready")
                 logger.info("market_bootstrap_complete symbol=%s interval=%s count=%s endpoint=%s", symbol, interval, len(self.candles(symbol, interval)), self._active_rest_url)
+        state = self.status_snapshot()
+        self._startup_stage = "waiting_for_live_candle_close" if state["strategy_ready_symbols"] else "history_incomplete"
+        self._startup_completed_at = datetime.now(timezone.utc).isoformat()
+        logger.info("market_bootstrap_summary stage=%s strategy_ready_symbols=%s", self._startup_stage, state["strategy_ready_symbols"])
 
     @staticmethod
     def _normalise_rest_kline(raw: list[Any]) -> dict[str, Any]:
@@ -220,6 +231,10 @@ class BinanceMarketData:
             }
         return {
             "connected": self.connected,
+            "startup_stage": self._startup_stage,
+            "startup_started_at": self._startup_started_at,
+            "startup_completed_at": self._startup_completed_at,
+            "last_closed_candle": self._last_closed_candle,
             "last_message_at": datetime.fromtimestamp(self._last_message_at, timezone.utc).isoformat() if self._last_message_at else None,
             "active_rest_url": self._active_rest_url,
             "rest_cooldown_until": datetime.fromtimestamp(self._bootstrap_rate_limited_until, timezone.utc).isoformat() if self._bootstrap_rate_limited_until > time.time() else None,
@@ -243,6 +258,9 @@ class BinanceMarketData:
             candle = self._normalise_stream_kline(kline)
             self._store_candle(symbol, interval, candle)
             if candle["closed"]:
+                self._last_closed_candle = {"symbol": symbol, "interval": interval, "open_time": candle["open_time"], "close_time": candle["close_time"], "close": candle["close"]}
+                if self._startup_stage == "waiting_for_live_candle_close" and symbol in self.status_snapshot()["strategy_ready_symbols"]:
+                    self._startup_stage = "ready"
                 self.on_closed_candle(symbol, interval, candle)
 
     def _build_url(self) -> str:
