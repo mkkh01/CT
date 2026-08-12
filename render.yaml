@@ -19,6 +19,8 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
+      - key: BINANCE_REST_URL
+        value: https://data-api.binance.vision/api/v3
       - key: SELECTED_SYMBOLS
         value: ""
       - key: INITIAL_CAPITAL_USDT

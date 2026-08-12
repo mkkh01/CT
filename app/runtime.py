@@ -151,6 +151,9 @@ class BotRuntime:
                 }
                 for symbol in symbols
             ]
+            market_status = self.market.status_snapshot()
+            for coin in coins:
+                coin["market"] = market_status["symbols"].get(coin["symbol"], {})
             overview = {
                 "service": "CT Binance Spot Live Recommendations",
                 "execution": "disabled",
@@ -175,6 +178,9 @@ class BotRuntime:
                 "last_decision": self.last_decision,
                 "last_signal": self.last_signal.to_dict() if self.last_signal else None,
                 "missing_integrations": self.settings.missing_integrations(),
+                "market_status": market_status,
+                "strategy_ready": bool(market_status["strategy_ready_symbols"]) and set(market_status["strategy_ready_symbols"]) == set(symbols),
+                "strategy_required_closed_candles": 55,
             }
             recent_logs = list(self.recent_logs)[-250:][::-1]
             last_error = self.last_error_log
@@ -228,6 +234,7 @@ class BotRuntime:
             self.cycle_count += 1
             execution = self.market.candles(symbol, self.settings.execution_timeframe)
             higher = self.market.candles(symbol, self.settings.higher_timeframe)
+            market_state = self.market.status_snapshot()["symbols"].get(symbol, {})
             decision: dict[str, Any] = {
                 "cycle": self.cycle_count,
                 "symbol": symbol,
@@ -240,7 +247,15 @@ class BotRuntime:
                 "selected": True,
                 "signal": False,
                 "position_action": "none",
+                "data_ready": bool(market_state.get("ready_for_strategy")),
+                "data_readiness_reason": "ready" if market_state.get("ready_for_strategy") else "waiting_for_55_closed_candles_on_1h_and_4h",
             }
+            if not market_state.get("ready_for_strategy"):
+                decision["decision"] = "DATA_NOT_READY"
+                self.last_decision = decision
+                logger.info("strategy_cycle %s", json.dumps(decision, ensure_ascii=False, default=str))
+                self._log_event("strategy_cycle", decision)
+                return
             signal = evaluate_signal(
                 symbol,
                 execution,
@@ -437,6 +452,7 @@ class BotRuntime:
                     },
                     "last_decision": self.last_decision,
                     "last_signal": self.last_signal.to_dict() if self.last_signal else None,
+                    "market_status": self.market.status_snapshot(),
                 })
                 logger.info("summary_cycle %s", json.dumps(snapshot, ensure_ascii=False, default=str))
                 self.redis.set_json("bot:summary", snapshot, ex=300)
@@ -475,4 +491,5 @@ class BotRuntime:
             "cycles": self.cycle_count,
             "signals": self.signal_count,
             "missing_integrations": self.settings.missing_integrations(),
+            "market_status": self.market.status_snapshot(),
         }

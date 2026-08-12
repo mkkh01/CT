@@ -90,6 +90,7 @@
       <section class="panel"><div class="section-head"><h2>أحداث النظام</h2><span class="muted">من Supabase</span></div><div id="events-table" class="table-wrap"></div></section>
     </div>
 
+    <section class="panel full"><div class="section-head"><h2>آخر Summary Cycle</h2><span class="muted">حالة البيانات والاستراتيجية في آخر دورة</span></div><pre id="summary-json" class="decision mono muted">لا توجد summary_cycle بعد.</pre></section>
     <section class="panel full"><div class="section-head"><h2>سجل النظام التفصيلي</h2><span class="muted">آخر السجلات من بداية الجلسة الحالية</span></div><div id="logs-table" class="table-wrap"></div></section>
     <footer>تحديث تلقائي كل 10 ثوانٍ. البيانات المعروضة توصيات ومتابعة افتراضية فقط.</footer>
   </main>
@@ -133,6 +134,7 @@
     setText('m-positions', `${num(o.open_positions_count, 0)}/${num(o.max_concurrent_positions, 0)}`);
     setText('m-closed', `مغلقة: ${num(o.closed_trades, 0)}`);
     setText('strategy-label', `${o.strategy || '—'} | ${o.timeframes?.execution || '—'} / ${o.timeframes?.higher || '—'}`);
+    $('strategy-label').className = `pill ${o.strategy_ready ? 'ok' : 'warn'}`;
     setText('last-refresh', `آخر تحديث: ${time(new Date().toISOString())} | آخر حدث: ${time(o.last_event_at)}`);
     renderCoins(o.coins || []);
     renderDecision(o.last_decision);
@@ -141,19 +143,20 @@
     renderAlerts(data);
     renderEvents(data.events || []);
     renderLogs(data.logs || []);
+    renderSummary(data.events || []);
   }
 
   function renderCoins(coins) {
     if (!coins.length) { $('coins-table').innerHTML = empty('لم يضف المستخدم أي عملة بعد.'); return; }
-    $('coins-table').innerHTML = `<table><thead><tr><th>الزوج</th><th>رأس المال</th><th>السعر</th><th>المتابعة</th></tr></thead><tbody>${coins.map(c => `<tr><td><b>${esc(c.symbol)}</b></td><td>${num(c.capital_usdt,4)} USDT</td><td>${num(c.price,8)}</td><td>${c.position_open ? pill('صفقة مفتوحة','ok') : pill('بانتظار إشارة','warn')}</td></tr>`).join('')}</tbody></table>`;
+    $('coins-table').innerHTML = `<table><thead><tr><th>الزوج</th><th>رأس المال</th><th>السعر</th><th>شموع 1H / 4H</th><th>جاهزية الاستراتيجية</th><th>المتابعة</th></tr></thead><tbody>${coins.map(c => { const m=c.market||{}; const i1=m.intervals?.['1h']||{}; const i4=m.intervals?.['4h']||{}; return `<tr><td><b>${esc(c.symbol)}</b></td><td>${num(c.capital_usdt,4)} USDT</td><td>${num(c.price,8)}</td><td>${num(i1.count,0)} / ${num(i4.count,0)}<br><span class="muted">مطلوب 55 / إطار</span></td><td>${m.ready_for_strategy ? pill('جاهزة','ok') : pill('غير جاهزة','warn')}<br><span class="muted">${esc(m.readiness_reason||'—')}</span></td><td>${c.position_open ? pill('صفقة مفتوحة','ok') : pill('بانتظار إشارة','warn')}</td></tr>`; }).join('')}</tbody></table>`;
   }
 
   function renderDecision(decision) {
     if (!decision) { setText('last-decision','لا توجد دورة مسجلة بعد.'); setText('decision-state','—'); return; }
     const state = decision.decision || '—';
-    const kind = state.includes('REJECTED') ? 'bad' : (state === 'NO_SIGNAL' ? 'warn' : 'ok');
+    const kind = state.includes('REJECTED') ? 'bad' : ((state === 'NO_SIGNAL' || state === 'DATA_NOT_READY' || state.includes('DUPLICATE')) ? 'warn' : 'ok');
     $('decision-state').outerHTML = `<span id="decision-state" class="pill ${kind}">${esc(state)}</span>`;
-    $('last-decision').innerHTML = `<b>${esc(decision.symbol || '—')}</b><br>الدورة: ${num(decision.cycle,0)} | الإطار: ${esc(decision.timeframe || '—')}<br>الاستراتيجية: ${esc(decision.strategy || '—')}<br>السعر: ${num(decision.price,8)}<br>السبب: ${esc(decision.rejection_reason || decision.signal_payload?.reason || (state === 'NO_SIGNAL' ? 'لم تتحقق شروط الإشارة' : '—'))}<br>الإجراء: ${esc(decision.position_action || 'none')}`;
+    $('last-decision').innerHTML = `<b>${esc(decision.symbol || '—')}</b><br>الدورة: ${num(decision.cycle,0)} | الإطار: ${esc(decision.timeframe || '—')}<br>الاستراتيجية: ${esc(decision.strategy || '—')}<br>السعر: ${num(decision.price,8)}<br>السبب: ${esc(decision.rejection_reason || decision.signal_payload?.reason || decision.data_readiness_reason || (state === 'NO_SIGNAL' ? 'لم تتحقق شروط الإشارة' : '—'))}<br>الإجراء: ${esc(decision.position_action || 'none')}`;
   }
 
   function decisions(data) {
@@ -163,7 +166,7 @@
   function renderSignals(data) {
     const rows = decisions(data).slice(0,250);
     if (!rows.length) { $('signals-table').innerHTML = empty('لا توجد دورات استراتيجية مسجلة بعد.'); return; }
-    $('signals-table').innerHTML = `<table><thead><tr><th>الوقت</th><th>الزوج</th><th>القرار</th><th>الإشارة</th><th>السبب</th><th>الدخول/الوقف/الهدف</th></tr></thead><tbody>${rows.map(e => { const p=e.payload; const state=p.decision || '—'; const k=state.includes('REJECTED')?'red':(state==='NO_SIGNAL'?'amber':'green'); const sp=p.signal_payload || {}; return `<tr><td class="mono">${time(e.created_at)}</td><td><b>${esc(p.symbol || '—')}</b></td><td class="${k}">${esc(state)}</td><td>${p.signal ? pill('نعم','ok') : pill('لا','warn')}</td><td class="decision">${esc(p.rejection_reason || sp.reason || (state==='NO_SIGNAL'?'شروط الاستراتيجية غير مكتملة':'—'))}</td><td class="mono">${num(sp.entry_price,8)} / ${num(sp.stop_loss,8)} / ${num(sp.take_profit,8)}</td></tr>`; }).join('')}</tbody></table>`;
+    $('signals-table').innerHTML = `<table><thead><tr><th>الوقت</th><th>الزوج</th><th>القرار</th><th>الإشارة</th><th>السبب</th><th>الدخول/الوقف/الهدف</th></tr></thead><tbody>${rows.map(e => { const p=e.payload; const state=p.decision || '—'; const k=state.includes('REJECTED')?'red':((state==='NO_SIGNAL'||state==='DATA_NOT_READY'||state.includes('DUPLICATE'))?'amber':'green'); const sp=p.signal_payload || {}; return `<tr><td class="mono">${time(e.created_at)}</td><td><b>${esc(p.symbol || '—')}</b></td><td class="${k}">${esc(state)}</td><td>${p.signal ? pill('نعم','ok') : pill('لا','warn')}</td><td class="decision">${esc(p.rejection_reason || sp.reason || p.data_readiness_reason || (state==='NO_SIGNAL'?'شروط الاستراتيجية غير مكتملة':'—'))}</td><td class="mono">${num(sp.entry_price,8)} / ${num(sp.stop_loss,8)} / ${num(sp.take_profit,8)}</td></tr>`; }).join('')}</tbody></table>`;
   }
 
   function renderPositions(data) {
@@ -184,6 +187,11 @@
   function renderEvents(events) {
     if (!events.length) { $('events-table').innerHTML = empty('لا توجد أحداث محفوظة في Supabase بعد.'); return; }
     $('events-table').innerHTML = `<table><thead><tr><th>الوقت</th><th>النوع</th><th>المحتوى</th></tr></thead><tbody>${events.slice(0,200).map(e => `<tr><td class="mono">${time(e.created_at)}</td><td>${esc(e.event_type)}</td><td class="decision mono">${esc(JSON.stringify(e.payload || {}))}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  function renderSummary(events) {
+    const latest = events.find(e => e.event_type === 'summary_cycle');
+    $('summary-json').textContent = latest ? JSON.stringify(latest.payload || {}, null, 2) : 'لا توجد summary_cycle بعد.';
   }
 
   function renderLogs(logs) {

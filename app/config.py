@@ -38,7 +38,7 @@ class Settings:
     higher_timeframe: str = "4h"
     signal_cooldown_seconds: int = 3600
     binance_stream_url: str = "wss://stream.binance.com:9443/stream"
-    binance_rest_url: str = "https://api.binance.com/api/v3"
+    binance_rest_url: str = "https://data-api.binance.vision/api/v3"
     heartbeat_interval_seconds: int = 15
     stale_data_seconds: int = 180
     log_level: str = "INFO"
@@ -65,7 +65,7 @@ class Settings:
             higher_timeframe=os.getenv("HIGHER_TIMEFRAME", "4h").strip(),
             signal_cooldown_seconds=int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "3600")),
             binance_stream_url=os.getenv("BINANCE_STREAM_URL", "wss://stream.binance.com:9443/stream").strip(),
-            binance_rest_url=os.getenv("BINANCE_REST_URL", "https://api.binance.com/api/v3").strip().rstrip("/"),
+            binance_rest_url=os.getenv("BINANCE_REST_URL", "https://data-api.binance.vision/api/v3").strip().rstrip("/"),
             heartbeat_interval_seconds=int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "15")),
             stale_data_seconds=int(os.getenv("STALE_DATA_SECONDS", "180")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),

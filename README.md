@@ -54,6 +54,7 @@
 | `SUPABASE_URL` | رابط مشروع Supabase |
 | `SUPABASE_KEY` | مفتاح خادمي؛ يفضل service-role server-side ولا تعرضه للمتصفح |
 | `REDIS_URL` | رابط Redis أو Render Key Value المتوافق |
+| `BINANCE_REST_URL` | يفضل `https://data-api.binance.vision/api/v3` لبيانات market-data-only العامة |
 
 يوجد ملف `.env.example` يضم باقي الإعدادات الافتراضية. لا توجد أي قيمة حساسة فيه. يستخدم النظام `MAX_CONCURRENT_POSITIONS=5` و`DAILY_LOSS_LIMIT_PCT=0.09` و`STOP_LOSS_PCT=0.015` و`EXECUTION_TIMEFRAME=1h` و`HIGHER_TIMEFRAME=4h` ما لم تغيرها قبل النشر.
 
@@ -77,7 +78,9 @@ DISABLE_AUTO_START=0 flask --app app.main:app run --host 0.0.0.0 --port 8080
 
 ## Render Free وWebSocket
 
-يستخدم النظام WebSocket لأنه أنسب لتدفق الأسعار والشموع الحية من الاستطلاع المتكرر. يحتوي العميل على إعادة اتصال تلقائية، heartbeat، تحليل رسائل غير صالحة، وbootstrap عند البداية. ومع ذلك، فإن Render Free قد يوقف الخدمة عند غياب traffic وارد؛ مسؤولية إبقاء الخدمة نشطة تقع على المشغّل كما طلب المستخدم. يجب مراقبة `/healthz` وRender Logs، وعدم اعتبار عدم وجود توصيات دليلاً على عدم وجود فرص قبل التأكد من أن WebSocket متصل وآخر حدث حديث.
+يستخدم النظام WebSocket لأنه أنسب لتدفق الأسعار والشموع الحية من الاستطلاع المتكرر. يحتوي العميل على إعادة اتصال تلقائية، heartbeat، تحليل رسائل غير صالحة، وbootstrap عند البداية. ويستخدم bootstrap الافتراضي endpoint Binance العام `https://data-api.binance.vision/api/v3`، بينما تبقى أسعار WebSocket مستقلة عن REST. عند HTTP 418 أو 429 يتوقف bootstrap مؤقتاً مع backoff ولا يكرر الطلب لكل عملة.
+
+تحتاج الاستراتيجية إلى 55 شمعة مغلقة على الأقل في كل من 1H و4H. لذلك تعرض Dashboard حالة `DATA_NOT_READY` عندما تصل الأسعار الحية لكن لا تكتمل بيانات الشموع، بدلاً من عرض ذلك كأنه `NO_SIGNAL`. يجب مراقبة `/healthz` وRender Logs، وعدم اعتبار عدم وجود توصيات دليلاً على عدم وجود فرص قبل التأكد من أن WebSocket متصل، وأن كل إطار بلغ عدد الشموع المطلوب.
 
 Redis مناسب للكاش والملخص السريع، لكن Supabase هو مصدر الحقيقة الدائم. إذا كان Redis من Render Free أو خدمة مؤقتة فلا تعتمد عليه وحده لاستعادة الصفقات؛ يعيد النظام الإعدادات من Supabase عند بدء التشغيل.
 

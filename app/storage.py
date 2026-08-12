@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Optional
 from urllib.parse import quote
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import Settings
 
@@ -17,6 +20,21 @@ class SupabaseStore:
         self.base_url = settings.supabase_url
         self.key = settings.supabase_key
         self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "CT-Spot-Monitor/1.0", "Accept": "application/json", "Connection": "close"})
+        self.session.mount(
+            "https://",
+            HTTPAdapter(
+                max_retries=Retry(
+                    total=2,
+                    connect=2,
+                    read=2,
+                    backoff_factor=0.4,
+                    status_forcelist=(429, 500, 502, 503, 504),
+                    allowed_methods=frozenset({"GET"}),
+                    raise_on_status=False,
+                )
+            ),
+        )
         self.enabled = bool(self.base_url and self.key)
         if settings.supabase_url_issue:
             logger.error("supabase_disabled_invalid_configuration reason=%s", settings.supabase_url_issue)
@@ -32,15 +50,21 @@ class SupabaseStore:
             "Prefer": "return=representation",
         }
         headers.update(kwargs.pop("headers", {}))
-        try:
-            response = self.session.request(method, url, headers=headers, timeout=10, **kwargs)
-            response.raise_for_status()
-            if not response.content:
+        max_attempts = 3 if method.upper() == "GET" else 1
+        for attempt in range(max_attempts):
+            try:
+                response = self.session.request(method, url, headers=headers, timeout=10, **kwargs)
+                response.raise_for_status()
+                if not response.content:
+                    return None
+                return response.json()
+            except requests.RequestException as exc:
+                if attempt + 1 < max_attempts:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                logger.warning("supabase_request_failed table=%s error=%s", table, exc)
                 return None
-            return response.json()
-        except requests.RequestException as exc:
-            logger.warning("supabase_request_failed table=%s error=%s", table, exc)
-            return None
+        return None
 
     def upsert(self, table: str, row: dict[str, Any], conflict_column: str) -> Optional[Any]:
         return self._request("POST", f"{table}?on_conflict={conflict_column}", json=row, headers={"Prefer": "resolution=merge-duplicates,return=representation"})
