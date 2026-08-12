@@ -435,7 +435,7 @@ class BinanceMarketData:
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     def status_snapshot(self) -> dict[str, Any]:
-        self._prepare_bootstrap_state()
+        # Lockless or minimal lock read of market state
         by_symbol: dict[str, Any] = {}
         for symbol in self.symbols:
             intervals: dict[str, Any] = {}
