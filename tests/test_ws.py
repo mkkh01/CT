@@ -49,6 +49,7 @@ def test_data_readiness_is_separate_from_live_strategy_readiness():
     candles = [{"open_time": index, "close_time": index + 1, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0, "closed": True} for index in range(55)]
     client._candles[("BTCUSDT", "1h")] = deque(candles, maxlen=300)
     client._candles[("BTCUSDT", "4h")] = deque(candles, maxlen=300)
+    client._candles[("BTCUSDT", "15m")] = deque(candles, maxlen=300)
 
     disconnected = client.status_snapshot()
     assert disconnected["data_ready_symbols"] == ["BTCUSDT"]
@@ -104,6 +105,7 @@ def test_rest_fallback_marks_live_data_and_updates_price_and_candle(monkeypatch)
     } for index in range(55)]
     client._candles[("BTCUSDT", "1h")] = deque(history, maxlen=300)
     client._candles[("BTCUSDT", "4h")] = deque(history, maxlen=300)
+    client._candles[("BTCUSDT", "15m")] = deque(history, maxlen=300)
 
     def fake_price(symbol):
         return 104.5

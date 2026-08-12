@@ -121,8 +121,19 @@ class VirtualTradingEngine:
         for position in list(self.positions.values()):
             if position.symbol != symbol:
                 continue
+            
+            # Professional ATR-based Trailing Stop: dynamic trail as price advances
+            current_profit_pct = (price - position.entry_price) / position.entry_price
+            if current_profit_pct >= 0.015: # 1.5% profit threshold
+                # Trail stop loss dynamically keeping a protective distance
+                trail_distance = position.entry_price * 0.01
+                new_stop = price - trail_distance
+                if new_stop > position.stop_loss:
+                    position.stop_loss = new_stop
+
             if price <= position.stop_loss:
-                closed.append(self.close(position.id, price, "STOP_LOSS"))
+                reason = "TRAILING_STOP" if position.stop_loss > position.entry_price else "STOP_LOSS"
+                closed.append(self.close(position.id, price, reason))
             elif price >= position.take_profit:
                 closed.append(self.close(position.id, price, "TAKE_PROFIT"))
         return [position for position in closed if position is not None]
@@ -155,6 +166,31 @@ class VirtualTradingEngine:
 
     def snapshot(self) -> dict[str, Any]:
         self._roll_day()
+        total_closed = len(self.closed_trades)
+        winning_trades = [t for t in self.closed_trades if (t.realized_pnl or 0) > 0]
+        win_rate = (len(winning_trades) / total_closed * 100.0) if total_closed > 0 else 0.0
+        
+        # Calculate Sharpe Ratio and Max Drawdown on closed trades
+        pnls = [t.realized_pnl for t in self.closed_trades if t.realized_pnl is not None]
+        sharpe_ratio = 0.0
+        if len(pnls) >= 2:
+            mean_pnl = sum(pnls) / len(pnls)
+            variance = sum((p - mean_pnl) ** 2 for p in pnls) / len(pnls)
+            std_dev = variance ** 0.5
+            if std_dev > 0:
+                sharpe_ratio = (mean_pnl / std_dev) * (252 ** 0.5) # annualized rough proxy
+                
+        max_drawdown = 0.0
+        peak = self.total_capital()
+        t_capital = peak
+        for t in self.closed_trades:
+            t_capital += (t.realized_pnl or 0)
+            if t_capital > peak:
+                peak = t_capital
+            dd = (peak - t_capital) / peak if peak > 0 else 0.0
+            if dd > max_drawdown:
+                max_drawdown = dd
+
         return {
             "selected_symbols": sorted(self.selected_symbols),
             "capital_by_symbol": self.capital_by_symbol,
@@ -165,5 +201,9 @@ class VirtualTradingEngine:
             "realized_pnl_today": self.realized_pnl_today,
             "daily_loss_limit_hit": self.daily_loss_limit_hit,
             "open_positions": [position.to_dict() for position in self.positions.values()],
+            "closed_trades_count": total_closed,
+            "win_rate": win_rate,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
             "last_prices": self.last_prices,
         }

@@ -35,6 +35,7 @@ class Settings:
     take_profit_r_multiple: float = 2.0
     execution_timeframe: str = "1h"
     higher_timeframe: str = "4h"
+    trigger_timeframe: str = "15m"
     signal_cooldown_seconds: int = 3600
     adx_period: int = 14
     adx_min: float = 25.0
@@ -67,6 +68,7 @@ class Settings:
             take_profit_r_multiple=float(os.getenv("TAKE_PROFIT_R_MULTIPLE", "2.0")),
             execution_timeframe=os.getenv("EXECUTION_TIMEFRAME", "1h").strip(),
             higher_timeframe=os.getenv("HIGHER_TIMEFRAME", "4h").strip(),
+            trigger_timeframe=os.getenv("TRIGGER_TIMEFRAME", "15m").strip(),
             signal_cooldown_seconds=int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "3600")),
             adx_period=int(os.getenv("ADX_PERIOD", "14")),
             adx_min=float(os.getenv("ADX_MIN", "25.0")),

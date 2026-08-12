@@ -203,6 +203,59 @@ def adx_dmi(candles: list[dict[str, Any]], period: int = 14) -> tuple[Optional[f
     return adx_value, last_plus_di, last_minus_di
 
 
+def bollinger_bands_squeeze(candles: list[dict[str, Any]], period: int = 20, std_dev: float = 2.0) -> dict[str, Any]:
+    """Calculate Bollinger Bands and check for Volatility Squeeze."""
+    closes = _closes(candles)
+    if len(closes) < period:
+        return {"squeeze": False, "bandwidth": 0.0}
+    sma = sum(closes[-period:]) / period
+    variance = sum((x - sma) ** 2 for x in closes[-period:]) / period
+    std = variance ** 0.5
+    upper = sma + (std_dev * std)
+    lower = sma - (std_dev * std)
+    bandwidth = (upper - lower) / sma if sma else 0.0
+    # Squeeze defined when bandwidth is at its lowest relative to recent history (e.g. 20 periods)
+    if len(closes) >= period * 2:
+        historical_bandwidths = []
+        for i in range(period, len(closes)):
+            sub_closes = closes[i-period:i]
+            sub_sma = sum(sub_closes) / period
+            sub_var = sum((x - sub_sma) ** 2 for x in sub_closes) / period
+            sub_std = sub_var ** 0.5
+            sub_bw = ((sub_sma + (std_dev * sub_std)) - (sub_sma - (std_dev * sub_std))) / sub_sma if sub_sma else 0.0
+            historical_bandwidths.append(sub_bw)
+        min_bw = min(historical_bandwidths) if historical_bandwidths else bandwidth
+        is_squeeze = bandwidth <= min_bw * 1.15
+    else:
+        is_squeeze = bandwidth < 0.04 # fallback threshold for crypto
+    return {"squeeze": is_squeeze, "bandwidth": bandwidth, "upper": upper, "lower": lower, "sma": sma}
+
+
+def detect_market_structure(candles: list[dict[str, Any]], lookback: int = 5) -> str:
+    """Detect Market Structure (Higher Highs / Higher Lows or Lower Highs / Lower Lows)."""
+    if len(candles) < lookback * 2:
+        return "RANGE"
+    highs = [float(c["high"]) for c in candles]
+    lows = [float(c["low"]) for c in candles]
+    
+    # Check recent swing highs and lows
+    recent_highs = highs[-lookback*2:]
+    recent_lows = lows[-lookback*2:]
+    
+    mid = len(recent_highs) // 2
+    first_half_high = max(recent_highs[:mid])
+    second_half_high = max(recent_highs[mid:])
+    
+    first_half_low = min(recent_lows[:mid])
+    second_half_low = min(recent_lows[mid:])
+    
+    if second_half_high > first_half_high and second_half_low > first_half_low:
+        return "BULLISH_STRUCTURE" # Higher Highs & Higher Lows
+    elif second_half_high < first_half_high and second_half_low < first_half_low:
+        return "BEARISH_STRUCTURE" # Lower Highs & Lower Lows
+    return "CONSOLIDATION"
+
+
 def market_filter_diagnostics(
     candles: list[dict[str, Any]],
     adx_period: int = 14,
@@ -423,10 +476,19 @@ def evaluate_signal_diagnostics(
     previous_high = float(previous["high"])
     volume = float(last["volume"])
     candle_1h = chart.get("candle_1h") or {}
+    
+    # Advanced Institutional Filters
+    structure = detect_market_structure(execution_candles)
+    bb = bollinger_bands_squeeze(execution_candles)
+    diagnostics["market_structure"] = structure
+    diagnostics["bb_squeeze"] = bb.get("squeeze")
+    diagnostics["bb_bandwidth"] = bb.get("bandwidth")
+
     accepted_candle_patterns = {"BULLISH", "BULLISH_MARUBOZU", "BULLISH_ENGULFING", "HAMMER"}
     conditions = {
         "bullish_trend_4h": close > float(htf_ema50) and float(htf_ema20) > float(htf_ema50),
         "ema_alignment_1h": close > float(exec_ema20) > float(exec_ema50),
+        "market_structure_bullish": structure == "BULLISH_STRUCTURE" or structure == "CONSOLIDATION",
         "breakout_above_previous_high": close > previous_high,
         "volume_confirmation": volume >= float(avg_vol) * 0.8,
         "not_overbought": float(last_rsi) <= 70.0,

@@ -118,7 +118,7 @@ class BinanceMarketData:
 
     def _prepare_bootstrap_state(self) -> None:
         for symbol in self.symbols:
-            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
+            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe, self.settings.trigger_timeframe):
                 self._bootstrap_state.setdefault((symbol, interval), {"status": "pending", "count": 0, "last_error": None, "updated_at": None})
 
     def update_symbols(self, symbols: list[str]) -> None:
@@ -304,7 +304,7 @@ class BinanceMarketData:
         # Only fetch klines if bootstrap is done or we need live candles to complete startup.
         # This reduces API pressure during the critical first few seconds.
         for symbol in symbols:
-            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
+            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe, self.settings.trigger_timeframe):
                 raw_klines = self._fetch_klines(symbol, interval, limit=2)
                 if not raw_klines:
                     continue
@@ -366,7 +366,7 @@ class BinanceMarketData:
         self._live_execution_closed_symbols.clear()
         self._prepare_bootstrap_state()
         for symbol in self.symbols:
-            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
+            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe, self.settings.trigger_timeframe):
                 if len(self.candles(symbol, interval)) >= 55:
                     self._set_bootstrap_state(symbol, interval, "ready")
                     continue
@@ -439,7 +439,7 @@ class BinanceMarketData:
         by_symbol: dict[str, Any] = {}
         for symbol in self.symbols:
             intervals: dict[str, Any] = {}
-            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe):
+            for interval in (self.settings.execution_timeframe, self.settings.higher_timeframe, self.settings.trigger_timeframe):
                 state = dict(self._bootstrap_state.get((symbol, interval), {}))
                 state["count"] = len(self.candles(symbol, interval))
                 intervals[interval] = state
@@ -531,7 +531,12 @@ class BinanceMarketData:
         streams = []
         for symbol in self.symbols:
             lower = symbol.lower()
-            streams.extend([f"{lower}@kline_{self.settings.execution_timeframe}", f"{lower}@kline_{self.settings.higher_timeframe}", f"{lower}@miniTicker"])
+            streams.extend([
+                f"{lower}@kline_{self.settings.execution_timeframe}",
+                f"{lower}@kline_{self.settings.higher_timeframe}",
+                f"{lower}@kline_{self.settings.trigger_timeframe}",
+                f"{lower}@miniTicker"
+            ])
         base = (base_url or self.settings.binance_stream_url).rstrip("/")
         return f"{base}?streams={'/'.join(streams)}"
 
