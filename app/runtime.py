@@ -356,8 +356,6 @@ class BotRuntime:
                     symbol, 
                     candles_1h, 
                     candles_4h, 
-                    candles_15m,
-                    self.settings,
                     stop_loss_pct=self.settings.stop_loss_pct,
                     take_profit_r_multiple=self.settings.take_profit_r_multiple,
                     adx_period=self.settings.adx_period,
