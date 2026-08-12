@@ -191,6 +191,8 @@ class BotRuntime:
                 "execution": "disabled",
                 "runtime_started": self._started,
                 "websocket_connected": self.market.connected,
+                "live_data_available": self.market.live_data_available,
+                "live_data_source": self.market.live_data_source,
                 "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
                 "strategy": "ema_breakout_4h_filter_v1",
                 "timeframes": {"execution": self.settings.execution_timeframe, "higher": self.settings.higher_timeframe},
