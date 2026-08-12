@@ -5,10 +5,11 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from typing import Any
 
 from flask import Flask, jsonify, render_template
+from flask.json.provider import DefaultJSONProvider
 
 from .config import Settings
 from .runtime import BotRuntime
@@ -17,10 +18,22 @@ from .runtime import BotRuntime
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
 
+class CustomJSONProvider(DefaultJSONProvider):
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        if hasattr(obj, 'to_dict'):
+            return obj.to_dict()
+        try:
+            return super().default(obj)
+        except TypeError:
+            return str(obj)
+
 def create_app():
     logger.info("Creating Flask app...")
     settings = Settings.from_env()
     app = Flask(__name__)
+    app.json = CustomJSONProvider(app)
     
     # Initialize runtime
     runtime = BotRuntime(settings)
@@ -43,7 +56,7 @@ def create_app():
         try:
             return jsonify(runtime.dashboard_snapshot())
         except Exception as e:
-            logger.error(f"API Error /overview: {e}")
+            logger.error(f"API Error /overview: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
     @app.get("/dashboard/api/history")
@@ -51,7 +64,7 @@ def create_app():
         try:
             return jsonify(runtime.history_snapshot())
         except Exception as e:
-            logger.error(f"API Error /history: {e}")
+            logger.error(f"API Error /history: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
     @app.get("/cron/heartbeat")

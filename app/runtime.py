@@ -255,9 +255,10 @@ class BotRuntime:
             last_error = self.last_error_log
             last_warning = self.last_warning
             
+        with self._lock:
             all_logs = list(self.recent_logs)
-            errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
-            warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
+        errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
+        warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
 
             # Use cached history instead of calling Supabase
             persisted_state = self._history_cache.get("persisted_state")
