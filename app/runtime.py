@@ -176,7 +176,7 @@ class BotRuntime:
     def dashboard_snapshot(self) -> dict[str, Any]:
         """Returns lightweight overview for fast UI loading. NO network I/O. NO locks."""
         try:
-            trader_snapshot = self.trader.status_snapshot()
+            trader_snapshot = self.trader.snapshot()
             symbols = sorted(list(self.trader.selected_symbols))
             coins = []
             market_status = self.market.status_snapshot()
@@ -559,7 +559,7 @@ class BotRuntime:
         return "\n".join(lines)
 
     def performance_text(self) -> str:
-        stats = self.trader.status_snapshot()
+        stats = self.trader.snapshot()
         return (
             f"أداء النظام (افتراضي)\n"
             f"PnL اليوم: {stats.get('realized_pnl_today', 0.0):.2f} USDT\n"
