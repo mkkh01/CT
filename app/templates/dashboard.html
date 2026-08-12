@@ -72,7 +72,7 @@ setText('s-cycles',num(o.cycles||s?.metrics?.cycles,0));setText('s-signals',num(
   function renderEvents(events){if(!events.length){$('events-table').innerHTML=empty('لا توجد أحداث محفوظة في Supabase بعد.');return}$('events-table').innerHTML=`<table><thead><tr><th>الوقت</th><th>نوع الحدث</th><th>الملخص</th><th>الحالة</th></tr></thead><tbody>${events.slice(0,250).map(e=>{const p=e.payload||{},summary=e.event_type==='summary_cycle'?`دورة ${num(p.metrics?.cycles,0)} · جاهزية ${num((p.strategy_ready_symbols||[]).length,0)} · أسعار ${Object.keys(p.last_prices||{}).length}`:(p.message||p.decision||p.symbol||'تم تسجيل حدث');return`<tr><td class="mono">${time(e.created_at)}</td><td><span class="tag">${esc(eventLabel(e.event_type))}</span></td><td class="reason">${esc(summary)}</td><td>${e.event_type==='runtime_log'?pill(p.level||'INFO',p.level==='ERROR'?'bad':(p.level==='WARNING'?'warn':'neutral')):pill('محفوظ','ok')}</td></tr>`}).join('')}</tbody></table>`}
   function renderLogs(logs){if(!logs.length){$('logs-table').innerHTML=empty('لم تصل سجلات runtime إلى Dashboard بعد.');return}$('logs-table').innerHTML=`<table><thead><tr><th>الوقت</th><th>المستوى</th><th>المصدر</th><th>الرسالة</th></tr></thead><tbody>${logs.slice(0,250).map(l=>`<tr><td class="mono">${time(l.timestamp)}</td><td>${pill(l.level,l.level==='ERROR'||l.level==='CRITICAL'?'bad':(l.level==='WARNING'?'warn':'neutral'))}</td><td>${esc(l.logger)}</td><td class="reason">${esc(l.message)}</td></tr>`).join('')}</tbody></table>`}
   function setText(id,v){$(id).textContent=v??'—'}
-  let currentData = {};
+  let currentData = { events: [], logs: [], recent_signals: [], recent_positions: [] };
   async function refreshOverview(){
     try {
       const r=await fetch('/dashboard/api/overview',{cache:'no-store'});
@@ -93,7 +93,10 @@ setText('s-cycles',num(o.cycles||s?.metrics?.cycles,0));setText('s-signals',num(
       const r=await fetch('/dashboard/api/history',{cache:'no-store'});
       if(!r.ok) return;
       const data = await r.json();
-      currentData = { ...currentData, ...data };
+      currentData.events = data.events || [];
+      currentData.logs = data.logs || [];
+      currentData.recent_signals = data.recent_signals || [];
+      currentData.recent_positions = data.recent_positions || [];
       renderOverview(currentData);
     } catch(e) {
       console.error('History fetch failed:', e);
