@@ -336,13 +336,26 @@ class BotRuntime:
                     self._record_decision({"symbol": symbol, "decision": "DATA_NOT_READY", "rejection_reason": "History incomplete"})
                     return
                 
-                decision = evaluate_signal_diagnostics(
+                # Fix: Pass settings values as keyword arguments
+                decision_obj, diag = evaluate_signal_diagnostics(
                     symbol=symbol,
                     execution_candles=list(execution_candles),
                     higher_candles=list(higher_candles),
-                    trigger_candles=trigger_data,
-                    settings=self.settings
+                    stop_loss_pct=self.settings.stop_loss_pct,
+                    take_profit_r_multiple=self.settings.take_profit_r_multiple,
+                    adx_period=self.settings.adx_period,
+                    adx_min=self.settings.adx_min,
+                    atr_period=self.settings.atr_period,
+                    atr_min_pct=self.settings.atr_min_pct,
+                    atr_max_pct=self.settings.atr_max_pct
                 )
+                decision = {
+                    "symbol": symbol,
+                    "decision": "BUY" if decision_obj else diag.get("rejection_reason", "NO_SIGNAL"),
+                    "signal_payload": decision_obj.to_dict() if decision_obj else None,
+                    "indicator_metrics": diag,
+                    **diag
+                }
                 self._record_decision(decision)
                 
                 if decision.get("decision") == "BUY":
