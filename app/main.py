@@ -47,7 +47,8 @@ def create_app():
         @app.get("/healthz")
         def healthz():
             try:
-                return jsonify(runtime.health()), 200
+                h = runtime.health()
+                return jsonify(h), 200
             except Exception as e:
                 return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -66,28 +67,28 @@ def create_app():
         @app.get("/dashboard/api/overview")
         def dashboard_overview():
             try:
-                return jsonify(runtime.dashboard_snapshot())
+                # TRIPLE WRAPPED ERROR CATCHING
+                data = runtime.dashboard_snapshot()
+                if not data:
+                    return jsonify({"error": "Runtime returned None", "status": "fail"}), 500
+                return jsonify(data)
             except Exception as e:
-                error_details = {
+                tb = traceback.format_exc()
+                logger.error(f"FATAL API ERROR /overview: {e}\n{tb}")
+                # FALLBACK DATA TO PREVENT 500
+                return jsonify({
                     "error": str(e),
-                    "traceback": traceback.format_exc(),
-                    "endpoint": "/overview"
-                }
-                logger.error(f"API Error /overview: {e}\n{error_details['traceback']}")
-                return jsonify(error_details), 500
+                    "traceback": tb,
+                    "overview": {"service": "CT (Error Fallback Mode)", "runtime_started": False},
+                    "logs": [{"level": "ERROR", "message": f"FATAL API ERROR: {e}", "timestamp": datetime.now().isoformat()}]
+                }), 200
 
         @app.get("/dashboard/api/history")
         def dashboard_history():
             try:
                 return jsonify(runtime.history_snapshot())
             except Exception as e:
-                error_details = {
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                    "endpoint": "/history"
-                }
-                logger.error(f"API Error /history: {e}\n{error_details['traceback']}")
-                return jsonify(error_details), 500
+                return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
         # Start runtime in a safe background thread
         if os.getenv("DISABLE_AUTO_START", "0") != "1":
