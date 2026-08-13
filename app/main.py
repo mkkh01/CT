@@ -6,14 +6,12 @@ import os
 import threading
 import time
 import traceback
+import sys
 from datetime import datetime, date, timezone
 from typing import Any
 
 from flask import Flask, jsonify, render_template
 from flask.json.provider import DefaultJSONProvider
-
-from .config import Settings
-from .runtime import BotRuntime
 
 # Basic logging to stdout
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -33,6 +31,9 @@ class CustomJSONProvider(DefaultJSONProvider):
 def create_app():
     logger.info("Creating Flask app...")
     try:
+        from .config import Settings
+        from .runtime import BotRuntime
+        
         settings = Settings.from_env()
         app = Flask(__name__)
         app.json = CustomJSONProvider(app)
@@ -52,12 +53,15 @@ def create_app():
             except Exception as e:
                 return jsonify({"status": "error", "error": str(e)}), 500
 
-        @app.get("/debug/env")
-        def debug_env():
-            keys = list(os.environ.keys())
-            important = ["TELEGRAM_CHAT_ID", "TELEGRAM_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY", "REDIS_URL"]
-            status = {k: (k in keys and bool(os.environ[k])) for k in important}
-            return jsonify({"env_status": status, "all_keys": keys}), 200
+        @app.get("/debug/sys")
+        def debug_sys():
+            return jsonify({
+                "python_version": sys.version,
+                "platform": sys.platform,
+                "cwd": os.getcwd(),
+                "path": sys.path,
+                "env_keys": list(os.environ.keys())
+            }), 200
 
         @app.get("/")
         @app.get("/dashboard")
@@ -78,27 +82,12 @@ def create_app():
                 logger.error(f"API Error /overview: {e}\n{error_details['traceback']}")
                 return jsonify(error_details), 500
 
-        @app.get("/dashboard/api/history")
-        def dashboard_history():
-            try:
-                return jsonify(runtime.history_snapshot())
-            except Exception as e:
-                error_details = {
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                    "endpoint": "/history"
-                }
-                logger.error(f"API Error /history: {e}\n{error_details['traceback']}")
-                return jsonify(error_details), 500
-
         # Start runtime in a safe background thread
         if os.getenv("DISABLE_AUTO_START", "0") != "1":
             def start_async():
                 try:
                     time.sleep(5)
-                    logger.info("Starting BotRuntime in background...")
                     runtime.start()
-                    logger.info("BotRuntime started.")
                 except Exception as e:
                     logger.error(f"Failed to start BotRuntime: {e}")
             
