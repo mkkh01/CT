@@ -117,7 +117,7 @@
 
     setText('strategy-label',`${o.strategy||'—'} · ${o.timeframes?.execution||'—'} / ${o.timeframes?.higher||'—'}`);
     setClass('strategy-label',`pill ${o.strategy_ready?'ok':'warn'}`);
-    setText('last-refresh',`آخر تحديث: ${time(new Date().toISOString())} · آخر حدث: ${time(o.last_event_at)} · PID: ${o.pid||'—'}`);
+    setText('last-refresh',`آخر تحديث: ${time(new Date().toISOString())} · آخر حدث: ${time(o.last_event_at)} · PID: ${o.pid||'—'} · Build: ${o.build_id||'Legacy'}`);
     
     const db=o.database_sync||{};
     const dbAge=db.age_seconds==null?'—':`${num(db.age_seconds,0)}ث`;

@@ -15,6 +15,9 @@ from flask.json.provider import DefaultJSONProvider
 from .config import Settings
 from .runtime import BotRuntime
 
+# BUILD ID: 2026-08-13-T10-50-SYNC-FIX
+BUILD_ID = "2026-08-13-T10-50-SYNC-FIX"
+
 # Basic logging to stdout
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -74,6 +77,8 @@ def create_app():
                     runtime.start()
 
                 data = runtime.dashboard_snapshot()
+                if "overview" in data:
+                    data["overview"]["build_id"] = BUILD_ID
                 return jsonify(data)
             except Exception as e:
                 error_details = {
