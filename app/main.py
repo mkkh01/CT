@@ -47,7 +47,8 @@ def create_app():
         @app.get("/healthz")
         def healthz():
             try:
-                return jsonify(runtime.health()), 200
+                h = runtime.health()
+                return jsonify(h), 200
             except Exception as e:
                 return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -67,10 +68,6 @@ def create_app():
         def dashboard_overview():
             try:
                 data = runtime.dashboard_snapshot()
-                if not data:
-                    return jsonify({"error": "Empty data returned from snapshot"}), 500
-                if "error" in data:
-                    return jsonify(data), 500
                 return jsonify(data)
             except Exception as e:
                 error_details = {
@@ -121,5 +118,5 @@ def create_app():
             return f"CRITICAL STARTUP ERROR:\n{tb}", 500
         return fallback
 
-# Entry point for Gunicorn
+# Global app object for Gunicorn
 app = create_app()
