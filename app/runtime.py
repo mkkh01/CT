@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import deque
 import queue
 import re
@@ -209,6 +210,7 @@ class BotRuntime:
             
             overview = {
                 "service": "CT Binance Spot Live Recommendations",
+                "pid": os.getpid(),
                 "execution": "disabled",
                 "runtime_started": self._started,
                 "websocket_connected": self.market.connected,
@@ -525,7 +527,7 @@ class BotRuntime:
             ready = sorted(ms.get("strategy_ready_symbols", []))
             symbols = sorted(list(self.trader.selected_symbols))
             return (
-                f"حالة النظام\n"
+                f"حالة النظام (PID: {os.getpid()})\n"
                 f"مرحلة البدء: {ms.get('startup_stage', '—')}\n"
                 f"إعادة محاولة جلب الشموع: {'مطلوبة' if ms.get('next_bootstrap_retry_at') else 'غير مطلوب؛ التهيئة مكتملة'}\n"
                 f"مصدر بيانات السوق: {'متصل' if self.market.live_data_available else 'غير متصل'}\n"
