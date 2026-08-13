@@ -207,6 +207,7 @@ class BotRuntime:
                 else:
                     coin["analysis"] = None
                 coins.append(coin)
+            
             overview = {
                 "service": "CT Binance Spot Live Recommendations",
                 "execution": "disabled",
@@ -252,13 +253,14 @@ class BotRuntime:
                 "sharpe_ratio": trader_snapshot.get("sharpe_ratio", 0.0),
                 "max_drawdown": trader_snapshot.get("max_drawdown", 0.0),
             }
-            last_error = self.last_error_log
-            last_warning = self.last_warning
             
-        with self._lock:
-            all_logs = list(self.recent_logs)
-        errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
-        warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
+            with self._lock:
+                last_error = self.last_error_log
+                last_warning = self.last_warning
+                all_logs = list(self.recent_logs)
+            
+            errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
+            warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
 
             # Use cached history instead of calling Supabase
             persisted_state = self._history_cache.get("persisted_state")
@@ -351,7 +353,6 @@ class BotRuntime:
                 self.cycle_count += 1
                 candles_1h = self.market.candles(symbol, self.settings.execution_timeframe)
                 candles_4h = self.market.candles(symbol, self.settings.higher_timeframe)
-                candles_15m = self.market.candles(symbol, self.settings.trigger_timeframe)
                 
                 decision_obj, diag = evaluate_signal_diagnostics(
                     symbol, 
