@@ -82,12 +82,27 @@ def create_app():
                 logger.error(f"API Error /overview: {e}\n{error_details['traceback']}")
                 return jsonify(error_details), 500
 
+        @app.get("/dashboard/api/history")
+        def dashboard_history():
+            try:
+                return jsonify(runtime.history_snapshot())
+            except Exception as e:
+                error_details = {
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                    "endpoint": "/history"
+                }
+                logger.error(f"API Error /history: {e}\n{error_details['traceback']}")
+                return jsonify(error_details), 500
+
         # Start runtime in a safe background thread
         if os.getenv("DISABLE_AUTO_START", "0") != "1":
             def start_async():
                 try:
                     time.sleep(5)
+                    logger.info("Starting BotRuntime in background...")
                     runtime.start()
+                    logger.info("BotRuntime started.")
                 except Exception as e:
                     logger.error(f"Failed to start BotRuntime: {e}")
             
@@ -107,5 +122,5 @@ def create_app():
             return f"CRITICAL STARTUP ERROR:\n{tb}", 500
         return fallback
 
-# Global app object for Gunicorn
+# EXPLICIT GLOBAL APP OBJECT FOR GUNICORN
 app = create_app()
