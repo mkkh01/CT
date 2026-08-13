@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Tuple, Dict, List
 
 from .models import Signal
+
+logger = logging.getLogger(__name__)
 
 
 def _closes(candles: Iterable[dict[str, Any]]) -> list[float]:
@@ -66,7 +69,6 @@ REGIME_LABELS = {
 
 
 def classify_candle(candle: dict[str, Any], previous: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Classify one closed candle using body, wick, and two-candle context."""
     open_price = float(candle["open"])
     high = float(candle["high"])
     low = float(candle["low"])
@@ -145,7 +147,6 @@ def _true_ranges(candles: list[dict[str, Any]]) -> list[float]:
 
 
 def atr(candles: list[dict[str, Any]], period: int = 14) -> Optional[float]:
-    """Return Wilder-smoothed ATR for the supplied closed candles."""
     if len(candles) < period:
         return None
     ranges = _true_ranges(candles)
@@ -156,7 +157,6 @@ def atr(candles: list[dict[str, Any]], period: int = 14) -> Optional[float]:
 
 
 def adx_dmi(candles: list[dict[str, Any]], period: int = 14) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    """Return Wilder ADX, +DI, and -DI from closed candles."""
     if len(candles) < period * 2 + 1:
         return None, None, None
 
@@ -204,7 +204,6 @@ def adx_dmi(candles: list[dict[str, Any]], period: int = 14) -> tuple[Optional[f
 
 
 def bollinger_bands_squeeze(candles: list[dict[str, Any]], period: int = 20, std_dev: float = 2.0) -> dict[str, Any]:
-    """Calculate Bollinger Bands and check for Volatility Squeeze."""
     closes = _closes(candles)
     if len(closes) < period:
         return {"squeeze": False, "bandwidth": 0.0}
@@ -214,7 +213,6 @@ def bollinger_bands_squeeze(candles: list[dict[str, Any]], period: int = 20, std
     upper = sma + (std_dev * std)
     lower = sma - (std_dev * std)
     bandwidth = (upper - lower) / sma if sma else 0.0
-    # Squeeze defined when bandwidth is at its lowest relative to recent history (e.g. 20 periods)
     if len(closes) >= period * 2:
         historical_bandwidths = []
         for i in range(period, len(closes)):
@@ -227,32 +225,26 @@ def bollinger_bands_squeeze(candles: list[dict[str, Any]], period: int = 20, std
         min_bw = min(historical_bandwidths) if historical_bandwidths else bandwidth
         is_squeeze = bandwidth <= min_bw * 1.15
     else:
-        is_squeeze = bandwidth < 0.04 # fallback threshold for crypto
+        is_squeeze = bandwidth < 0.04 
     return {"squeeze": is_squeeze, "bandwidth": bandwidth, "upper": upper, "lower": lower, "sma": sma}
 
 
 def detect_market_structure(candles: list[dict[str, Any]], lookback: int = 5) -> str:
-    """Detect Market Structure (Higher Highs / Higher Lows or Lower Highs / Lower Lows)."""
     if len(candles) < lookback * 2:
         return "RANGE"
     highs = [float(c["high"]) for c in candles]
     lows = [float(c["low"]) for c in candles]
-    
-    # Check recent swing highs and lows
     recent_highs = highs[-lookback*2:]
     recent_lows = lows[-lookback*2:]
-    
     mid = len(recent_highs) // 2
     first_half_high = max(recent_highs[:mid])
     second_half_high = max(recent_highs[mid:])
-    
     first_half_low = min(recent_lows[:mid])
     second_half_low = min(recent_lows[mid:])
-    
     if second_half_high > first_half_high and second_half_low > first_half_low:
-        return "BULLISH_STRUCTURE" # Higher Highs & Higher Lows
+        return "BULLISH_STRUCTURE"
     elif second_half_high < first_half_high and second_half_low < first_half_low:
-        return "BEARISH_STRUCTURE" # Lower Highs & Lower Lows
+        return "BEARISH_STRUCTURE"
     return "CONSOLIDATION"
 
 
@@ -264,7 +256,6 @@ def market_filter_diagnostics(
     atr_min_pct: float = 0.003,
     atr_max_pct: float = 0.08,
 ) -> dict[str, Any]:
-    """Classify the execution market before allowing a long breakout."""
     close = float(candles[-1]["close"]) if candles else 0.0
     atr_value = atr(candles, atr_period)
     adx_value, plus_di, minus_di = adx_dmi(candles, adx_period)
@@ -333,7 +324,6 @@ def classify_chart(
     atr_min_pct: float = 0.003,
     atr_max_pct: float = 0.08,
 ) -> dict[str, Any]:
-    """Return chart regime, latest candle classification, and indicator context."""
     if not execution_candles or not higher_candles:
         return {
             "chart_regime": "UNAVAILABLE",
@@ -411,7 +401,6 @@ def evaluate_signal_diagnostics(
     atr_min_pct: float = 0.003,
     atr_max_pct: float = 0.08,
 ) -> tuple[Optional[Signal], dict[str, Any]]:
-    """Evaluate the long breakout and return a machine-readable reason when it fails."""
     exec_len = len(execution_candles) if execution_candles else 0
     high_len = len(higher_candles) if higher_candles else 0
     
@@ -480,7 +469,6 @@ def evaluate_signal_diagnostics(
     volume = float(last["volume"])
     candle_1h = chart.get("candle_1h") or {}
     
-    # Advanced Institutional Filters
     structure = detect_market_structure(execution_candles)
     bb = bollinger_bands_squeeze(execution_candles)
     diagnostics["market_structure"] = structure

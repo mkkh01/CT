@@ -164,8 +164,6 @@ class BotRuntime:
             self._log_event("runtime_log", record)
 
     def health(self) -> dict[str, Any]:
-        """Minimal health status for Render and external monitors."""
-        # Minimal lockless read for health probe
         return {
             "status": "ok",
             "runtime_started": self._started,
@@ -174,7 +172,6 @@ class BotRuntime:
         }
 
     def dashboard_snapshot(self) -> dict[str, Any]:
-        """Returns lightweight overview for fast UI loading. NO network I/O. NO locks."""
         try:
             trader_snapshot = self.trader.snapshot()
             symbols = sorted(list(self.trader.selected_symbols))
@@ -262,7 +259,6 @@ class BotRuntime:
             errors = [l for l in all_logs if l.get("level") in ("ERROR", "CRITICAL")][:100]
             warnings = [l for l in all_logs if l.get("level") == "WARNING"][:100]
 
-            # Use cached history instead of calling Supabase
             persisted_state = self._history_cache.get("persisted_state")
             database_sync: dict[str, Any] = {
                 "available": bool(persisted_state),
@@ -303,7 +299,6 @@ class BotRuntime:
             return {"error": str(e)}
 
     def history_snapshot(self) -> dict[str, Any]:
-        """Returns heavy historical data from memory cache. NO network I/O."""
         with self._lock:
             recent_logs = list(self.recent_logs)[-100:][::-1]
             return {
@@ -330,7 +325,6 @@ class BotRuntime:
                 close_payload = position.to_dict()
                 logger.info("virtual_trade_closed %s", json.dumps(close_payload, ensure_ascii=False, default=str))
                 
-                # Send alert without holding the lock for too long
                 threading.Thread(
                     target=self.telegram.alert,
                     args=(
@@ -387,7 +381,6 @@ class BotRuntime:
                             self._persist_open_position(position)
                             logger.info("virtual_trade_opened symbol=%s entry=%.8f", symbol, signal.entry_price)
                             
-                            # Non-blocking alert
                             threading.Thread(
                                 target=self.telegram.alert,
                                 args=(
@@ -422,7 +415,6 @@ class BotRuntime:
         self._sync_queue.put(("upsert_runtime_state", row))
 
     def _sync_worker(self) -> None:
-        """Background thread to process Supabase sync and summary cycle."""
         logger.info("sync_worker_started")
         last_history_refresh = 0
         last_summary_cycle = 0
@@ -432,12 +424,10 @@ class BotRuntime:
             try:
                 now = time.time()
                 
-                # Summary Cycle (every 60s)
                 if now - last_summary_cycle >= 60:
                     self._summary_step()
                     last_summary_cycle = now
 
-                # Periodic history refresh (every 2 minutes)
                 if now - last_history_refresh >= 120:
                     try:
                         self._history_cache["recent_signals"] = self.supabase.select_recent_signals(user_id, limit=50) or []
@@ -478,7 +468,6 @@ class BotRuntime:
                 time.sleep(2)
 
     def _summary_step(self) -> None:
-        """Single step of the summary cycle."""
         try:
             now_ts = time.time()
             with self._lock:
@@ -505,13 +494,11 @@ class BotRuntime:
             self._started = True
             self._stop.clear()
             
-            # Load settings in background
             threading.Thread(target=self._load_persisted_settings, name="load-settings", daemon=True).start()
             
             self.market.start()
             self.telegram.start()
             
-            # Start combined sync and summary worker
             self._sync_thread = threading.Thread(target=self._sync_worker, name="sync-worker", daemon=True)
             self._sync_thread.start()
             logger.info("runtime_started")
@@ -530,7 +517,6 @@ class BotRuntime:
             logger.info("runtime_stopped")
 
     def status_text(self) -> str:
-        # Lock-free read for Telegram responsiveness
         try:
             ms = self.market.status_snapshot()
             ready = sorted(ms.get("strategy_ready_symbols", []))
@@ -591,7 +577,6 @@ class BotRuntime:
         return "\n".join(lines)
 
     def manage_coin(self, command: str) -> str:
-        """Unified command handler for coin management: add:SYMBOL:CAPITAL or remove:SYMBOL"""
         try:
             parts = command.split(":")
             action = parts[0].lower()
@@ -610,7 +595,6 @@ class BotRuntime:
                     self.trader.add_symbol(symbol)
                     self.trader.set_capital(symbol, capital)
                     self._persist_settings()
-                    # Signal market data to update its subscription
                     self.market.update_symbols(list(self.trader.selected_symbols))
                     self.market.start() 
                     return f"✅ تم {'إضافة' if action == 'add' else 'تحديث'} {symbol} برأس مال {capital} USDT."
@@ -628,7 +612,6 @@ class BotRuntime:
             ["📂 الصفقات", "ℹ️ الحالة"]
         ]
         
-        # Add individual coin status buttons
         symbol_rows = []
         for i in range(0, len(symbols), 3):
             row = [f"🔎 {s}" for s in symbols[i:i+3]]

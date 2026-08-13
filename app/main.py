@@ -46,7 +46,10 @@ def create_app():
 
         @app.get("/healthz")
         def healthz():
-            return jsonify(runtime.health()), 200
+            try:
+                return jsonify(runtime.health()), 200
+            except Exception as e:
+                return jsonify({"status": "error", "error": str(e)}), 500
 
         @app.get("/debug/env")
         def debug_env():
@@ -63,7 +66,12 @@ def create_app():
         @app.get("/dashboard/api/overview")
         def dashboard_overview():
             try:
-                return jsonify(runtime.dashboard_snapshot())
+                data = runtime.dashboard_snapshot()
+                if not data:
+                    return jsonify({"error": "Empty data returned from snapshot"}), 500
+                if "error" in data:
+                    return jsonify(data), 500
+                return jsonify(data)
             except Exception as e:
                 error_details = {
                     "error": str(e),
@@ -91,7 +99,9 @@ def create_app():
             def start_async():
                 try:
                     time.sleep(5)
+                    logger.info("Starting BotRuntime in background...")
                     runtime.start()
+                    logger.info("BotRuntime started.")
                 except Exception as e:
                     logger.error(f"Failed to start BotRuntime: {e}")
             
@@ -104,12 +114,12 @@ def create_app():
     except Exception as e:
         tb = traceback.format_exc()
         logger.error(f"Failed to create app: {e}\n{tb}")
-        fallback_app = Flask(__name__)
-        @fallback_app.route("/<path:path>")
-        @fallback_app.route("/")
-        def error_fallback(path=""):
-            return f"<h1>Critical Startup Error</h1><pre>{tb}</pre>", 500
-        return fallback_app
+        fallback = Flask(__name__)
+        @fallback.route("/<path:p>")
+        @fallback.route("/")
+        def err(p=""):
+            return f"CRITICAL STARTUP ERROR:\n{tb}", 500
+        return fallback
 
 # Entry point for Gunicorn
 app = create_app()
