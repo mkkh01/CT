@@ -68,14 +68,25 @@ class SupabaseStore:
             logger.error("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
             return None
 
-    async def upsert_candle(self, candle: Candle) -> Any:
-        row = {
+    @staticmethod
+    def _candle_row(candle: Candle) -> dict[str, Any]:
+        return {
             "symbol": candle.symbol, "timeframe": candle.timeframe, "open_time": candle.open_time,
             "close_time": candle.close_time, "open": candle.open, "high": candle.high, "low": candle.low,
             "close": candle.close, "volume": candle.volume, "is_closed": candle.is_closed,
             "source": candle.source, "received_at": candle.received_at,
         }
-        return await self._request("POST", "indicator_candles", payload=row, prefer="resolution=merge-duplicates,return=minimal")
+
+    async def upsert_candle(self, candle: Candle) -> Any:
+        return await self._request("POST", "indicator_candles", payload=self._candle_row(candle), prefer="resolution=merge-duplicates,return=minimal")
+
+    async def upsert_candles(self, candles: list[Candle]) -> Any:
+        if not candles:
+            return None
+        return await self._request(
+            "POST", "indicator_candles", payload=[self._candle_row(candle) for candle in candles],
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
 
     async def upsert_analysis(self, snapshot: AnalysisSnapshot) -> Any:
         row = {"symbol": snapshot.symbol, "timeframe": snapshot.timeframe, "generated_at": snapshot.generated_at, "payload": snapshot.to_dict()}

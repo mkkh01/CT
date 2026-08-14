@@ -73,10 +73,26 @@ class IndicatorService:
                 await self._restore_active_trades()
             if not self.settings.disable_auto_start:
                 await self.market.start()
+                await self._persist_bootstrap_history()
             self.started = True
             self.started_at = utc_now()
         finally:
             self.starting = False
+
+    async def _persist_bootstrap_history(self) -> None:
+        if not self.storage.enabled:
+            return
+        semaphore = asyncio.Semaphore(4)
+
+        async def persist(symbol: str, timeframe: str) -> None:
+            candles = await self.market.snapshot(symbol, timeframe)
+            if not candles:
+                return
+            async with semaphore:
+                await self.storage.upsert_candles(candles)
+
+        jobs = [persist(symbol, timeframe) for symbol in self.settings.symbols for timeframe in self.settings.stream_timeframes]
+        await asyncio.gather(*jobs)
 
     async def _restore_active_trades(self) -> None:
         try:
