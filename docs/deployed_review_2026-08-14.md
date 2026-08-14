@@ -1,23 +1,4 @@
-# Deployed Review — 2026-08-14
 
-## Public URL
+## Post-deployment verification
 
-https://crypto-trading-ru2v.onrender.com/
-
-## Findings
-
-The public page loads and shows Smart Trading Indicator. The current visible layout is horizontal: a chart panel and an analysis/signal panel appear side by side. The requested change is to make the interface vertical, with the chart and analysis sections stacked.
-
-The dashboard text briefly showed `البث غير متصل`, but the direct health endpoint later reported a healthy live state:
-
-- `started: true`
-- `market.connected: true`
-- `last_message_at: 2026-08-14T11:01:34.909007+00:00`
-- `supabase_configured: true`
-- `supabase_connected: true`
-- `redis_configured: true`
-- `redis_connected: true`
-- `cycle_count: 20`
-- `signal_count: 11`
-
-The API returned current analysis data including a SELL plan, but the dashboard screenshot appeared blank/NO TRADE at an earlier rendering moment. This indicates the UI status and data rendering need to be made more consistent and the vertical layout should be tested after deployment.
+After the GitHub-triggered deployment completed, the public page displayed the live chart, SELL signal, Entry/SL/TP lines, 20 symbols, 300 candles, and 11 confirmed signals. The page still showed the old horizontal desktop composition in the screenshot, indicating that the currently served deployment had not yet picked up the latest vertical CSS at the time of this verification, or the Render service is using a different source/branch configuration. The health label also visually showed the prior disconnected state in the extracted page text, while the direct `/api/v1/health` endpoint had reported `market.connected=true`; the frontend code fix now reads both `market_connected` and nested `market.connected`.
