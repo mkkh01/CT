@@ -71,6 +71,9 @@ RR_TP2=2.0
 | `GET /api/v1/analysis/{symbol}/{timeframe}` | آخر تحليل وقرار وأسباب |
 | `GET /api/v1/signals/{symbol}/{timeframe}` | سجل الإشارات |
 | `GET /api/v1/signals/active` | الإشارات الحالية |
+| `GET /api/v1/trades` | سجل الصفقات مع إمكانية التصفية |
+| `GET /api/v1/trades/current` | الصفقات الحالية: مؤكدة، معلقة، نشطة، أو وصلت إلى TP1 |
+| `GET /api/v1/trades/completed` | الصفقات المنجزة: TP2 أو SL أو منتهية أو ملغاة |
 | `GET /api/v1/settings` | الإعدادات العامة غير السرية |
 | `WS /ws/market` | تحديثات حالة بيانات السوق |
 | `WS /ws/analysis` | تحديثات حالة التحليل |
@@ -78,7 +81,7 @@ RR_TP2=2.0
 
 ## Supabase وRedis
 
-أُضيفت جداول منفصلة حتى لا تغيّر المواصفة الجديدة الجداول القديمة في مشروع `Trading_bot`: `indicator_symbols` و`indicator_candles` و`indicator_analysis_snapshots` و`indicator_signals` و`indicator_runtime_state` و`indicator_settings`. جميعها مفعّل عليها RLS، ويُمنح الوصول للخادم عبر دور الخدمة فقط.
+أُضيفت جداول منفصلة حتى لا تغيّر المواصفة الجديدة الجداول القديمة في مشروع `Trading_bot`: `indicator_symbols` و`indicator_candles` و`indicator_analysis_snapshots` و`indicator_signals` و`indicator_trades` و`indicator_runtime_state` و`indicator_settings`. جميعها مفعّل عليها RLS، ويُمنح الوصول للخادم عبر دور الخدمة فقط. تعرض الواجهة الآن الصفقات الحالية والمنجزة في جدولين منفصلين.
 
 Redis ليس مصدراً للتاريخ الدائم. يستخدمه النظام للحالة الحية والكاش ومفاتيح التحليل والإشارة. بعد إعادة التشغيل يجب أن يستطيع النظام إعادة بناء الحالة من الشموع التاريخية وقاعدة Supabase.
 

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 TERMINAL_STATUSES = {"TP2_HIT", "SL_HIT", "INVALIDATED", "EXPIRED", "CANCELLED"}
 ACTIVE_STATUSES = {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}
+COMPLETED_STATUSES = TERMINAL_STATUSES
 
 
 class IndicatorService:
@@ -46,6 +47,7 @@ class IndicatorService:
             await self.storage.startup()
             await self.redis.startup()
             if self.storage.enabled:
+                await self.storage.ping()
                 await self._restore_active_trades()
             if not self.settings.disable_auto_start:
                 await self.market.start()
@@ -286,19 +288,29 @@ class IndicatorService:
             return await self.storage.list_signals(symbol.upper(), timeframe.lower(), limit)
         return []
 
-    async def get_trades(self, symbol: str | None = None, timeframe: str | None = None, limit: int = 100, active_only: bool = False) -> list[dict[str, Any]]:
-        rows = list(self._trades.values())
+    async def get_trades(self, symbol: str | None = None, timeframe: str | None = None, limit: int = 100, active_only: bool = False, completed_only: bool = False) -> list[dict[str, Any]]:
+        local = list(self._trades.values())
         if symbol:
-            rows = [item for item in rows if item.symbol == symbol.upper()]
+            local = [item for item in local if item.symbol == symbol.upper()]
         if timeframe:
-            rows = [item for item in rows if item.timeframe == timeframe.lower()]
+            local = [item for item in local if item.timeframe == timeframe.lower()]
         if active_only:
-            rows = [item for item in rows if item.status in ACTIVE_STATUSES]
-        if rows:
-            return [item.to_dict() for item in sorted(rows, key=lambda item: item.created_at, reverse=True)[:limit]]
-        if self.storage.enabled:
-            return await self.storage.list_trades(symbol, timeframe, limit, active_only)
-        return []
+            local = [item for item in local if item.status in ACTIVE_STATUSES]
+        if completed_only:
+            local = [item for item in local if item.status in COMPLETED_STATUSES]
+        local_by_id = {item.id: item for item in local}
+        if self.storage.enabled and not active_only:
+            stored = await self.storage.list_trades(symbol, timeframe, limit, active_only=False)
+            for row in stored:
+                try:
+                    trade = Trade.from_dict(row)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if completed_only and trade.status not in COMPLETED_STATUSES:
+                    continue
+                local_by_id.setdefault(trade.id, trade)
+        rows = sorted(local_by_id.values(), key=lambda item: item.created_at, reverse=True)
+        return [item.to_dict() for item in rows[:min(max(limit, 1), 500)]]
 
     def status(self) -> dict[str, Any]:
         return {
@@ -309,6 +321,6 @@ class IndicatorService:
             "last_analysis_at": self.last_analysis_at, "last_signal_at": self.last_signal_at,
             "latest_prices": self._latest_prices, "subscriber_count": len(self._subscribers),
             "market": self.market.status(),
-            "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.enabled and self.storage._client), "redis_connected": self.redis.enabled},
+            "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.last_success_at), "supabase_last_success_at": self.storage.last_success_at, "supabase_last_error": self.storage.last_error, "redis_connected": self.redis.enabled},
             "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "analysis_timeframes": self.settings.analysis_timeframes, "stream_timeframes": self.settings.stream_timeframes, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},
         }

@@ -32,7 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title=app_settings.app_name, version=app_settings.app_version, lifespan=lifespan)
     app.state.settings = app_settings
     app.state.service = service
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["*"])
+    app.add_middleware(CORSMiddleware, allow_origins=app_settings.cors_origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["*"])
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -79,19 +79,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/signals/active")
     async def active_signals():
-        return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE"}]}
+        return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}]}
 
     @app.get("/api/v1/signals/{symbol}/{timeframe}")
     async def signals(symbol: str, timeframe: str, limit: int = Query(default=50, ge=1, le=200)):
         return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "signals": await service.get_signals(symbol, timeframe, limit)}
 
-    @app.get("/api/v1/trades")
-    async def trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500), active_only: bool = False):
+    def validate_trade_filters(symbol: str | None, timeframe: str | None) -> None:
         if symbol and symbol.upper() not in app_settings.symbols:
             raise HTTPException(status_code=404, detail="unsupported_symbol")
         if timeframe and timeframe.lower() not in SUPPORTED_TIMEFRAMES:
             raise HTTPException(status_code=400, detail="unsupported_timeframe")
-        return {"trades": await service.get_trades(symbol, timeframe, limit, active_only), "active_only": active_only}
+
+    @app.get("/api/v1/trades")
+    async def trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500), active_only: bool = False):
+        validate_trade_filters(symbol, timeframe)
+        return {"trades": await service.get_trades(symbol, timeframe, limit, active_only=active_only), "active_only": active_only}
+
+    @app.get("/api/v1/trades/current")
+    async def current_trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500)):
+        validate_trade_filters(symbol, timeframe)
+        return {"trades": await service.get_trades(symbol, timeframe, limit, active_only=True), "active_only": True, "completed_only": False}
+
+    @app.get("/api/v1/trades/completed")
+    async def completed_trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500)):
+        validate_trade_filters(symbol, timeframe)
+        return {"trades": await service.get_trades(symbol, timeframe, limit, completed_only=True), "active_only": False, "completed_only": True}
 
     @app.post("/api/v1/backtests")
     async def backtests(symbol: str, timeframe: str, limit: int = Query(default=500, ge=100, le=1000)):

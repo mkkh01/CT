@@ -106,3 +106,43 @@ def test_trade_lifecycle_records_entry_and_tp1_reason():
 
     import asyncio
     asyncio.run(scenario())
+
+
+def test_trade_views_split_current_and_completed():
+    from app.models import Trade
+
+    settings = Settings(symbols=["BTCUSDT"], disable_auto_start=True)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        service = app.state.service
+        service._trades["active-1"] = Trade(
+            id="active-1", signal_id="signal-active", symbol="BTCUSDT", timeframe="15m", direction="BUY",
+            status="ACTIVE", score=85, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:00:00+00:00", last_price=102,
+        )
+        service._trades["closed-1"] = Trade(
+            id="closed-1", signal_id="signal-closed", symbol="BTCUSDT", timeframe="15m", direction="SELL",
+            status="SL_HIT", score=82, entry=100, stop_loss=105, tp1=95, tp2=90, created_at="2026-01-01T00:01:00+00:00",
+            exit_at="2026-01-01T00:20:00+00:00", exit_price=105, close_reason="STOP_LOSS_REACHED",
+        )
+        current = client.get("/api/v1/trades/current", params={"symbol": "BTCUSDT", "timeframe": "15m"})
+        completed = client.get("/api/v1/trades/completed", params={"symbol": "BTCUSDT", "timeframe": "15m"})
+        assert current.status_code == 200
+        assert completed.status_code == 200
+        assert [row["id"] for row in current.json()["trades"]] == ["active-1"]
+        assert [row["id"] for row in completed.json()["trades"]] == ["closed-1"]
+
+
+def test_active_signals_include_tp1_hit():
+    settings = Settings(symbols=["BTCUSDT"], disable_auto_start=True)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        service = app.state.service
+        service._signals["tp1-signal"] = Signal(
+            id="tp1-signal", symbol="BTCUSDT", timeframe="15m", direction="BUY", status="TP1_HIT", score=85,
+            entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:00:00+00:00", signal_version="test",
+            risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=[], structure={}, liquidity={}, fvg={}, order_block={},
+            volume={}, momentum={}, trend={}, data_health={}, metadata={},
+        )
+        response = client.get("/api/v1/signals/active")
+        assert response.status_code == 200
+        assert response.json()["signals"][0]["status"] == "TP1_HIT"

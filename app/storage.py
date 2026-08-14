@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -18,6 +19,8 @@ class SupabaseStore:
         self.key = settings.supabase_key
         self.enabled = bool(self.base_url and self.key)
         self._client: httpx.AsyncClient | None = None
+        self.last_success_at: str | None = None
+        self.last_error: str | None = None
 
     async def startup(self) -> None:
         if self.enabled:
@@ -33,8 +36,15 @@ class SupabaseStore:
             return False
         try:
             response = await self._client.get(f"{self.base_url}/rest/v1/indicator_settings?select=key&limit=1")
-            return response.status_code < 500
+            if response.is_success:
+                self.last_success_at = datetime.now(timezone.utc).isoformat()
+                self.last_error = None
+                return True
+            self.last_error = f"ping_http_{response.status_code}"
+            logger.warning("supabase_ping_failed status=%s body=%s", response.status_code, response.text[:240])
+            return False
         except httpx.HTTPError as exc:
+            self.last_error = type(exc).__name__
             logger.warning("supabase_ping_failed error=%s", exc)
             return False
 
@@ -44,12 +54,18 @@ class SupabaseStore:
         headers = {"Prefer": prefer} if prefer else {}
         try:
             response = await self._client.request(method, f"{self.base_url}/rest/v1/{table}", params=params, json=payload, headers=headers)
-            response.raise_for_status()
+            if response.is_error:
+                self.last_error = f"{method}_{table}_http_{response.status_code}"
+                logger.error("supabase_request_failed table=%s method=%s status=%s body=%s", table, method, response.status_code, response.text[:240])
+                return None
+            self.last_success_at = datetime.now(timezone.utc).isoformat()
+            self.last_error = None
             if not response.content:
                 return None
             return response.json()
         except httpx.HTTPError as exc:
-            logger.warning("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
+            self.last_error = f"{method}_{table}_{type(exc).__name__}"
+            logger.error("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
             return None
 
     async def upsert_candle(self, candle: Candle) -> Any:
