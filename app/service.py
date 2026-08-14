@@ -16,6 +16,28 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATUSES = {"TP2_HIT", "SL_HIT", "INVALIDATED", "EXPIRED", "CANCELLED"}
 ACTIVE_STATUSES = {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}
 COMPLETED_STATUSES = TERMINAL_STATUSES
+SYMBOL_NAMES = {
+    "BTCUSDT": "Bitcoin",
+    "ETHUSDT": "Ethereum",
+    "BNBUSDT": "BNB",
+    "SOLUSDT": "Solana",
+    "XRPUSDT": "XRP",
+    "ADAUSDT": "Cardano",
+    "DOGEUSDT": "Dogecoin",
+    "AVAXUSDT": "Avalanche",
+    "LINKUSDT": "Chainlink",
+    "DOTUSDT": "Polkadot",
+    "TRXUSDT": "TRON",
+    "LTCUSDT": "Litecoin",
+    "BCHUSDT": "Bitcoin Cash",
+    "NEARUSDT": "NEAR Protocol",
+    "UNIUSDT": "Uniswap",
+    "ATOMUSDT": "Cosmos",
+    "ETCUSDT": "Ethereum Classic",
+    "FILUSDT": "Filecoin",
+    "APTUSDT": "Aptos",
+    "ARBUSDT": "Arbitrum",
+}
 
 
 class IndicatorService:
@@ -311,6 +333,27 @@ class IndicatorService:
                 local_by_id.setdefault(trade.id, trade)
         rows = sorted(local_by_id.values(), key=lambda item: item.created_at, reverse=True)
         return [item.to_dict() for item in rows[:min(max(limit, 1), 500)]]
+
+    async def get_active_signal_summary(self) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for signal in self._signals.values():
+            if signal.status in ACTIVE_STATUSES:
+                grouped.setdefault(signal.symbol, []).append(signal.to_dict())
+        return [
+            {"symbol": symbol, "name": SYMBOL_NAMES.get(symbol, symbol), "count": len(items), "signals": sorted(items, key=lambda item: item["created_at"], reverse=True)}
+            for symbol, items in sorted(grouped.items())
+        ]
+
+    async def get_successful_trade_summary(self, limit: int = 500) -> list[dict[str, Any]]:
+        trades = await self.get_trades(limit=limit, completed_only=True)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for trade in trades:
+            if trade.get("status") == "TP2_HIT":
+                grouped.setdefault(str(trade["symbol"]), []).append(trade)
+        return [
+            {"symbol": symbol, "name": SYMBOL_NAMES.get(symbol, symbol), "count": len(items), "trades": sorted(items, key=lambda item: item["created_at"], reverse=True)}
+            for symbol, items in sorted(grouped.items())
+        ]
 
     def status(self) -> dict[str, Any]:
         return {

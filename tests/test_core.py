@@ -146,3 +146,31 @@ def test_active_signals_include_tp1_hit():
         response = client.get("/api/v1/signals/active")
         assert response.status_code == 200
         assert response.json()["signals"][0]["status"] == "TP1_HIT"
+
+
+def test_summary_endpoints_group_active_signals_and_successful_trades_by_symbol():
+    from app.models import Trade
+
+    settings = Settings(symbols=["BTCUSDT", "ETHUSDT"], disable_auto_start=True)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        service = app.state.service
+        for index, symbol in enumerate(("BTCUSDT", "ETHUSDT")):
+            service._signals[f"active-{index}"] = Signal(
+                id=f"active-{index}", symbol=symbol, timeframe="15m", direction="BUY", status="ACTIVE", score=85,
+                entry=100, stop_loss=95, tp1=105, tp2=110, created_at=f"2026-01-01T00:0{index}:00+00:00", signal_version="test",
+                risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=[], structure={}, liquidity={}, fvg={}, order_block={},
+                volume={}, momentum={}, trend={}, data_health={}, metadata={},
+            )
+        service._trades["successful-btc"] = Trade(
+            id="successful-btc", signal_id="successful-btc-signal", symbol="BTCUSDT", timeframe="15m", direction="BUY",
+            status="TP2_HIT", score=90, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:02:00+00:00",
+            exit_at="2026-01-01T01:00:00+00:00", exit_price=110, close_reason="TP2_REACHED",
+        )
+        active = client.get("/api/v1/signals/active/summary")
+        successful = client.get("/api/v1/trades/successful/summary")
+        assert active.json()["total"] == 2
+        assert {item["symbol"] for item in active.json()["groups"]} == {"BTCUSDT", "ETHUSDT"}
+        assert successful.json()["total"] == 1
+        assert successful.json()["groups"][0]["symbol"] == "BTCUSDT"
+        assert successful.json()["definition"] == "TP2_HIT"

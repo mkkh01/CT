@@ -71,9 +71,11 @@ RR_TP2=2.0
 | `GET /api/v1/analysis/{symbol}/{timeframe}` | آخر تحليل وقرار وأسباب |
 | `GET /api/v1/signals/{symbol}/{timeframe}` | سجل الإشارات |
 | `GET /api/v1/signals/active` | الإشارات الحالية |
+| `GET /api/v1/signals/active/summary` | تجميع الإشارات النشطة حسب رمز العملة |
 | `GET /api/v1/trades` | سجل الصفقات مع إمكانية التصفية |
 | `GET /api/v1/trades/current` | الصفقات الحالية: مؤكدة، معلقة، نشطة، أو وصلت إلى TP1 |
 | `GET /api/v1/trades/completed` | الصفقات المنجزة: TP2 أو SL أو منتهية أو ملغاة |
+| `GET /api/v1/trades/successful/summary` | تجميع الصفقات الناجحة حسب رمز العملة؛ النجاح الكامل هو `TP2_HIT` |
 | `GET /api/v1/settings` | الإعدادات العامة غير السرية |
 | `WS /ws/market` | تحديثات حالة بيانات السوق |
 | `WS /ws/analysis` | تحديثات حالة التحليل |

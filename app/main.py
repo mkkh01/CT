@@ -81,6 +81,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def active_signals():
         return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}]}
 
+    @app.get("/api/v1/signals/active/summary")
+    async def active_signal_summary():
+        groups = await service.get_active_signal_summary()
+        return {"groups": groups, "total": sum(item["count"] for item in groups)}
+
     @app.get("/api/v1/signals/{symbol}/{timeframe}")
     async def signals(symbol: str, timeframe: str, limit: int = Query(default=50, ge=1, le=200)):
         return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "signals": await service.get_signals(symbol, timeframe, limit)}
@@ -105,6 +110,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def completed_trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500)):
         validate_trade_filters(symbol, timeframe)
         return {"trades": await service.get_trades(symbol, timeframe, limit, completed_only=True), "active_only": False, "completed_only": True}
+
+    @app.get("/api/v1/trades/successful/summary")
+    async def successful_trade_summary(limit: int = Query(default=500, ge=1, le=500)):
+        groups = await service.get_successful_trade_summary(limit)
+        return {"groups": groups, "total": sum(item["count"] for item in groups), "definition": "TP2_HIT"}
 
     @app.post("/api/v1/backtests")
     async def backtests(symbol: str, timeframe: str, limit: int = Query(default=500, ge=100, le=1000)):
