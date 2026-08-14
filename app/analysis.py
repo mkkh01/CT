@@ -34,8 +34,9 @@ class AnalysisEngine:
         volume = relative_volume(entry_candles)
         momentum = momentum_context(entry_candles)
         volatility = {"atr": atr(entry_candles, self.settings.atr_period), "regime": self._volatility_regime(entry_candles)}
+        context_zones = self._nearby_zones(entry_candles, fvg + ifvg + order_blocks)
         bullish, bearish, reasons = self._scores(
-            htf_structure, structure, liquidity, fvg, ifvg, order_blocks, volume, momentum, volatility
+            htf_structure, structure, liquidity, context_zones, volume, momentum, volatility
         )
         decision: str = "NO TRADE"
         if bullish >= self.settings.min_signal_score and bullish - bearish >= self.settings.min_direction_gap:
@@ -197,6 +198,24 @@ class AnalysisEngine:
                     level["status"] = "SWEEP_CONFIRMED"
         return levels[-15:]
 
+    def _nearby_zones(self, candles: list[Candle], zones: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not candles:
+            return []
+        price = candles[-1].close
+        current_atr = atr(candles, self.settings.atr_period)
+        radius = max(current_atr * 3.0, price * 0.01)
+        nearby = [zone for zone in zones if zone.get("high", 0) >= price - radius and zone.get("low", 0) <= price + radius]
+        recent = sorted(nearby, key=lambda zone: zone.get("created_at", 0), reverse=True)
+        selected: list[dict[str, Any]] = []
+        counts = {"BUY": 0, "SELL": 0}
+        for zone in recent:
+            direction = zone.get("direction")
+            if direction not in counts or counts[direction] >= 2:
+                continue
+            selected.append(zone)
+            counts[direction] += 1
+        return selected
+
     def _volatility_regime(self, candles: list[Candle]) -> str:
         if len(candles) < 20:
             return "UNKNOWN"
@@ -207,7 +226,7 @@ class AnalysisEngine:
             return "CHAOTIC"
         return "NORMAL"
 
-    def _scores(self, htf: StructureSnapshot, structure: StructureSnapshot, liquidity: list[dict[str, Any]], fvg: list[dict[str, Any]], ifvg: list[dict[str, Any]], obs: list[dict[str, Any]], volume: dict[str, Any], momentum: dict[str, Any], volatility: dict[str, Any]) -> tuple[float, float, list[str]]:
+    def _scores(self, htf: StructureSnapshot, structure: StructureSnapshot, liquidity: list[dict[str, Any]], context_zones: list[dict[str, Any]], volume: dict[str, Any], momentum: dict[str, Any], volatility: dict[str, Any]) -> tuple[float, float, list[str]]:
         bullish = 0.0
         bearish = 0.0
         reasons: list[str] = []
@@ -221,11 +240,12 @@ class AnalysisEngine:
             if item.get("status") == "SWEEP_CONFIRMED":
                 if item["direction"] == "BUY": bullish += 15; reasons.append("Liquidity sweep confirmed for BUY")
                 else: bearish += 15; reasons.append("Liquidity sweep confirmed for SELL")
-        for item in fvg + ifvg + obs:
-            if item.get("direction") == "BUY": bullish += 5
-            elif item.get("direction") == "SELL": bearish += 5
-        if any(item.get("direction") == "BUY" for item in fvg + ifvg + obs): reasons.append("Bullish FVG/IFVG/OB context")
-        if any(item.get("direction") == "SELL" for item in fvg + ifvg + obs): reasons.append("Bearish FVG/IFVG/OB context")
+        buy_context = sum(item.get("direction") == "BUY" for item in context_zones)
+        sell_context = sum(item.get("direction") == "SELL" for item in context_zones)
+        bullish += min(buy_context, 2) * 5
+        bearish += min(sell_context, 2) * 5
+        if buy_context: reasons.append(f"Bullish nearby FVG/IFVG/OB context ({buy_context})")
+        if sell_context: reasons.append(f"Bearish nearby FVG/IFVG/OB context ({sell_context})")
         if momentum.get("direction") == "BULLISH": bullish += 10; reasons.append("Positive momentum")
         elif momentum.get("direction") == "BEARISH": bearish += 10; reasons.append("Negative momentum")
         if volume.get("above_average"):

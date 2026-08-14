@@ -56,7 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/timeframes")
     async def timeframes():
-        return {"timeframes": SUPPORTED_TIMEFRAMES, "entry": app_settings.entry_timeframe, "structure": app_settings.structure_timeframe, "htf": app_settings.htf_timeframe, "mapping": app_settings.mtf_mapping}
+        return {"timeframes": SUPPORTED_TIMEFRAMES, "analysis_timeframes": app_settings.analysis_timeframes, "stream_timeframes": app_settings.stream_timeframes, "entry": app_settings.entry_timeframe, "structure": app_settings.structure_timeframe, "htf": app_settings.htf_timeframe, "mapping": app_settings.mtf_mapping}
 
     @app.get("/api/v1/candles/{symbol}/{timeframe}")
     async def candles(symbol: str, timeframe: str, limit: int = Query(default=300, ge=1, le=1000)):
@@ -64,7 +64,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="unsupported_symbol")
         if timeframe.lower() not in SUPPORTED_TIMEFRAMES:
             raise HTTPException(status_code=400, detail="unsupported_timeframe")
-        return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "candles": await service.get_candles(symbol, timeframe, limit)}
+        candles = await service.get_candles(symbol, timeframe, limit)
+        return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "candles": candles, "data_status": "OK" if candles else "NO_DATA"}
 
     @app.get("/api/v1/analysis/{symbol}")
     async def analysis_default(symbol: str):
@@ -88,12 +89,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def backtests(symbol: str, timeframe: str, limit: int = Query(default=500, ge=100, le=1000)):
         if symbol.upper() not in app_settings.symbols:
             raise HTTPException(status_code=404, detail="unsupported_symbol")
+        if timeframe.lower() not in SUPPORTED_TIMEFRAMES:
+            raise HTTPException(status_code=400, detail="unsupported_timeframe")
+        await service.market.ensure_history(symbol.upper(), timeframe.lower())
         candles = await service.market.snapshot(symbol.upper(), timeframe.lower())
         return run_backtest(candles[-limit:], app_settings)
 
     @app.get("/api/v1/settings")
     async def settings():
-        return {"app": {"name": app_settings.app_name, "version": app_settings.app_version, "timezone": app_settings.timezone}, "market": {"exchange": app_settings.exchange, "market_type": app_settings.market_type}, "signal": {"min_score": app_settings.min_signal_score, "min_direction_gap": app_settings.min_direction_gap, "require_closed_candle": app_settings.require_closed_candle}, "risk": {"tp1_rr": app_settings.rr_tp1, "tp2_rr": app_settings.rr_tp2}, "multi_timeframe": app_settings.mtf_mapping, "config_version": app_settings.config_version}
+        return {"app": {"name": app_settings.app_name, "version": app_settings.app_version, "timezone": app_settings.timezone}, "market": {"exchange": app_settings.exchange, "market_type": app_settings.market_type}, "signal": {"min_score": app_settings.min_signal_score, "min_direction_gap": app_settings.min_direction_gap, "require_closed_candle": app_settings.require_closed_candle}, "risk": {"tp1_rr": app_settings.rr_tp1, "tp2_rr": app_settings.rr_tp2}, "multi_timeframe": app_settings.mtf_mapping, "analysis_timeframes": app_settings.analysis_timeframes, "stream_timeframes": app_settings.stream_timeframes, "config_version": app_settings.config_version}
 
     async def websocket_stream(websocket: WebSocket, channel: str):
         await websocket.accept()

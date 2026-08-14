@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.analysis import AnalysisEngine
-from app.config import Settings
+from app.config import SUPPORTED_TIMEFRAMES, Settings
 from app.indicators import atr, detect_swings, ema, rsi
 from app.main import create_app
 from app.models import Candle
@@ -31,6 +31,14 @@ def test_candle_validation_rejects_invalid_ohlc():
         assert str(exc) == "high_below_open_or_close"
     else:
         raise AssertionError("invalid candle accepted")
+
+
+def test_default_settings_support_requested_analysis_frames():
+    settings = Settings()
+    assert all(item in settings.analysis_timeframes for item in ("5m", "15m", "1h"))
+    assert all(item in SUPPORTED_TIMEFRAMES for item in settings.stream_timeframes)
+    assert settings.mtf_mapping["5m"] == ["15m", "1h"]
+    assert settings.mtf_mapping["1h"] == ["4h", "1d"]
 
 
 def test_indicators_are_deterministic():

@@ -111,8 +111,25 @@ class BinanceMarketData:
                     logger.warning("bootstrap_failed symbol=%s timeframe=%s error=%s", symbol, timeframe, exc)
                     self.last_error = f"bootstrap:{symbol}:{timeframe}"
 
-        jobs = [load(symbol, timeframe) for symbol in self.settings.symbols for timeframe in {self.settings.entry_timeframe, self.settings.structure_timeframe, self.settings.htf_timeframe}]
+        jobs = [load(symbol, timeframe) for symbol in self.settings.symbols for timeframe in self.settings.stream_timeframes]
         await asyncio.gather(*jobs)
+
+    async def ensure_history(self, symbol: str, timeframe: str) -> None:
+        symbol, timeframe = symbol.upper(), timeframe.lower()
+        if await self.store.count(symbol, timeframe) >= max(50, self.settings.atr_period + self.settings.swing_left + self.settings.swing_right + 5):
+            return
+        if not self._client:
+            return
+        try:
+            response = await self._client.get(f"{self.settings.binance_rest_url}/klines", params={"symbol": symbol, "interval": timeframe, "limit": self.settings.history_limit})
+            response.raise_for_status()
+            candles = [self._from_rest(symbol, timeframe, row) for row in response.json()]
+            for candle in candles:
+                candle.validate()
+            await self.store.replace(candles)
+        except (httpx.HTTPError, ValueError, TypeError, IndexError) as exc:
+            logger.warning("on_demand_history_failed symbol=%s timeframe=%s error=%s", symbol, timeframe, exc)
+            self.last_error = f"on_demand:{symbol}:{timeframe}"
 
     @staticmethod
     def _from_rest(symbol: str, timeframe: str, row: list) -> Candle:
@@ -135,7 +152,7 @@ class BinanceMarketData:
         )
 
     def _stream_url(self) -> str:
-        streams = "/".join(f"{symbol.lower()}@kline_{self.settings.entry_timeframe}" for symbol in self.settings.symbols)
+        streams = "/".join(f"{symbol.lower()}@kline_{timeframe}" for symbol in self.settings.symbols for timeframe in self.settings.stream_timeframes)
         return f"{self.settings.binance_ws_url}?streams={streams}"
 
     async def _websocket_loop(self) -> None:

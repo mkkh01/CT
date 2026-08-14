@@ -38,6 +38,12 @@ def _symbols(value: str | None) -> list[str]:
     return result[:20]
 
 
+def _timeframes(value: str | None, default: list[str]) -> list[str]:
+    raw = [item.strip().lower() for item in (value or "").split(",") if item.strip()]
+    result = list(dict.fromkeys(item for item in (raw or default) if item in SUPPORTED_TIMEFRAMES))
+    return result or list(default)
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "Smart Trading Indicator"
@@ -49,6 +55,8 @@ class Settings:
     entry_timeframe: str = "15m"
     structure_timeframe: str = "1h"
     htf_timeframe: str = "4h"
+    analysis_timeframes: list[str] = field(default_factory=lambda: ["5m", "15m", "1h"])
+    stream_timeframes: list[str] = field(default_factory=lambda: ["5m", "15m", "1h"])
     min_signal_score: float = 80.0
     min_direction_gap: float = 15.0
     require_closed_candle: bool = True
@@ -76,6 +84,8 @@ class Settings:
         entry = os.getenv("ENTRY_TIMEFRAME", os.getenv("EXECUTION_TIMEFRAME", "15m")).strip().lower()
         structure = os.getenv("STRUCTURE_TIMEFRAME", os.getenv("TRIGGER_TIMEFRAME", "1h")).strip().lower()
         htf = os.getenv("HTF_TIMEFRAME", os.getenv("HIGHER_TIMEFRAME", "4h")).strip().lower()
+        analysis_timeframes = _timeframes(os.getenv("ANALYSIS_TIMEFRAMES"), ["5m", "15m", "1h"])
+        stream_timeframes = _timeframes(os.getenv("STREAM_TIMEFRAMES"), list(analysis_timeframes))
         if entry not in SUPPORTED_TIMEFRAMES:
             entry = "15m"
         if structure not in SUPPORTED_TIMEFRAMES:
@@ -89,6 +99,8 @@ class Settings:
             entry_timeframe=entry,
             structure_timeframe=structure,
             htf_timeframe=htf,
+            analysis_timeframes=analysis_timeframes,
+            stream_timeframes=stream_timeframes,
             min_signal_score=_float(os.getenv("MIN_SIGNAL_SCORE"), 80.0),
             min_direction_gap=_float(os.getenv("MIN_DIRECTION_GAP"), 15.0),
             require_closed_candle=_bool(os.getenv("REQUIRE_CLOSED_CANDLE"), True),
@@ -114,7 +126,8 @@ class Settings:
 
     @property
     def mtf_mapping(self) -> dict[str, list[str]]:
-        return {self.entry_timeframe: [self.structure_timeframe, self.htf_timeframe]}
+        defaults = {"5m": ["15m", "1h"], "15m": ["1h", "4h"], "1h": ["4h", "1d"]}
+        return {timeframe: defaults.get(timeframe, [self.structure_timeframe, self.htf_timeframe]) for timeframe in self.analysis_timeframes}
 
     @property
     def persistence_enabled(self) -> bool:

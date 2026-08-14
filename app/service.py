@@ -79,7 +79,7 @@ class IndicatorService:
         await self._broadcast({"type": "candle", "payload": candle.to_dict()})
 
     async def on_candle_closed(self, candle: Candle) -> None:
-        if candle.timeframe != self.settings.entry_timeframe:
+        if candle.timeframe not in self.settings.analysis_timeframes:
             return
         self.cycle_count += 1
         if self.storage.enabled:
@@ -130,10 +130,15 @@ class IndicatorService:
             await self.redis.set_json(f"signal:{signal.symbol}:{signal.timeframe}", signal.to_dict(), ttl=86400)
 
     async def analyze(self, symbol: str, timeframe: str | None = None) -> tuple[AnalysisSnapshot, Signal | NoTrade]:
-        timeframe = timeframe or self.settings.entry_timeframe
+        timeframe = (timeframe or self.settings.entry_timeframe).lower()
+        mapping = self.settings.mtf_mapping.get(timeframe, [self.settings.structure_timeframe, self.settings.htf_timeframe])
+        structure_timeframe, htf_timeframe = mapping[0], mapping[1]
+        await self.market.ensure_history(symbol, timeframe)
+        await self.market.ensure_history(symbol, structure_timeframe)
+        await self.market.ensure_history(symbol, htf_timeframe)
         entry = await self.market.snapshot(symbol, timeframe)
-        structure = await self.market.snapshot(symbol, self.settings.structure_timeframe)
-        htf = await self.market.snapshot(symbol, self.settings.htf_timeframe)
+        structure = await self.market.snapshot(symbol, structure_timeframe)
+        htf = await self.market.snapshot(symbol, htf_timeframe)
         snapshot, result = self.analysis_engine.analyze(symbol, timeframe, entry, structure, htf, data_fresh=self._data_fresh())
         key = f"{symbol}:{timeframe}"
         self._analysis[key] = snapshot
@@ -168,6 +173,7 @@ class IndicatorService:
             return False
 
     async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[dict[str, Any]]:
+        await self.market.ensure_history(symbol.upper(), timeframe.lower())
         candles = await self.market.snapshot(symbol.upper(), timeframe.lower())
         return [item.to_dict() for item in candles[-min(max(limit, 1), self.settings.history_limit):]]
 
@@ -208,5 +214,5 @@ class IndicatorService:
             "subscriber_count": len(self._subscribers),
             "market": self.market.status(),
             "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.enabled and self.storage._client), "redis_connected": self.redis.enabled},
-            "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},
+            "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "analysis_timeframes": self.settings.analysis_timeframes, "stream_timeframes": self.settings.stream_timeframes, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},
         }
