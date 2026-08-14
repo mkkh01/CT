@@ -13,8 +13,8 @@ from .storage import RedisStore, SupabaseStore
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATUSES = {"TP2_HIT", "SL_HIT", "INVALIDATED", "EXPIRED", "CANCELLED"}
-ACTIVE_STATUSES = {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}
+TERMINAL_STATUSES = {"TP1_HIT", "TP2_HIT", "SL_HIT", "INVALIDATED", "EXPIRED", "CANCELLED"}
+ACTIVE_STATUSES = {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE"}
 COMPLETED_STATUSES = TERMINAL_STATUSES
 SYMBOL_NAMES = {
     "BTCUSDT": "Bitcoin",
@@ -157,7 +157,8 @@ class IndicatorService:
     @staticmethod
     def _close_reason(status: str) -> str:
         return {
-            "TP2_HIT": "TP2_REACHED",
+            "TP1_HIT": "TP1_REACHED",
+            "TP2_HIT": "TP2_REACHED_LEGACY",
             "SL_HIT": "STOP_LOSS_REACHED",
             "EXPIRED": "ENTRY_NOT_REACHED_WITHIN_MAX_PENDING_CANDLES",
             "INVALIDATED": "SIGNAL_INVALIDATED",
@@ -191,31 +192,25 @@ class IndicatorService:
                     trade.exit_at = utc_now()
                     trade.close_reason = self._close_reason("EXPIRED")
 
-            if trade.status in {"ACTIVE", "TP1_HIT"}:
-                both_stop_and_target = False
+            if trade.status == "ACTIVE":
                 if signal.direction == "BUY":
                     stop_hit = candle.low <= signal.stop_loss
-                    tp2_hit = candle.high >= signal.tp2
                     tp1_hit = candle.high >= signal.tp1
                 else:
                     stop_hit = candle.high >= signal.stop_loss
-                    tp2_hit = candle.low <= signal.tp2
                     tp1_hit = candle.low <= signal.tp1
-                both_stop_and_target = stop_hit and (tp1_hit or tp2_hit)
+                both_stop_and_target = stop_hit and tp1_hit
                 if stop_hit:
                     trade.status = signal.status = "SL_HIT"
                     trade.exit_at = utc_now()
                     trade.exit_price = signal.stop_loss
                     trade.close_reason = "STOP_LOSS_REACHED_CONSERVATIVE_INTRABAR_PRIORITY" if both_stop_and_target else self._close_reason("SL_HIT")
-                elif tp2_hit:
-                    trade.status = signal.status = "TP2_HIT"
-                    trade.exit_at = utc_now()
-                    trade.exit_price = signal.tp2
-                    trade.close_reason = self._close_reason("TP2_HIT")
-                elif trade.status == "ACTIVE" and tp1_hit:
+                elif tp1_hit:
                     trade.status = signal.status = "TP1_HIT"
-                    trade.tp1_hit_at = trade.tp1_hit_at or utc_now()
-                    trade.close_reason = "TP1_REACHED_PARTIAL_TARGET"
+                    trade.exit_at = utc_now()
+                    trade.exit_price = signal.tp1
+                    trade.tp1_hit_at = trade.tp1_hit_at or trade.exit_at
+                    trade.close_reason = self._close_reason("TP1_HIT")
 
             if status_before != trade.status or trade.status in ACTIVE_STATUSES or trade.status in TERMINAL_STATUSES:
                 signal.metadata.update({
@@ -283,7 +278,7 @@ class IndicatorService:
         except ValueError:
             return False
 
-    async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[dict[str, Any]]:
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[dict[str, Any]]:
         await self.market.ensure_history(symbol.upper(), timeframe.lower())
         candles = await self.market.snapshot(symbol.upper(), timeframe.lower())
         return [item.to_dict() for item in candles[-min(max(limit, 1), self.settings.history_limit):]]
@@ -348,7 +343,7 @@ class IndicatorService:
         trades = await self.get_trades(limit=limit, completed_only=True)
         grouped: dict[str, list[dict[str, Any]]] = {}
         for trade in trades:
-            if trade.get("status") == "TP2_HIT":
+            if trade.get("status") == "TP1_HIT":
                 grouped.setdefault(str(trade["symbol"]), []).append(trade)
         return [
             {"symbol": symbol, "name": SYMBOL_NAMES.get(symbol, symbol), "count": len(items), "trades": sorted(items, key=lambda item: item["created_at"], reverse=True)}

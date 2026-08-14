@@ -40,6 +40,7 @@ def test_default_settings_support_requested_analysis_frames():
     assert all(item in SUPPORTED_TIMEFRAMES for item in settings.stream_timeframes)
     assert settings.mtf_mapping["5m"] == ["15m", "1h"]
     assert settings.mtf_mapping["1h"] == ["4h", "1d"]
+    assert settings.history_limit == 200
 
 
 def test_indicators_are_deterministic():
@@ -101,7 +102,7 @@ def test_trade_lifecycle_records_entry_and_tp1_reason():
         await service._update_signal_lifecycle(Candle("BTCUSDT", "5m", 300000, 599999, 104, 106, 103, 105, 10, True))
         trade = service._trades[signal.id]
         assert trade.status == "TP1_HIT"
-        assert trade.close_reason == "TP1_REACHED_PARTIAL_TARGET"
+        assert trade.close_reason == "TP1_REACHED"
         assert trade.last_price == 105
 
     import asyncio
@@ -132,7 +133,7 @@ def test_trade_views_split_current_and_completed():
         assert [row["id"] for row in completed.json()["trades"]] == ["closed-1"]
 
 
-def test_active_signals_include_tp1_hit():
+def test_tp1_hit_is_not_an_active_signal():
     settings = Settings(symbols=["BTCUSDT"], disable_auto_start=True)
     app = create_app(settings)
     with TestClient(app) as client:
@@ -145,7 +146,7 @@ def test_active_signals_include_tp1_hit():
         )
         response = client.get("/api/v1/signals/active")
         assert response.status_code == 200
-        assert response.json()["signals"][0]["status"] == "TP1_HIT"
+        assert response.json()["signals"] == []
 
 
 def test_summary_endpoints_group_active_signals_and_successful_trades_by_symbol():
@@ -164,8 +165,8 @@ def test_summary_endpoints_group_active_signals_and_successful_trades_by_symbol(
             )
         service._trades["successful-btc"] = Trade(
             id="successful-btc", signal_id="successful-btc-signal", symbol="BTCUSDT", timeframe="15m", direction="BUY",
-            status="TP2_HIT", score=90, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:02:00+00:00",
-            exit_at="2026-01-01T01:00:00+00:00", exit_price=110, close_reason="TP2_REACHED",
+            status="TP1_HIT", score=90, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:02:00+00:00",
+            exit_at="2026-01-01T01:00:00+00:00", exit_price=105, close_reason="TP1_REACHED",
         )
         active = client.get("/api/v1/signals/active/summary")
         successful = client.get("/api/v1/trades/successful/summary")
@@ -173,4 +174,4 @@ def test_summary_endpoints_group_active_signals_and_successful_trades_by_symbol(
         assert {item["symbol"] for item in active.json()["groups"]} == {"BTCUSDT", "ETHUSDT"}
         assert successful.json()["total"] == 1
         assert successful.json()["groups"][0]["symbol"] == "BTCUSDT"
-        assert successful.json()["definition"] == "TP2_HIT"
+        assert successful.json()["definition"] == "TP1_HIT"

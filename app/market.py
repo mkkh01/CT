@@ -116,7 +116,7 @@ class BinanceMarketData:
 
     async def ensure_history(self, symbol: str, timeframe: str) -> None:
         symbol, timeframe = symbol.upper(), timeframe.lower()
-        if await self.store.count(symbol, timeframe) >= max(50, self.settings.atr_period + self.settings.swing_left + self.settings.swing_right + 5):
+        if await self.store.count(symbol, timeframe) >= self.settings.history_limit:
             return
         if not self._client:
             return

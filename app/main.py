@@ -59,7 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"timeframes": SUPPORTED_TIMEFRAMES, "analysis_timeframes": app_settings.analysis_timeframes, "stream_timeframes": app_settings.stream_timeframes, "entry": app_settings.entry_timeframe, "structure": app_settings.structure_timeframe, "htf": app_settings.htf_timeframe, "mapping": app_settings.mtf_mapping}
 
     @app.get("/api/v1/candles/{symbol}/{timeframe}")
-    async def candles(symbol: str, timeframe: str, limit: int = Query(default=300, ge=1, le=1000)):
+    async def candles(symbol: str, timeframe: str, limit: int = Query(default=200, ge=1, le=1000)):
         if symbol.upper() not in app_settings.symbols:
             raise HTTPException(status_code=404, detail="unsupported_symbol")
         if timeframe.lower() not in SUPPORTED_TIMEFRAMES:
@@ -79,7 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/signals/active")
     async def active_signals():
-        return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}]}
+        return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE"}]}
 
     @app.get("/api/v1/signals/active/summary")
     async def active_signal_summary():
@@ -114,7 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/trades/successful/summary")
     async def successful_trade_summary(limit: int = Query(default=500, ge=1, le=500)):
         groups = await service.get_successful_trade_summary(limit)
-        return {"groups": groups, "total": sum(item["count"] for item in groups), "definition": "TP2_HIT"}
+        return {"groups": groups, "total": sum(item["count"] for item in groups), "definition": "TP1_HIT"}
 
     @app.post("/api/v1/backtests")
     async def backtests(symbol: str, timeframe: str, limit: int = Query(default=500, ge=100, le=1000)):

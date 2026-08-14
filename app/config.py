@@ -73,7 +73,7 @@ class Settings:
     swing_right: int = 3
     atr_period: int = 14
     min_structure_break_atr: float = 0.1
-    history_limit: int = 500
+    history_limit: int = 200
     stale_data_seconds: int = 180
     binance_rest_url: str = "https://data-api.binance.vision/api/v3"
     binance_ws_url: str = "wss://data-stream.binance.vision/stream"
@@ -118,7 +118,7 @@ class Settings:
             swing_right=_int(os.getenv("SWING_RIGHT"), 3),
             atr_period=_int(os.getenv("ATR_PERIOD"), 14),
             min_structure_break_atr=_float(os.getenv("MIN_STRUCTURE_BREAK_ATR"), 0.1),
-            history_limit=min(_int(os.getenv("HISTORY_LIMIT"), 500), 1000),
+            history_limit=min(_int(os.getenv("HISTORY_LIMIT"), 200), 1000),
             stale_data_seconds=_int(os.getenv("STALE_DATA_SECONDS"), 180),
             binance_rest_url=os.getenv("BINANCE_REST_URL", "https://data-api.binance.vision/api/v3").rstrip("/"),
             binance_ws_url=os.getenv("BINANCE_WS_URL", "wss://data-stream.binance.vision/stream").rstrip("/"),

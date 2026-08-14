@@ -29,18 +29,14 @@ class BacktestTrade:
 def _event_for_candle(signal: Signal, candle: Candle) -> tuple[str, float] | None:
     if signal.direction == "BUY":
         hit_sl = candle.low <= signal.stop_loss
-        hit_tp2 = candle.high >= signal.tp2
         hit_tp1 = candle.high >= signal.tp1
     else:
         hit_sl = candle.high >= signal.stop_loss
-        hit_tp2 = candle.low <= signal.tp2
         hit_tp1 = candle.low <= signal.tp1
-    if hit_sl and (hit_tp1 or hit_tp2):
+    if hit_sl and hit_tp1:
         return "SL_HIT", -1.0
     if hit_sl:
         return "SL_HIT", -1.0
-    if hit_tp2:
-        return "TP2_HIT", signal.risk_reward["tp2"]
     if hit_tp1:
         return "TP1_HIT", signal.risk_reward["tp1"]
     return None
@@ -98,12 +94,12 @@ def run_backtest(candles: list[Candle], settings: Settings) -> dict[str, Any]:
         "total_signals": total_signals,
         "activated_trades": activated,
         "tp1_hits": tp1_hits,
-        "tp2_hits": tp2_hits,
+        "tp2_hits": 0,
         "sl_hits": sl_hits,
         "win_rate": wins / activated if activated else 0.0,
         "loss_rate": losses / activated if activated else 0.0,
         "tp1_rate": tp1_hits / activated if activated else 0.0,
-        "tp2_rate": tp2_hits / activated if activated else 0.0,
+        "tp2_rate": 0.0,
         "average_r": total_r / activated if activated else 0.0,
         "total_r": total_r,
         "maximum_drawdown": max_drawdown,
