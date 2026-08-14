@@ -59,7 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"timeframes": SUPPORTED_TIMEFRAMES, "analysis_timeframes": app_settings.analysis_timeframes, "stream_timeframes": app_settings.stream_timeframes, "entry": app_settings.entry_timeframe, "structure": app_settings.structure_timeframe, "htf": app_settings.htf_timeframe, "mapping": app_settings.mtf_mapping}
 
     @app.get("/api/v1/candles/{symbol}/{timeframe}")
-    async def candles(symbol: str, timeframe: str, limit: int = Query(default=200, ge=1, le=1000)):
+    async def candles(symbol: str, timeframe: str, limit: int = Query(default=500, ge=1, le=1000)):
         if symbol.upper() not in app_settings.symbols:
             raise HTTPException(status_code=404, detail="unsupported_symbol")
         if timeframe.lower() not in SUPPORTED_TIMEFRAMES:

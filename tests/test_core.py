@@ -40,7 +40,7 @@ def test_default_settings_support_requested_analysis_frames():
     assert all(item in SUPPORTED_TIMEFRAMES for item in settings.stream_timeframes)
     assert settings.mtf_mapping["5m"] == ["15m", "1h"]
     assert settings.mtf_mapping["1h"] == ["4h", "1d"]
-    assert settings.history_limit == 200
+    assert settings.history_limit == 500
 
 
 def test_indicators_are_deterministic():
