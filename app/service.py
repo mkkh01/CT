@@ -141,9 +141,10 @@ class IndicatorService:
         if candle.timeframe not in self.settings.analysis_timeframes:
             return
         self.cycle_count += 1
-        snapshot, result = await self.analyze(candle.symbol, candle.timeframe)
+        is_entry_timeframe = candle.timeframe == self.settings.entry_timeframe
+        snapshot, result = await self.analyze(candle.symbol, candle.timeframe, create_signal=is_entry_timeframe)
         await self._broadcast({"type": "analysis", "payload": {**snapshot.to_dict(), "result": result.to_dict()}})
-        if isinstance(result, Signal):
+        if is_entry_timeframe and isinstance(result, Signal):
             await self._broadcast({"type": "signal", "payload": result.to_dict()})
 
     def _trade_from_signal(self, signal: Signal) -> Trade:
@@ -228,25 +229,34 @@ class IndicatorService:
             await self.redis.set_json(f"signal:{signal.symbol}:{signal.timeframe}", signal.to_dict(), ttl=86400)
             await self._broadcast({"type": "trade", "payload": trade.to_dict()})
 
-    async def analyze(self, symbol: str, timeframe: str | None = None) -> tuple[AnalysisSnapshot, Signal | NoTrade]:
+    async def analyze(self, symbol: str, timeframe: str | None = None, create_signal: bool | None = None) -> tuple[AnalysisSnapshot, Signal | NoTrade]:
         symbol = symbol.upper()
         timeframe = (timeframe or self.settings.entry_timeframe).lower()
+        if create_signal is None:
+            create_signal = timeframe == self.settings.entry_timeframe
         mapping = self.settings.mtf_mapping.get(timeframe, [self.settings.structure_timeframe, self.settings.htf_timeframe])
         structure_timeframe, htf_timeframe = mapping[0], mapping[1]
         await self.market.ensure_history(symbol, timeframe)
         await self.market.ensure_history(symbol, structure_timeframe)
         await self.market.ensure_history(symbol, htf_timeframe)
-        entry = await self.market.snapshot(symbol, timeframe)
-        structure = await self.market.snapshot(symbol, structure_timeframe)
-        htf = await self.market.snapshot(symbol, htf_timeframe)
+        entry_raw = await self.market.snapshot(symbol, timeframe)
+        structure_raw = await self.market.snapshot(symbol, structure_timeframe)
+        htf_raw = await self.market.snapshot(symbol, htf_timeframe)
+        entry = [candle for candle in entry_raw if candle.is_closed]
+        structure = [candle for candle in structure_raw if candle.is_closed]
+        htf = [candle for candle in htf_raw if candle.is_closed]
         snapshot, result = self.analysis_engine.analyze(symbol, timeframe, entry, structure, htf, data_fresh=self._data_fresh())
+        if isinstance(result, Signal) and not create_signal:
+            snapshot.decision = "NO TRADE"
+            snapshot.reasons = list(dict.fromkeys([*snapshot.reasons, "CONTEXT_ONLY_FRAME"]))
+            result = NoTrade(symbol, timeframe, reasons=["CONTEXT_ONLY_FRAME"], score=result.score)
         key = f"{symbol}:{timeframe}"
         self._analysis[key] = snapshot
         self.last_analysis_at = utc_now()
         await self.redis.set_json(f"analysis:{symbol}:{timeframe}", snapshot.to_dict(), ttl=900)
         if self.storage.enabled:
             await self.storage.upsert_analysis(snapshot)
-        if isinstance(result, Signal):
+        if isinstance(result, Signal) and create_signal:
             async with self._analysis_lock:
                 conflicting = any(
                     item.symbol == result.symbol and item.timeframe == result.timeframe and item.direction != result.direction and item.status in ACTIVE_STATUSES
@@ -271,7 +281,9 @@ class IndicatorService:
 
     def _data_fresh(self) -> bool:
         if not self.market.last_message_at:
-            return self.settings.disable_auto_start
+            return False
+        if self.storage.enabled and (not self.storage.last_success_at or self.storage.last_error):
+            return False
         try:
             last = datetime.fromisoformat(self.market.last_message_at)
             return (datetime.now(timezone.utc) - last).total_seconds() <= self.settings.stale_data_seconds
@@ -292,7 +304,7 @@ class IndicatorService:
             return data
         snapshot = self._analysis[key]
         data = snapshot.to_dict()
-        candidates = [item for item in self._signals.values() if item.symbol == snapshot.symbol and item.timeframe == snapshot.timeframe]
+        candidates = [item for item in self._signals.values() if item.symbol == snapshot.symbol and item.timeframe == snapshot.timeframe and item.status in ACTIVE_STATUSES]
         signal = max(candidates, key=lambda item: item.created_at, default=None)
         data["result"] = signal.to_dict() if signal else {"decision": "NO TRADE", "reasons": snapshot.reasons, "score": max(snapshot.bullish_score, snapshot.bearish_score)}
         return data
@@ -316,12 +328,14 @@ class IndicatorService:
         if completed_only:
             local = [item for item in local if item.status in COMPLETED_STATUSES]
         local_by_id = {item.id: item for item in local}
-        if self.storage.enabled and not active_only:
-            stored = await self.storage.list_trades(symbol, timeframe, limit, active_only=False)
+        if self.storage.enabled:
+            stored = await self.storage.list_trades(symbol, timeframe, limit, active_only=active_only)
             for row in stored:
                 try:
                     trade = Trade.from_dict(row)
                 except (KeyError, TypeError, ValueError):
+                    continue
+                if active_only and trade.status not in ACTIVE_STATUSES:
                     continue
                 if completed_only and trade.status not in COMPLETED_STATUSES:
                     continue
@@ -359,6 +373,6 @@ class IndicatorService:
             "last_analysis_at": self.last_analysis_at, "last_signal_at": self.last_signal_at,
             "latest_prices": self._latest_prices, "subscriber_count": len(self._subscribers),
             "market": self.market.status(),
-            "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.last_success_at), "supabase_last_success_at": self.storage.last_success_at, "supabase_last_error": self.storage.last_error, "redis_connected": self.redis.enabled},
+            "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.last_success_at and not self.storage.last_error), "supabase_last_success_at": self.storage.last_success_at, "supabase_last_error": self.storage.last_error, "redis_connected": self.redis.enabled},
             "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "analysis_timeframes": self.settings.analysis_timeframes, "stream_timeframes": self.settings.stream_timeframes, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},
         }

@@ -108,7 +108,7 @@ class SupabaseStore:
         if timeframe:
             params["timeframe"] = f"eq.{timeframe.lower()}"
         if active_only:
-            params["status"] = "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE,TP1_HIT)"
+            params["status"] = "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE)"
         result = await self._request("GET", "indicator_trades", params=params)
         return result if isinstance(result, list) else []
 

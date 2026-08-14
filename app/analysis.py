@@ -83,8 +83,9 @@ class AnalysisEngine:
         return snapshot, signal
 
     def _health(self, entry: list[Candle], structure: list[Candle], htf: list[Candle], fresh: bool) -> dict[str, Any]:
-        if not entry or not structure or not htf:
-            return {"healthy": False, "reason": "INSUFFICIENT_HISTORY", "fresh": fresh}
+        minimum = max(50, self.settings.atr_period + self.settings.swing_left + self.settings.swing_right + 5)
+        if min(len(entry), len(structure), len(htf)) < minimum:
+            return {"healthy": False, "reason": "INSUFFICIENT_HISTORY", "fresh": fresh, "minimum": minimum, "entry_count": len(entry), "structure_count": len(structure), "htf_count": len(htf)}
         try:
             for candle in entry[-min(50, len(entry)):]:
                 candle.validate()
