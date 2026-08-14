@@ -63,3 +63,7 @@ def test_api_contracts_work_without_external_integrations():
         assert timeframes.status_code == 200
         assert health.status_code == 200
         assert health.json()["started"] is True
+        with client.websocket_connect("/ws/market") as websocket:
+            first = websocket.receive_json()
+            assert first["type"] == "status"
+            assert first["channel"] == "market"

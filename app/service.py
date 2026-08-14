@@ -20,7 +20,7 @@ class IndicatorService:
         self.analysis_engine = AnalysisEngine(settings)
         self.storage = SupabaseStore(settings)
         self.redis = RedisStore(settings)
-        self.market = BinanceMarketData(settings, self.on_candle_closed)
+        self.market = BinanceMarketData(settings, on_candle=self.on_candle, on_candle_closed=self.on_candle_closed)
         self.started = False
         self.starting = False
         self.started_at: str | None = None
@@ -31,6 +31,7 @@ class IndicatorService:
         self._analysis: dict[str, AnalysisSnapshot] = {}
         self._signals: dict[str, Signal] = {}
         self._signal_lock = asyncio.Lock()
+        self._subscribers: set[asyncio.Queue] = set()
 
     async def start(self) -> None:
         if self.started or self.starting:
@@ -52,6 +53,31 @@ class IndicatorService:
         await self.storage.close()
         self.started = False
 
+    def subscribe(self) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        self._subscribers.discard(queue)
+
+    async def _broadcast(self, event: dict[str, Any]) -> None:
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    pass
+
+    async def on_candle(self, candle: Candle) -> None:
+        await self._broadcast({"type": "candle", "payload": candle.to_dict()})
+
     async def on_candle_closed(self, candle: Candle) -> None:
         if candle.timeframe != self.settings.entry_timeframe:
             return
@@ -59,7 +85,10 @@ class IndicatorService:
         if self.storage.enabled:
             await self.storage.upsert_candle(candle)
         await self._update_signal_lifecycle(candle)
-        await self.analyze(candle.symbol, candle.timeframe)
+        snapshot, result = await self.analyze(candle.symbol, candle.timeframe)
+        await self._broadcast({"type": "analysis", "payload": {**snapshot.to_dict(), "result": result.to_dict()}})
+        if isinstance(result, Signal):
+            await self._broadcast({"type": "signal", "payload": result.to_dict()})
 
     async def _update_signal_lifecycle(self, candle: Candle) -> None:
         changed: list[Signal] = []
@@ -176,6 +205,7 @@ class IndicatorService:
             "signal_count": self.signal_count,
             "last_analysis_at": self.last_analysis_at,
             "last_signal_at": self.last_signal_at,
+            "subscriber_count": len(self._subscribers),
             "market": self.market.status(),
             "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.enabled and self.storage._client), "redis_connected": self.redis.enabled},
             "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},

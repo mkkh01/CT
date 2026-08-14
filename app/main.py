@@ -95,26 +95,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def settings():
         return {"app": {"name": app_settings.app_name, "version": app_settings.app_version, "timezone": app_settings.timezone}, "market": {"exchange": app_settings.exchange, "market_type": app_settings.market_type}, "signal": {"min_score": app_settings.min_signal_score, "min_direction_gap": app_settings.min_direction_gap, "require_closed_candle": app_settings.require_closed_candle}, "risk": {"tp1_rr": app_settings.rr_tp1, "tp2_rr": app_settings.rr_tp2}, "multi_timeframe": app_settings.mtf_mapping, "config_version": app_settings.config_version}
 
-    async def websocket_status(websocket: WebSocket, channel: str):
+    async def websocket_stream(websocket: WebSocket, channel: str):
         await websocket.accept()
+        queue = service.subscribe()
         try:
+            await websocket.send_json({"channel": channel, "type": "status", "payload": service.status()})
             while True:
-                await websocket.send_json({"channel": channel, "type": "status", "payload": service.status()})
-                await asyncio.sleep(5)
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=5)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"channel": channel, "type": "status", "payload": service.status()})
+                    continue
+                event_type = event.get("type")
+                allowed = (channel == "market" and event_type == "candle") or (channel == "analysis" and event_type == "analysis") or (channel == "signals" and event_type == "signal")
+                if allowed:
+                    await websocket.send_json({"channel": channel, **event})
         except (WebSocketDisconnect, asyncio.CancelledError):
             return
+        finally:
+            service.unsubscribe(queue)
 
     @app.websocket("/ws/market")
     async def market_socket(websocket: WebSocket):
-        await websocket_status(websocket, "market")
+        await websocket_stream(websocket, "market")
 
     @app.websocket("/ws/analysis")
     async def analysis_socket(websocket: WebSocket):
-        await websocket_status(websocket, "analysis")
+        await websocket_stream(websocket, "analysis")
 
     @app.websocket("/ws/signals")
     async def signals_socket(websocket: WebSocket):
-        await websocket_status(websocket, "signals")
+        await websocket_stream(websocket, "signals")
 
     return app
 

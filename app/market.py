@@ -12,6 +12,7 @@ from .config import Settings
 from .models import Candle
 
 logger = logging.getLogger(__name__)
+CandleCallback = Callable[[Candle], Awaitable[None]]
 CandleClosedCallback = Callable[[Candle], Awaitable[None]]
 
 
@@ -55,9 +56,10 @@ class CandleStore:
 
 
 class BinanceMarketData:
-    def __init__(self, settings: Settings, on_candle_closed: CandleClosedCallback | None = None):
+    def __init__(self, settings: Settings, on_candle: CandleCallback | None = None, on_candle_closed: CandleClosedCallback | None = None):
         self.settings = settings
         self.store = CandleStore(settings.history_limit)
+        self.on_candle = on_candle
         self.on_candle_closed = on_candle_closed
         self.started = False
         self.connected = False
@@ -117,7 +119,7 @@ class BinanceMarketData:
         return Candle(
             symbol=symbol, timeframe=timeframe, open_time=int(row[0]), close_time=int(row[6]),
             open=float(row[1]), high=float(row[2]), low=float(row[3]), close=float(row[4]),
-            volume=float(row[5]), is_closed=True, source="binance_rest",
+            volume=float(row[5]), is_closed=(datetime.now(timezone.utc).timestamp() * 1000 >= int(row[6])), source="binance_rest",
         )
 
     @staticmethod
@@ -158,6 +160,8 @@ class BinanceMarketData:
                         except ValueError as exc:
                             self.last_error = f"invalid_candle:{exc}"
                             continue
+                        if self.on_candle:
+                            await self.on_candle(candle)
                         if candle.is_closed and self.on_candle_closed:
                             await self.on_candle_closed(candle)
             except asyncio.CancelledError:
