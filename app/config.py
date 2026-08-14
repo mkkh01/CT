@@ -56,7 +56,7 @@ class Settings:
     structure_timeframe: str = "1h"
     htf_timeframe: str = "4h"
     analysis_timeframes: list[str] = field(default_factory=lambda: ["5m", "15m", "1h"])
-    stream_timeframes: list[str] = field(default_factory=lambda: ["5m", "15m", "1h"])
+    stream_timeframes: list[str] = field(default_factory=lambda: list(SUPPORTED_TIMEFRAMES))
     min_signal_score: float = 80.0
     min_direction_gap: float = 15.0
     require_closed_candle: bool = True
@@ -85,7 +85,7 @@ class Settings:
         structure = os.getenv("STRUCTURE_TIMEFRAME", os.getenv("TRIGGER_TIMEFRAME", "1h")).strip().lower()
         htf = os.getenv("HTF_TIMEFRAME", os.getenv("HIGHER_TIMEFRAME", "4h")).strip().lower()
         analysis_timeframes = _timeframes(os.getenv("ANALYSIS_TIMEFRAMES"), ["5m", "15m", "1h"])
-        stream_timeframes = _timeframes(os.getenv("STREAM_TIMEFRAMES"), list(analysis_timeframes))
+        stream_timeframes = _timeframes(os.getenv("STREAM_TIMEFRAMES"), list(SUPPORTED_TIMEFRAMES))
         if entry not in SUPPORTED_TIMEFRAMES:
             entry = "15m"
         if structure not in SUPPORTED_TIMEFRAMES:

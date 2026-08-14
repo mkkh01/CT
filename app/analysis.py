@@ -35,7 +35,7 @@ class AnalysisEngine:
         momentum = momentum_context(entry_candles)
         volatility = {"atr": atr(entry_candles, self.settings.atr_period), "regime": self._volatility_regime(entry_candles)}
         context_zones = self._nearby_zones(entry_candles, fvg + ifvg + order_blocks)
-        bullish, bearish, reasons = self._scores(
+        bullish, bearish, reasons, score_breakdown = self._scores(
             htf_structure, structure, liquidity, context_zones, volume, momentum, volatility
         )
         decision: str = "NO TRADE"
@@ -59,6 +59,7 @@ class AnalysisEngine:
             volatility=volatility,
             bullish_score=round(bullish, 2),
             bearish_score=round(bearish, 2),
+            score_breakdown=score_breakdown,
             decision=decision if health["healthy"] else "NO TRADE",
             reasons=reasons,
         )
@@ -226,34 +227,49 @@ class AnalysisEngine:
             return "CHAOTIC"
         return "NORMAL"
 
-    def _scores(self, htf: StructureSnapshot, structure: StructureSnapshot, liquidity: list[dict[str, Any]], context_zones: list[dict[str, Any]], volume: dict[str, Any], momentum: dict[str, Any], volatility: dict[str, Any]) -> tuple[float, float, list[str]]:
+    def _scores(self, htf: StructureSnapshot, structure: StructureSnapshot, liquidity: list[dict[str, Any]], context_zones: list[dict[str, Any]], volume: dict[str, Any], momentum: dict[str, Any], volatility: dict[str, Any]) -> tuple[float, float, list[str], list[dict[str, Any]]]:
         bullish = 0.0
         bearish = 0.0
         reasons: list[str] = []
-        if htf.trend == "BULLISH": bullish += 20; reasons.append("HTF bullish structure")
-        elif htf.trend == "BEARISH": bearish += 20; reasons.append("HTF bearish structure")
-        if structure.trend == "BULLISH": bullish += 20; reasons.append("Bullish market structure")
-        elif structure.trend == "BEARISH": bearish += 20; reasons.append("Bearish market structure")
-        if structure.bos == "BULLISH": bullish += 5; reasons.append("Bullish BOS confirmed")
-        elif structure.bos == "BEARISH": bearish += 5; reasons.append("Bearish BOS confirmed")
+        breakdown: list[dict[str, Any]] = []
+
+        def add(direction: str, points: float, reason: str, factor: str) -> None:
+            nonlocal bullish, bearish
+            if direction == "BUY":
+                bullish += points
+            else:
+                bearish += points
+            reasons.append(reason)
+            breakdown.append({"factor": factor, "direction": direction, "points": points, "reason": reason})
+
+        if htf.trend == "BULLISH": add("BUY", 20, "HTF bullish structure", "HTF_STRUCTURE")
+        elif htf.trend == "BEARISH": add("SELL", 20, "HTF bearish structure", "HTF_STRUCTURE")
+        if structure.trend == "BULLISH": add("BUY", 20, "Bullish market structure", "ENTRY_STRUCTURE")
+        elif structure.trend == "BEARISH": add("SELL", 20, "Bearish market structure", "ENTRY_STRUCTURE")
+        if structure.bos == "BULLISH": add("BUY", 5, "Bullish BOS confirmed", "BOS")
+        elif structure.bos == "BEARISH": add("SELL", 5, "Bearish BOS confirmed", "BOS")
         for item in liquidity:
             if item.get("status") == "SWEEP_CONFIRMED":
-                if item["direction"] == "BUY": bullish += 15; reasons.append("Liquidity sweep confirmed for BUY")
-                else: bearish += 15; reasons.append("Liquidity sweep confirmed for SELL")
+                if item["direction"] == "BUY": add("BUY", 15, "Liquidity sweep confirmed for BUY", "LIQUIDITY_SWEEP")
+                else: add("SELL", 15, "Liquidity sweep confirmed for SELL", "LIQUIDITY_SWEEP")
         buy_context = sum(item.get("direction") == "BUY" for item in context_zones)
         sell_context = sum(item.get("direction") == "SELL" for item in context_zones)
-        bullish += min(buy_context, 2) * 5
-        bearish += min(sell_context, 2) * 5
-        if buy_context: reasons.append(f"Bullish nearby FVG/IFVG/OB context ({buy_context})")
-        if sell_context: reasons.append(f"Bearish nearby FVG/IFVG/OB context ({sell_context})")
-        if momentum.get("direction") == "BULLISH": bullish += 10; reasons.append("Positive momentum")
-        elif momentum.get("direction") == "BEARISH": bearish += 10; reasons.append("Negative momentum")
+        if buy_context: add("BUY", min(buy_context, 2) * 5, f"Bullish nearby FVG/IFVG/OB context ({buy_context})", "CONTEXT_ZONES")
+        if sell_context: add("SELL", min(sell_context, 2) * 5, f"Bearish nearby FVG/IFVG/OB context ({sell_context})", "CONTEXT_ZONES")
+        if momentum.get("direction") == "BULLISH": add("BUY", 10, "Positive momentum", "MOMENTUM")
+        elif momentum.get("direction") == "BEARISH": add("SELL", 10, "Negative momentum", "MOMENTUM")
         if volume.get("above_average"):
-            if momentum.get("direction") == "BULLISH": bullish += 10; reasons.append("Volume above average")
-            elif momentum.get("direction") == "BEARISH": bearish += 10; reasons.append("Volume above average")
+            if momentum.get("direction") == "BULLISH": add("BUY", 10, "Volume above average", "VOLUME")
+            elif momentum.get("direction") == "BEARISH": add("SELL", 10, "Volume above average", "VOLUME")
         if volatility.get("regime") == "NORMAL":
-            bullish += 5; bearish += 5
-        return min(bullish, 100.0), min(bearish, 100.0), list(dict.fromkeys(reasons))
+            if momentum.get("direction") == "BULLISH":
+                add("BUY", 5, "Normal volatility supports bullish momentum", "VOLATILITY")
+            elif momentum.get("direction") == "BEARISH":
+                add("SELL", 5, "Normal volatility supports bearish momentum", "VOLATILITY")
+            else:
+                reasons.append("Normal volatility is neutral")
+                breakdown.append({"factor": "VOLATILITY", "direction": "NEUTRAL", "points": 0, "reason": "Normal volatility is neutral"})
+        return min(bullish, 100.0), min(bearish, 100.0), list(dict.fromkeys(reasons)), breakdown
 
     def _build_signal(self, symbol: str, timeframe: str, direction: str, score: float, candles: list[Candle], structure: StructureSnapshot, liquidity: list[dict[str, Any]], fvg: list[dict[str, Any]], ifvg: list[dict[str, Any]], obs: list[dict[str, Any]], volume: dict[str, Any], momentum: dict[str, Any], htf: StructureSnapshot, health: dict[str, Any], reasons: list[str]) -> Signal | None:
         entry = candles[-1].close

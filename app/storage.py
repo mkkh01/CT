@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
-from .models import AnalysisSnapshot, Candle, Signal
+from .models import AnalysisSnapshot, Candle, Signal, Trade
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,24 @@ class SupabaseStore:
 
     async def update_signal_status(self, signal: Signal) -> Any:
         return await self._request("PATCH", f"indicator_signals?id=eq.{signal.id}", payload={"status": signal.status, "payload": signal.to_dict()}, prefer="return=minimal")
+
+    async def insert_trade(self, trade: Trade) -> Any:
+        row = trade.to_dict()
+        return await self._request("POST", "indicator_trades", payload=row, prefer="resolution=merge-duplicates,return=minimal")
+
+    async def update_trade(self, trade: Trade) -> Any:
+        return await self._request("PATCH", f"indicator_trades?id=eq.{trade.id}", payload=trade.to_dict(), prefer="return=minimal")
+
+    async def list_trades(self, symbol: str | None = None, timeframe: str | None = None, limit: int = 100, active_only: bool = False) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"select": "*", "order": "created_at.desc", "limit": str(min(max(limit, 1), 500))}
+        if symbol:
+            params["symbol"] = f"eq.{symbol.upper()}"
+        if timeframe:
+            params["timeframe"] = f"eq.{timeframe.lower()}"
+        if active_only:
+            params["status"] = "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE,TP1_HIT)"
+        result = await self._request("GET", "indicator_trades", params=params)
+        return result if isinstance(result, list) else []
 
     async def list_signals(self, symbol: str, timeframe: str, limit: int = 50) -> list[dict[str, Any]]:
         result = await self._request("GET", "indicator_signals", params={"select": "*", "symbol": f"eq.{symbol}", "timeframe": f"eq.{timeframe}", "order": "created_at.desc", "limit": str(min(max(limit, 1), 200))})

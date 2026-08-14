@@ -85,6 +85,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def signals(symbol: str, timeframe: str, limit: int = Query(default=50, ge=1, le=200)):
         return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "signals": await service.get_signals(symbol, timeframe, limit)}
 
+    @app.get("/api/v1/trades")
+    async def trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500), active_only: bool = False):
+        if symbol and symbol.upper() not in app_settings.symbols:
+            raise HTTPException(status_code=404, detail="unsupported_symbol")
+        if timeframe and timeframe.lower() not in SUPPORTED_TIMEFRAMES:
+            raise HTTPException(status_code=400, detail="unsupported_timeframe")
+        return {"trades": await service.get_trades(symbol, timeframe, limit, active_only), "active_only": active_only}
+
     @app.post("/api/v1/backtests")
     async def backtests(symbol: str, timeframe: str, limit: int = Query(default=500, ge=100, le=1000)):
         if symbol.upper() not in app_settings.symbols:
@@ -111,7 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await websocket.send_json({"channel": channel, "type": "status", "payload": service.status()})
                     continue
                 event_type = event.get("type")
-                allowed = (channel == "market" and event_type == "candle") or (channel == "analysis" and event_type == "analysis") or (channel == "signals" and event_type == "signal")
+                allowed = (channel == "market" and event_type == "candle") or (channel == "analysis" and event_type == "analysis") or (channel == "signals" and event_type in {"signal", "trade"})
                 if allowed:
                     await websocket.send_json({"channel": channel, **event})
         except (WebSocketDisconnect, asyncio.CancelledError):

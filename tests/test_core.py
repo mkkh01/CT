@@ -6,7 +6,8 @@ from app.analysis import AnalysisEngine
 from app.config import SUPPORTED_TIMEFRAMES, Settings
 from app.indicators import atr, detect_swings, ema, rsi
 from app.main import create_app
-from app.models import Candle
+from app.models import Candle, Signal
+from app.service import IndicatorService
 
 
 def make_candles(count: int = 80) -> list[Candle]:
@@ -75,3 +76,33 @@ def test_api_contracts_work_without_external_integrations():
             first = websocket.receive_json()
             assert first["type"] == "status"
             assert first["channel"] == "market"
+
+
+def test_trades_endpoint_is_available_without_external_integrations():
+    settings = Settings(symbols=["BTCUSDT"], disable_auto_start=True)
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/api/v1/trades?symbol=BTCUSDT&timeframe=5m")
+        assert response.status_code == 200
+        assert response.json() == {"trades": [], "active_only": False}
+
+
+def test_trade_lifecycle_records_entry_and_tp1_reason():
+    async def scenario():
+        service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+        signal = Signal(
+            id="trade-test-1", symbol="BTCUSDT", timeframe="5m", direction="BUY", status="SIGNAL_CONFIRMED",
+            score=72, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:00:00+00:00",
+            signal_version="test", risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=["test reason"],
+            structure={}, liquidity={}, fvg={}, order_block={}, volume={}, momentum={}, trend={}, data_health={}, metadata={"entry_open_time": 0},
+        )
+        service._signals[signal.id] = signal
+        await service._update_signal_lifecycle(Candle("BTCUSDT", "5m", 0, 299999, 99, 101, 98, 100, 10, True))
+        assert service._trades[signal.id].status == "ACTIVE"
+        await service._update_signal_lifecycle(Candle("BTCUSDT", "5m", 300000, 599999, 104, 106, 103, 105, 10, True))
+        trade = service._trades[signal.id]
+        assert trade.status == "TP1_HIT"
+        assert trade.close_reason == "TP1_REACHED_PARTIAL_TARGET"
+        assert trade.last_price == 105
+
+    import asyncio
+    asyncio.run(scenario())
