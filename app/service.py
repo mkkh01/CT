@@ -263,34 +263,45 @@ class IndicatorService:
             await self.redis.set_json(f"signal:{signal.symbol}:{signal.timeframe}", signal.to_dict(), ttl=86400)
             await self._broadcast({"type": "trade", "payload": trade.to_dict()})
 
-    async def analyze(self, symbol: str, timeframe: str | None = None) -> tuple[AnalysisSnapshot, Signal | NoTrade]:
+    async def analyze(self, symbol: str, timeframe: str | None = None, create_signal: bool | None = None) -> tuple[AnalysisSnapshot, Signal | NoTrade]:
         symbol = symbol.upper()
         timeframe = (timeframe or self.settings.entry_timeframe).lower()
+        if create_signal is None:
+            create_signal = timeframe == self.settings.entry_timeframe
         mapping = self.settings.mtf_mapping.get(timeframe, [self.settings.structure_timeframe, self.settings.htf_timeframe])
         structure_timeframe, htf_timeframe = mapping[0], mapping[1]
         await self.market.ensure_history(symbol, timeframe)
         await self.market.ensure_history(symbol, structure_timeframe)
         await self.market.ensure_history(symbol, htf_timeframe)
-        entry = await self.market.snapshot(symbol, timeframe)
-        structure = await self.market.snapshot(symbol, structure_timeframe)
-        htf = await self.market.snapshot(symbol, htf_timeframe)
+        entry_raw = await self.market.snapshot(symbol, timeframe)
+        structure_raw = await self.market.snapshot(symbol, structure_timeframe)
+        htf_raw = await self.market.snapshot(symbol, htf_timeframe)
+        entry = [candle for candle in entry_raw if candle.is_closed]
+        structure = [candle for candle in structure_raw if candle.is_closed]
+        htf = [candle for candle in htf_raw if candle.is_closed]
         snapshot, result = self.analysis_engine.analyze(symbol, timeframe, entry, structure, htf, data_fresh=self._data_fresh())
+        if isinstance(result, Signal) and not create_signal:
+            snapshot.decision = "NO TRADE"
+            snapshot.reasons = list(dict.fromkeys([*snapshot.reasons, "CONTEXT_ONLY_FRAME"]))
+            result = NoTrade(symbol, timeframe, reasons=["CONTEXT_ONLY_FRAME"], score=result.score)
         key = f"{symbol}:{timeframe}"
         self._analysis[key] = snapshot
         self.last_analysis_at = utc_now()
         await self.redis.set_json(f"analysis:{symbol}:{timeframe}", snapshot.to_dict(), ttl=900)
         if self.storage.enabled:
             await self.storage.upsert_analysis(snapshot)
-        if isinstance(result, Signal):
+        if isinstance(result, Signal) and create_signal:
             async with self._analysis_lock:
-                conflicting = any(
-                    item.symbol == result.symbol and item.timeframe == result.timeframe and item.direction != result.direction and item.status in ACTIVE_STATUSES
-                    for item in self._signals.values()
-                )
-                if conflicting:
+                active_existing = [
+                    item for item in self._signals.values()
+                    if item.symbol == result.symbol and item.timeframe == result.timeframe and item.status in ACTIVE_STATUSES
+                ]
+                if active_existing:
+                    has_opposite = any(item.direction != result.direction for item in active_existing)
+                    reason = "CONFLICTING ACTIVE SIGNAL" if has_opposite else "ACTIVE SIGNAL ALREADY EXISTS"
                     snapshot.decision = "NO TRADE"
-                    snapshot.reasons.append("CONFLICTING ACTIVE SIGNAL")
-                    result = NoTrade(result.symbol, result.timeframe, reasons=["CONFLICTING ACTIVE SIGNAL"], score=result.score)
+                    snapshot.reasons.append(reason)
+                    result = NoTrade(result.symbol, result.timeframe, reasons=[reason], score=result.score)
                 elif result.id not in self._signals:
                     self._signals[result.id] = result
                     trade = self._trade_from_signal(result)

@@ -3,10 +3,12 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.analysis import AnalysisEngine
+import asyncio
+
 from app.config import SUPPORTED_TIMEFRAMES, Settings
 from app.indicators import atr, detect_swings, ema, rsi
 from app.main import create_app
-from app.models import Candle, Signal
+from app.models import Candle, NoTrade, Signal
 from app.service import IndicatorService
 
 
@@ -133,4 +135,32 @@ def test_trade_lifecycle_records_entry_and_tp1_reason():
         assert trade.payload["outcome"]["reason"] == "TP1_REACHED_PARTIAL_TARGET"
 
     import asyncio
+    asyncio.run(scenario())
+
+
+def test_only_entry_timeframe_creates_paper_trade():
+    async def scenario():
+        service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+        signal = Signal(
+            id="entry-timeframe-signal", symbol="BTCUSDT", timeframe="15m", direction="BUY", status="SIGNAL_CONFIRMED",
+            score=85, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:00:00+00:00",
+            signal_version="test", risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=["test"],
+            structure={}, liquidity={}, fvg={}, order_block={}, volume={}, momentum={}, trend={}, data_health={}, metadata={},
+        )
+        class Snapshot:
+            decision = "BUY"
+            reasons = ["test"]
+            def to_dict(self):
+                return {"symbol": "BTCUSDT", "timeframe": "5m", "decision": self.decision, "reasons": self.reasons}
+        service.market.ensure_history = lambda *args: asyncio.sleep(0)
+        service.market.snapshot = lambda *args: asyncio.sleep(0, result=[])
+        service.analysis_engine.analyze = lambda *args, **kwargs: (Snapshot(), signal)
+        _, context_result = await service.analyze("BTCUSDT", "5m")
+        assert isinstance(context_result, NoTrade)
+        assert "CONTEXT_ONLY_FRAME" in context_result.reasons
+        assert service._trades == {}
+        _, entry_result = await service.analyze("BTCUSDT", "15m")
+        assert isinstance(entry_result, Signal)
+        assert service._trades[signal.id].status == "SIGNAL_CONFIRMED"
+
     asyncio.run(scenario())
