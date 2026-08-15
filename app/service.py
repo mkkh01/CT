@@ -67,21 +67,32 @@ class IndicatorService:
                     self._signals[trade.signal_id] = Signal.from_dict(signal_payload)
 
             # Reconcile active signals that predate indicator_trades or lost their trade row.
-            active_signals = await self.storage.list_active_signals(limit=500)
+            reconciliation_signals = await self.storage.list_signals_for_reconciliation(limit=500)
             repaired = 0
-            for row in active_signals:
+            for row in reconciliation_signals:
                 signal = Signal.from_dict(row.get("payload") if isinstance(row.get("payload"), dict) else row)
                 self._signals[signal.id] = signal
                 if signal.id in self._trades:
                     continue
                 trade = self._trade_from_signal(signal)
                 self._trades[trade.id] = trade
-                await self.storage.insert_trade(trade)
+                await self._persist_new_signal_trade(signal, trade)
                 repaired += 1
             self.signal_count = len(self._signals)
             logger.info("active_trades_restored count=%s reconciled=%s", len(self._trades), repaired)
         except Exception as exc:
             logger.warning("active_trades_restore_failed error=%s", exc)
+
+    async def _persist_new_signal_trade(self, signal: Signal, trade: Trade) -> None:
+        if not self.storage.enabled:
+            return
+        signal_result = await self.storage.insert_signal(signal)
+        trade_result = await self.storage.insert_trade(trade)
+        if signal_result is None or trade_result is None:
+            logger.error(
+                "signal_trade_persist_incomplete signal_id=%s signal_saved=%s trade_saved=%s",
+                signal.id, signal_result is not None, trade_result is not None,
+            )
 
     async def _persist_runtime(self, force: bool = False) -> None:
         if not self.storage.enabled:
@@ -151,11 +162,17 @@ class IndicatorService:
             await self._broadcast({"type": "signal", "payload": result.to_dict()})
 
     def _trade_from_signal(self, signal: Signal) -> Trade:
+        metadata = signal.metadata or {}
+        outcome = metadata.get("outcome") if isinstance(metadata.get("outcome"), dict) else {}
         return Trade(
             id=signal.id, signal_id=signal.id, symbol=signal.symbol, timeframe=signal.timeframe,
             direction=signal.direction, status=signal.status, score=signal.score, entry=signal.entry,
             stop_loss=signal.stop_loss, tp1=signal.tp1, tp2=signal.tp2, created_at=signal.created_at,
-            reasons=list(signal.reasons), payload={"signal": signal.to_dict()},
+            activated_at=metadata.get("entry_at"), tp1_hit_at=metadata.get("tp1_hit_at"),
+            exit_at=metadata.get("exit_at"), exit_price=metadata.get("exit_price"),
+            close_reason=metadata.get("close_reason") or outcome.get("reason"),
+            last_price=metadata.get("last_price"), last_candle_open_time=metadata.get("last_candle_open_time"),
+            reasons=list(signal.reasons), payload={"signal": signal.to_dict(), "outcome": outcome} if outcome else {"signal": signal.to_dict()},
         )
 
     @staticmethod
@@ -190,10 +207,12 @@ class IndicatorService:
                 if reached_entry:
                     trade.status = signal.status = "ACTIVE"
                     trade.activated_at = trade.activated_at or utc_now()
+                    signal.metadata.update({"entry_price": signal.entry, "entry_at": trade.activated_at})
                 elif age >= self.settings.max_pending_candles * interval:
                     trade.status = signal.status = "EXPIRED"
                     trade.exit_at = utc_now()
                     trade.close_reason = self._close_reason("EXPIRED")
+                    signal.metadata["outcome"] = {"kind": "EXPIRED", "reason": trade.close_reason}
 
             if trade.status in {"ACTIVE", "TP1_HIT"}:
                 both_stop_and_target = False
@@ -211,22 +230,29 @@ class IndicatorService:
                     trade.exit_at = utc_now()
                     trade.exit_price = signal.stop_loss
                     trade.close_reason = "STOP_LOSS_REACHED_CONSERVATIVE_INTRABAR_PRIORITY" if both_stop_and_target else self._close_reason("SL_HIT")
+                    signal.metadata["outcome"] = {"kind": "LOSS", "reason": trade.close_reason, "exit_price": trade.exit_price}
                 elif tp2_hit:
                     trade.status = signal.status = "TP2_HIT"
                     trade.exit_at = utc_now()
                     trade.exit_price = signal.tp2
                     trade.close_reason = self._close_reason("TP2_HIT")
+                    signal.metadata["outcome"] = {"kind": "WIN", "reason": trade.close_reason, "exit_price": trade.exit_price}
                 elif trade.status == "ACTIVE" and tp1_hit:
                     trade.status = signal.status = "TP1_HIT"
                     trade.tp1_hit_at = trade.tp1_hit_at or utc_now()
+                    signal.metadata["tp1_hit_at"] = trade.tp1_hit_at
                     trade.close_reason = "TP1_REACHED_PARTIAL_TARGET"
+                    signal.metadata["outcome"] = {"kind": "PARTIAL_WIN", "reason": trade.close_reason, "exit_price": signal.tp1}
 
             if status_before != trade.status or trade.status in ACTIVE_STATUSES or trade.status in TERMINAL_STATUSES:
                 signal.metadata.update({
                     "last_price": trade.last_price, "last_candle_open_time": trade.last_candle_open_time,
                     "exit_price": trade.exit_price, "exit_at": trade.exit_at, "close_reason": trade.close_reason,
+                    "tp1_hit_at": trade.tp1_hit_at,
                 })
                 trade.payload["signal"] = signal.to_dict()
+                if "outcome" in signal.metadata:
+                    trade.payload["outcome"] = signal.metadata["outcome"]
                 changed_signals.append(signal)
                 changed_trades.append(trade)
 
@@ -272,9 +298,7 @@ class IndicatorService:
                     self.signal_count += 1
                     self.last_signal_at = result.created_at
                     await self.redis.set_json(f"signal:{symbol}:{timeframe}", result.to_dict(), ttl=86400)
-                    if self.storage.enabled:
-                        await self.storage.insert_signal(result)
-                        await self.storage.insert_trade(trade)
+                    await self._persist_new_signal_trade(result, trade)
                     await self._broadcast({"type": "trade", "payload": trade.to_dict()})
         return snapshot, result
 

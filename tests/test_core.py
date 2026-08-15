@@ -123,11 +123,14 @@ def test_trade_lifecycle_records_entry_and_tp1_reason():
         service._signals[signal.id] = signal
         await service._update_signal_lifecycle(Candle("BTCUSDT", "5m", 0, 299999, 99, 101, 98, 100, 10, True))
         assert service._trades[signal.id].status == "ACTIVE"
+        assert signal.metadata["entry_price"] == 100
         await service._update_signal_lifecycle(Candle("BTCUSDT", "5m", 300000, 599999, 104, 106, 103, 105, 10, True))
         trade = service._trades[signal.id]
         assert trade.status == "TP1_HIT"
         assert trade.close_reason == "TP1_REACHED_PARTIAL_TARGET"
         assert trade.last_price == 105
+        assert signal.metadata["outcome"]["kind"] == "PARTIAL_WIN"
+        assert trade.payload["outcome"]["reason"] == "TP1_REACHED_PARTIAL_TARGET"
 
     import asyncio
     asyncio.run(scenario())

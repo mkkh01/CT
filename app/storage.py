@@ -46,10 +46,11 @@ class SupabaseStore:
             response = await self._client.request(method, f"{self.base_url}/rest/v1/{table}", params=params, json=payload, headers=headers)
             response.raise_for_status()
             if not response.content:
-                return None
+                return True
             return response.json()
         except httpx.HTTPError as exc:
-            logger.warning("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
+            body = exc.response.text[:500] if exc.response is not None else ""
+            logger.warning("supabase_request_failed table=%s method=%s error=%s body=%s", table, method, exc, body)
             return None
 
     async def upsert_candle(self, candle: Candle) -> Any:
@@ -106,6 +107,18 @@ class SupabaseStore:
             params={
                 "select": "*",
                 "status": "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE,TP1_HIT)",
+                "order": "created_at.desc",
+                "limit": str(min(max(limit, 1), 500)),
+            },
+        )
+        return result if isinstance(result, list) else []
+
+    async def list_signals_for_reconciliation(self, limit: int = 500) -> list[dict[str, Any]]:
+        result = await self._request(
+            "GET", "indicator_signals",
+            params={
+                "select": "*",
+                "status": "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE,TP1_HIT,TP2_HIT,SL_HIT,EXPIRED,INVALIDATED,CANCELLED)",
                 "order": "created_at.desc",
                 "limit": str(min(max(limit, 1), 500)),
             },
