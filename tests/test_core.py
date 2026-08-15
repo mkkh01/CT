@@ -86,6 +86,31 @@ def test_trades_endpoint_is_available_without_external_integrations():
         assert response.json() == {"trades": [], "active_only": False}
 
 
+def test_readiness_reports_paper_mode_without_market_connection():
+    settings = Settings(symbols=["BTCUSDT"], disable_auto_start=True)
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/api/v1/readiness")
+        assert response.status_code == 200
+        assert response.json()["execution_mode"] == "paper"
+        assert response.json()["ready"] is False
+
+
+def test_active_signals_includes_tp1_hit():
+    settings = Settings(symbols=["BTCUSDT"], disable_auto_start=True)
+    with TestClient(create_app(settings)) as client:
+        service = client.app.state.service
+        signal = Signal(
+            id="tp1-visible", symbol="BTCUSDT", timeframe="5m", direction="BUY", status="TP1_HIT",
+            score=80, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:00:00+00:00",
+            signal_version="test", risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=[],
+            structure={}, liquidity={}, fvg={}, order_block={}, volume={}, momentum={}, trend={}, data_health={}, metadata={},
+        )
+        service._signals[signal.id] = signal
+        response = client.get("/api/v1/signals/active")
+        assert response.status_code == 200
+        assert response.json()["signals"][0]["status"] == "TP1_HIT"
+
+
 def test_trade_lifecycle_records_entry_and_tp1_reason():
     async def scenario():
         service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))

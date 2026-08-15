@@ -44,7 +44,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/healthz")
     async def healthz():
         status = service.status()
-        return {"status": "ok", "service": app_settings.app_name, "integrations": status["integrations"], "market_connected": status["market"]["connected"], "started": status["started"]}
+        return {"status": status["status"], "service": app_settings.app_name, "integrations": status["integrations"], "market_connected": status["market"]["connected"], "started": status["started"], "ready_for_paper_analysis": status["ready_for_paper_analysis"]}
+
+    @app.get("/api/v1/readiness")
+    async def readiness():
+        status = service.status()
+        return {"ready": status["ready_for_paper_analysis"], "execution_mode": "paper", "market": status["market"], "reason": "OK" if status["ready_for_paper_analysis"] else "MARKET_STREAM_NOT_READY"}
 
     @app.get("/api/v1/health")
     async def api_health():
@@ -79,7 +84,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/signals/active")
     async def active_signals():
-        return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE"}]}
+        return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}]}
 
     @app.get("/api/v1/signals/{symbol}/{timeframe}")
     async def signals(symbol: str, timeframe: str, limit: int = Query(default=50, ge=1, le=200)):

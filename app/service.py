@@ -37,6 +37,7 @@ class IndicatorService:
         self._latest_prices: dict[str, dict[str, Any]] = {}
         self._analysis_lock = asyncio.Lock()
         self._subscribers: set[asyncio.Queue] = set()
+        self._last_runtime_persist_monotonic = 0.0
 
     async def start(self) -> None:
         if self.started or self.starting:
@@ -51,6 +52,7 @@ class IndicatorService:
                 await self.market.start()
             self.started = True
             self.started_at = utc_now()
+            await self._persist_runtime(force=True)
         finally:
             self.starting = False
 
@@ -63,10 +65,35 @@ class IndicatorService:
                 signal_payload = trade.payload.get("signal") if isinstance(trade.payload, dict) else None
                 if isinstance(signal_payload, dict):
                     self._signals[trade.signal_id] = Signal.from_dict(signal_payload)
+
+            # Reconcile active signals that predate indicator_trades or lost their trade row.
+            active_signals = await self.storage.list_active_signals(limit=500)
+            repaired = 0
+            for row in active_signals:
+                signal = Signal.from_dict(row.get("payload") if isinstance(row.get("payload"), dict) else row)
+                self._signals[signal.id] = signal
+                if signal.id in self._trades:
+                    continue
+                trade = self._trade_from_signal(signal)
+                self._trades[trade.id] = trade
+                await self.storage.insert_trade(trade)
+                repaired += 1
             self.signal_count = len(self._signals)
-            logger.info("active_trades_restored count=%s", len(self._trades))
+            logger.info("active_trades_restored count=%s reconciled=%s", len(self._trades), repaired)
         except Exception as exc:
             logger.warning("active_trades_restore_failed error=%s", exc)
+
+    async def _persist_runtime(self, force: bool = False) -> None:
+        if not self.storage.enabled:
+            return
+        now = asyncio.get_running_loop().time()
+        if not force and now - self._last_runtime_persist_monotonic < 30:
+            return
+        self._last_runtime_persist_monotonic = now
+        try:
+            await self.storage.upsert_runtime(self.status())
+        except Exception as exc:
+            logger.warning("runtime_state_persist_failed error=%s", exc)
 
     async def stop(self) -> None:
         await self.market.stop()
@@ -118,6 +145,7 @@ class IndicatorService:
             return
         self.cycle_count += 1
         snapshot, result = await self.analyze(candle.symbol, candle.timeframe)
+        await self._persist_runtime()
         await self._broadcast({"type": "analysis", "payload": {**snapshot.to_dict(), "result": result.to_dict()}})
         if isinstance(result, Signal):
             await self._broadcast({"type": "signal", "payload": result.to_dict()})
@@ -301,14 +329,18 @@ class IndicatorService:
         return []
 
     def status(self) -> dict[str, Any]:
+        market = self.market.status()
+        ready_for_paper_analysis = bool(self.started and market["connected"] and market["last_message_at"])
         return {
-            "status": "ok", "app_version": self.settings.app_version, "config_version": self.settings.config_version,
+            "status": "ok" if ready_for_paper_analysis else "degraded",
+            "ready_for_paper_analysis": ready_for_paper_analysis,
+            "app_version": self.settings.app_version, "config_version": self.settings.config_version,
             "started": self.started, "starting": self.starting, "started_at": self.started_at,
             "execution_mode": "paper", "cycle_count": self.cycle_count, "signal_count": self.signal_count,
             "trade_count": len(self._trades), "active_trade_count": sum(item.status in ACTIVE_STATUSES for item in self._trades.values()),
             "last_analysis_at": self.last_analysis_at, "last_signal_at": self.last_signal_at,
             "latest_prices": self._latest_prices, "subscriber_count": len(self._subscribers),
-            "market": self.market.status(),
+            "market": market,
             "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.enabled and self.storage._client), "redis_connected": self.redis.enabled},
             "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "analysis_timeframes": self.settings.analysis_timeframes, "stream_timeframes": self.settings.stream_timeframes, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},
         }

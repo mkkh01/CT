@@ -100,6 +100,18 @@ class SupabaseStore:
         result = await self._request("GET", "indicator_signals", params={"select": "*", "symbol": f"eq.{symbol}", "timeframe": f"eq.{timeframe}", "order": "created_at.desc", "limit": str(min(max(limit, 1), 200))})
         return result if isinstance(result, list) else []
 
+    async def list_active_signals(self, limit: int = 500) -> list[dict[str, Any]]:
+        result = await self._request(
+            "GET", "indicator_signals",
+            params={
+                "select": "*",
+                "status": "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE,TP1_HIT)",
+                "order": "created_at.desc",
+                "limit": str(min(max(limit, 1), 500)),
+            },
+        )
+        return result if isinstance(result, list) else []
+
     async def upsert_runtime(self, service_status: dict[str, Any]) -> Any:
         row = {"key": "default", "updated_at": service_status.get("updated_at"), "payload": service_status}
         return await self._request("POST", "indicator_runtime_state", payload=row, prefer="resolution=merge-duplicates,return=minimal")
