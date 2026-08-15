@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -20,8 +18,6 @@ class SupabaseStore:
         self.key = settings.supabase_key
         self.enabled = bool(self.base_url and self.key)
         self._client: httpx.AsyncClient | None = None
-        self.last_success_at: str | None = None
-        self.last_error: str | None = None
 
     async def startup(self) -> None:
         if self.enabled:
@@ -37,15 +33,8 @@ class SupabaseStore:
             return False
         try:
             response = await self._client.get(f"{self.base_url}/rest/v1/indicator_settings?select=key&limit=1")
-            if response.is_success:
-                self.last_success_at = datetime.now(timezone.utc).isoformat()
-                self.last_error = None
-                return True
-            self.last_error = f"ping_http_{response.status_code}"
-            logger.warning("supabase_ping_failed status=%s body=%s", response.status_code, response.text[:240])
-            return False
+            return response.status_code < 500
         except httpx.HTTPError as exc:
-            self.last_error = type(exc).__name__
             logger.warning("supabase_ping_failed error=%s", exc)
             return False
 
@@ -53,50 +42,24 @@ class SupabaseStore:
         if not self.enabled or not self._client:
             return None
         headers = {"Prefer": prefer} if prefer else {}
-        for attempt in range(2):
-            try:
-                response = await self._client.request(method, f"{self.base_url}/rest/v1/{table}", params=params, json=payload, headers=headers)
-                if response.is_error:
-                    retryable = response.status_code in {408, 429} or response.status_code >= 500
-                    if retryable and attempt == 0:
-                        await asyncio.sleep(0.25)
-                        continue
-                    self.last_error = f"{method}_{table}_http_{response.status_code}"
-                    logger.error("supabase_request_failed table=%s method=%s status=%s body=%s", table, method, response.status_code, response.text[:240])
-                    return None
-                self.last_success_at = datetime.now(timezone.utc).isoformat()
-                self.last_error = None
-                if not response.content:
-                    return None
-                return response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                if attempt == 0:
-                    await asyncio.sleep(0.25)
-                    continue
-                self.last_error = f"{method}_{table}_{type(exc).__name__}"
-                logger.error("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
+        try:
+            response = await self._client.request(method, f"{self.base_url}/rest/v1/{table}", params=params, json=payload, headers=headers)
+            response.raise_for_status()
+            if not response.content:
                 return None
-        return None
+            return response.json()
+        except httpx.HTTPError as exc:
+            logger.warning("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
+            return None
 
-    @staticmethod
-    def _candle_row(candle: Candle) -> dict[str, Any]:
-        return {
+    async def upsert_candle(self, candle: Candle) -> Any:
+        row = {
             "symbol": candle.symbol, "timeframe": candle.timeframe, "open_time": candle.open_time,
             "close_time": candle.close_time, "open": candle.open, "high": candle.high, "low": candle.low,
             "close": candle.close, "volume": candle.volume, "is_closed": candle.is_closed,
             "source": candle.source, "received_at": candle.received_at,
         }
-
-    async def upsert_candle(self, candle: Candle) -> Any:
-        return await self._request("POST", "indicator_candles", payload=self._candle_row(candle), prefer="resolution=merge-duplicates,return=minimal")
-
-    async def upsert_candles(self, candles: list[Candle]) -> Any:
-        if not candles:
-            return None
-        return await self._request(
-            "POST", "indicator_candles", payload=[self._candle_row(candle) for candle in candles],
-            prefer="resolution=merge-duplicates,return=minimal",
-        )
+        return await self._request("POST", "indicator_candles", payload=row, prefer="resolution=merge-duplicates,return=minimal")
 
     async def upsert_analysis(self, snapshot: AnalysisSnapshot) -> Any:
         row = {"symbol": snapshot.symbol, "timeframe": snapshot.timeframe, "generated_at": snapshot.generated_at, "payload": snapshot.to_dict()}
@@ -129,7 +92,7 @@ class SupabaseStore:
         if timeframe:
             params["timeframe"] = f"eq.{timeframe.lower()}"
         if active_only:
-            params["status"] = "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE)"
+            params["status"] = "in.(SIGNAL_CONFIRMED,ENTRY_PENDING,ACTIVE,TP1_HIT)"
         result = await self._request("GET", "indicator_trades", params=params)
         return result if isinstance(result, list) else []
 

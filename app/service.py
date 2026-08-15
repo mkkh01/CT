@@ -13,51 +13,8 @@ from .storage import RedisStore, SupabaseStore
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATUSES = {"TP1_HIT", "TP2_HIT", "SL_HIT", "INVALIDATED", "EXPIRED", "CANCELLED"}
-ACTIVE_STATUSES = {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE"}
-COMPLETED_STATUSES = TERMINAL_STATUSES
-SYMBOL_NAMES = {
-    "BTCUSDT": "Bitcoin",
-    "ETHUSDT": "Ethereum",
-    "BNBUSDT": "BNB",
-    "SOLUSDT": "Solana",
-    "XRPUSDT": "XRP",
-    "ADAUSDT": "Cardano",
-    "DOGEUSDT": "Dogecoin",
-    "AVAXUSDT": "Avalanche",
-    "LINKUSDT": "Chainlink",
-    "DOTUSDT": "Polkadot",
-    "TRXUSDT": "TRON",
-    "LTCUSDT": "Litecoin",
-    "BCHUSDT": "Bitcoin Cash",
-    "NEARUSDT": "NEAR Protocol",
-    "UNIUSDT": "Uniswap",
-    "ATOMUSDT": "Cosmos",
-    "ETCUSDT": "Ethereum Classic",
-    "FILUSDT": "Filecoin",
-    "APTUSDT": "Aptos",
-    "ARBUSDT": "Arbitrum",
-    "SUIUSDT": "Sui",
-    "SEIUSDT": "Sei",
-    "OPUSDT": "Optimism",
-    "INJUSDT": "Injective",
-    "AAVEUSDT": "Aave",
-    "MKRUSDT": "Maker",
-    "RUNEUSDT": "THORChain",
-    "GRTUSDT": "The Graph",
-    "APEUSDT": "ApeCoin",
-    "LDOUSDT": "Lido DAO",
-    "IMXUSDT": "Immutable",
-    "POLUSDT": "Polygon",
-    "TIAUSDT": "Celestia",
-    "JUPUSDT": "Jupiter",
-    "WIFUSDT": "dogwifhat",
-    "PEPEUSDT": "Pepe",
-    "SHIBUSDT": "Shiba Inu",
-    "FLOKIUSDT": "Floki",
-    "TONUSDT": "Toncoin",
-    "FETUSDT": "Artificial Superintelligence Alliance",
-}
+TERMINAL_STATUSES = {"TP2_HIT", "SL_HIT", "INVALIDATED", "EXPIRED", "CANCELLED"}
+ACTIVE_STATUSES = {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE", "TP1_HIT"}
 
 
 class IndicatorService:
@@ -89,30 +46,13 @@ class IndicatorService:
             await self.storage.startup()
             await self.redis.startup()
             if self.storage.enabled:
-                await self.storage.ping()
                 await self._restore_active_trades()
             if not self.settings.disable_auto_start:
                 await self.market.start()
-                await self._persist_bootstrap_history()
             self.started = True
             self.started_at = utc_now()
         finally:
             self.starting = False
-
-    async def _persist_bootstrap_history(self) -> None:
-        if not self.storage.enabled:
-            return
-        semaphore = asyncio.Semaphore(4)
-
-        async def persist(symbol: str, timeframe: str) -> None:
-            candles = await self.market.snapshot(symbol, timeframe)
-            if not candles:
-                return
-            async with semaphore:
-                await self.storage.upsert_candles(candles)
-
-        jobs = [persist(symbol, timeframe) for symbol in self.settings.symbols for timeframe in self.settings.stream_timeframes]
-        await asyncio.gather(*jobs)
 
     async def _restore_active_trades(self) -> None:
         try:
@@ -123,20 +63,6 @@ class IndicatorService:
                 signal_payload = trade.payload.get("signal") if isinstance(trade.payload, dict) else None
                 if isinstance(signal_payload, dict):
                     self._signals[trade.signal_id] = Signal.from_dict(signal_payload)
-                else:
-                    # Older or partially persisted trades may not contain the
-                    # embedded signal payload. Rebuild the minimum signal
-                    # needed for lifecycle monitoring after a restart.
-                    self._signals[trade.signal_id] = Signal(
-                        id=trade.signal_id, symbol=trade.symbol, timeframe=trade.timeframe,
-                        direction=trade.direction, status=trade.status, score=trade.score,
-                        entry=trade.entry, stop_loss=trade.stop_loss, tp1=trade.tp1, tp2=trade.tp2,
-                        created_at=trade.created_at, signal_version="restored",
-                        risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=list(trade.reasons),
-                        structure={}, liquidity={}, fvg={}, order_block={}, volume={}, momentum={}, trend={},
-                        data_health={"healthy": True, "reason": "RESTORED_FROM_TRADE"},
-                        metadata={"entry_open_time": trade.last_candle_open_time or 0},
-                    )
             self.signal_count = len(self._signals)
             logger.info("active_trades_restored count=%s", len(self._trades))
         except Exception as exc:
@@ -183,19 +109,17 @@ class IndicatorService:
             if trade.symbol == candle.symbol and trade.timeframe == candle.timeframe and trade.status in ACTIVE_STATUSES:
                 trade.last_price = candle.close
                 await self._broadcast({"type": "trade", "payload": trade.to_dict()})
-        await self._update_signal_lifecycle(candle, intrabar=True)
 
     async def on_candle_closed(self, candle: Candle) -> None:
         if self.storage.enabled:
             await self.storage.upsert_candle(candle)
-        await self._update_signal_lifecycle(candle, intrabar=False)
+        await self._update_signal_lifecycle(candle)
         if candle.timeframe not in self.settings.analysis_timeframes:
             return
         self.cycle_count += 1
-        is_entry_timeframe = candle.timeframe == self.settings.entry_timeframe
-        snapshot, result = await self.analyze(candle.symbol, candle.timeframe, create_signal=is_entry_timeframe)
+        snapshot, result = await self.analyze(candle.symbol, candle.timeframe)
         await self._broadcast({"type": "analysis", "payload": {**snapshot.to_dict(), "result": result.to_dict()}})
-        if is_entry_timeframe and isinstance(result, Signal):
+        if isinstance(result, Signal):
             await self._broadcast({"type": "signal", "payload": result.to_dict()})
 
     def _trade_from_signal(self, signal: Signal) -> Trade:
@@ -209,23 +133,20 @@ class IndicatorService:
     @staticmethod
     def _close_reason(status: str) -> str:
         return {
-            "TP1_HIT": "TP1_REACHED",
-            "TP2_HIT": "TP2_REACHED_LEGACY",
+            "TP2_HIT": "TP2_REACHED",
             "SL_HIT": "STOP_LOSS_REACHED",
             "EXPIRED": "ENTRY_NOT_REACHED_WITHIN_MAX_PENDING_CANDLES",
             "INVALIDATED": "SIGNAL_INVALIDATED",
             "CANCELLED": "SIGNAL_CANCELLED",
         }.get(status, status)
 
-    async def _update_signal_lifecycle(self, candle: Candle, intrabar: bool = False) -> None:
+    async def _update_signal_lifecycle(self, candle: Candle) -> None:
         changed_signals: list[Signal] = []
         changed_trades: list[Trade] = []
         for signal in list(self._signals.values()):
             if signal.symbol != candle.symbol or signal.timeframe != candle.timeframe or signal.status in TERMINAL_STATUSES:
                 continue
             trade = self._trades.get(signal.id)
-            if not trade:
-                trade = next((item for item in self._trades.values() if item.signal_id == signal.id), None)
             if not trade:
                 trade = self._trade_from_signal(signal)
                 self._trades[trade.id] = trade
@@ -246,27 +167,33 @@ class IndicatorService:
                     trade.exit_at = utc_now()
                     trade.close_reason = self._close_reason("EXPIRED")
 
-            if trade.status == "ACTIVE":
+            if trade.status in {"ACTIVE", "TP1_HIT"}:
+                both_stop_and_target = False
                 if signal.direction == "BUY":
                     stop_hit = candle.low <= signal.stop_loss
+                    tp2_hit = candle.high >= signal.tp2
                     tp1_hit = candle.high >= signal.tp1
                 else:
                     stop_hit = candle.high >= signal.stop_loss
+                    tp2_hit = candle.low <= signal.tp2
                     tp1_hit = candle.low <= signal.tp1
-                both_stop_and_target = stop_hit and tp1_hit
+                both_stop_and_target = stop_hit and (tp1_hit or tp2_hit)
                 if stop_hit:
                     trade.status = signal.status = "SL_HIT"
                     trade.exit_at = utc_now()
                     trade.exit_price = signal.stop_loss
                     trade.close_reason = "STOP_LOSS_REACHED_CONSERVATIVE_INTRABAR_PRIORITY" if both_stop_and_target else self._close_reason("SL_HIT")
-                elif tp1_hit:
-                    trade.status = signal.status = "TP1_HIT"
+                elif tp2_hit:
+                    trade.status = signal.status = "TP2_HIT"
                     trade.exit_at = utc_now()
-                    trade.exit_price = signal.tp1
-                    trade.tp1_hit_at = trade.tp1_hit_at or trade.exit_at
-                    trade.close_reason = self._close_reason("TP1_HIT")
+                    trade.exit_price = signal.tp2
+                    trade.close_reason = self._close_reason("TP2_HIT")
+                elif trade.status == "ACTIVE" and tp1_hit:
+                    trade.status = signal.status = "TP1_HIT"
+                    trade.tp1_hit_at = trade.tp1_hit_at or utc_now()
+                    trade.close_reason = "TP1_REACHED_PARTIAL_TARGET"
 
-            if status_before != trade.status or (not intrabar and (trade.status in ACTIVE_STATUSES or trade.status in TERMINAL_STATUSES)):
+            if status_before != trade.status or trade.status in ACTIVE_STATUSES or trade.status in TERMINAL_STATUSES:
                 signal.metadata.update({
                     "last_price": trade.last_price, "last_candle_open_time": trade.last_candle_open_time,
                     "exit_price": trade.exit_price, "exit_at": trade.exit_at, "close_reason": trade.close_reason,
@@ -282,45 +209,34 @@ class IndicatorService:
             await self.redis.set_json(f"signal:{signal.symbol}:{signal.timeframe}", signal.to_dict(), ttl=86400)
             await self._broadcast({"type": "trade", "payload": trade.to_dict()})
 
-    async def analyze(self, symbol: str, timeframe: str | None = None, create_signal: bool | None = None) -> tuple[AnalysisSnapshot, Signal | NoTrade]:
+    async def analyze(self, symbol: str, timeframe: str | None = None) -> tuple[AnalysisSnapshot, Signal | NoTrade]:
         symbol = symbol.upper()
         timeframe = (timeframe or self.settings.entry_timeframe).lower()
-        if create_signal is None:
-            create_signal = timeframe == self.settings.entry_timeframe
         mapping = self.settings.mtf_mapping.get(timeframe, [self.settings.structure_timeframe, self.settings.htf_timeframe])
         structure_timeframe, htf_timeframe = mapping[0], mapping[1]
         await self.market.ensure_history(symbol, timeframe)
         await self.market.ensure_history(symbol, structure_timeframe)
         await self.market.ensure_history(symbol, htf_timeframe)
-        entry_raw = await self.market.snapshot(symbol, timeframe)
-        structure_raw = await self.market.snapshot(symbol, structure_timeframe)
-        htf_raw = await self.market.snapshot(symbol, htf_timeframe)
-        entry = [candle for candle in entry_raw if candle.is_closed]
-        structure = [candle for candle in structure_raw if candle.is_closed]
-        htf = [candle for candle in htf_raw if candle.is_closed]
+        entry = await self.market.snapshot(symbol, timeframe)
+        structure = await self.market.snapshot(symbol, structure_timeframe)
+        htf = await self.market.snapshot(symbol, htf_timeframe)
         snapshot, result = self.analysis_engine.analyze(symbol, timeframe, entry, structure, htf, data_fresh=self._data_fresh())
-        if isinstance(result, Signal) and not create_signal:
-            snapshot.decision = "NO TRADE"
-            snapshot.reasons = list(dict.fromkeys([*snapshot.reasons, "CONTEXT_ONLY_FRAME"]))
-            result = NoTrade(symbol, timeframe, reasons=["CONTEXT_ONLY_FRAME"], score=result.score)
         key = f"{symbol}:{timeframe}"
         self._analysis[key] = snapshot
         self.last_analysis_at = utc_now()
         await self.redis.set_json(f"analysis:{symbol}:{timeframe}", snapshot.to_dict(), ttl=900)
         if self.storage.enabled:
             await self.storage.upsert_analysis(snapshot)
-        if isinstance(result, Signal) and create_signal:
+        if isinstance(result, Signal):
             async with self._analysis_lock:
-                active_existing = [
-                    item for item in self._signals.values()
-                    if item.symbol == result.symbol and item.timeframe == result.timeframe and item.status in ACTIVE_STATUSES
-                ]
-                if active_existing:
-                    has_opposite = any(item.direction != result.direction for item in active_existing)
-                    reason = "CONFLICTING ACTIVE SIGNAL" if has_opposite else "ACTIVE SIGNAL ALREADY EXISTS"
+                conflicting = any(
+                    item.symbol == result.symbol and item.timeframe == result.timeframe and item.direction != result.direction and item.status in ACTIVE_STATUSES
+                    for item in self._signals.values()
+                )
+                if conflicting:
                     snapshot.decision = "NO TRADE"
-                    snapshot.reasons.append(reason)
-                    result = NoTrade(result.symbol, result.timeframe, reasons=[reason], score=result.score)
+                    snapshot.reasons.append("CONFLICTING ACTIVE SIGNAL")
+                    result = NoTrade(result.symbol, result.timeframe, reasons=["CONFLICTING ACTIVE SIGNAL"], score=result.score)
                 elif result.id not in self._signals:
                     self._signals[result.id] = result
                     trade = self._trade_from_signal(result)
@@ -335,20 +251,15 @@ class IndicatorService:
         return snapshot, result
 
     def _data_fresh(self) -> bool:
-        # A recent message alone is insufficient: a disconnected stream can
-        # leave a stale timestamp within the grace window.  Trading decisions
-        # require an actively connected WebSocket and fresh market data.
-        if not self.market.connected or not self.market.last_message_at:
-            return False
-        if self.storage.enabled and (not self.storage.last_success_at or self.storage.last_error):
-            return False
+        if not self.market.last_message_at:
+            return self.settings.disable_auto_start
         try:
             last = datetime.fromisoformat(self.market.last_message_at)
             return (datetime.now(timezone.utc) - last).total_seconds() <= self.settings.stale_data_seconds
         except ValueError:
             return False
 
-    async def get_candles(self, symbol: str, timeframe: str, limit: int = 200) -> list[dict[str, Any]]:
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[dict[str, Any]]:
         await self.market.ensure_history(symbol.upper(), timeframe.lower())
         candles = await self.market.snapshot(symbol.upper(), timeframe.lower())
         return [item.to_dict() for item in candles[-min(max(limit, 1), self.settings.history_limit):]]
@@ -362,7 +273,7 @@ class IndicatorService:
             return data
         snapshot = self._analysis[key]
         data = snapshot.to_dict()
-        candidates = [item for item in self._signals.values() if item.symbol == snapshot.symbol and item.timeframe == snapshot.timeframe and item.status in ACTIVE_STATUSES]
+        candidates = [item for item in self._signals.values() if item.symbol == snapshot.symbol and item.timeframe == snapshot.timeframe]
         signal = max(candidates, key=lambda item: item.created_at, default=None)
         data["result"] = signal.to_dict() if signal else {"decision": "NO TRADE", "reasons": snapshot.reasons, "score": max(snapshot.bullish_score, snapshot.bearish_score)}
         return data
@@ -375,67 +286,29 @@ class IndicatorService:
             return await self.storage.list_signals(symbol.upper(), timeframe.lower(), limit)
         return []
 
-    async def get_trades(self, symbol: str | None = None, timeframe: str | None = None, limit: int = 100, active_only: bool = False, completed_only: bool = False) -> list[dict[str, Any]]:
-        local = list(self._trades.values())
+    async def get_trades(self, symbol: str | None = None, timeframe: str | None = None, limit: int = 100, active_only: bool = False) -> list[dict[str, Any]]:
+        rows = list(self._trades.values())
         if symbol:
-            local = [item for item in local if item.symbol == symbol.upper()]
+            rows = [item for item in rows if item.symbol == symbol.upper()]
         if timeframe:
-            local = [item for item in local if item.timeframe == timeframe.lower()]
-        if active_only:
-            local = [item for item in local if item.status in ACTIVE_STATUSES]
-        if completed_only:
-            local = [item for item in local if item.status in COMPLETED_STATUSES]
-        local_by_id = {item.id: item for item in local}
-        if self.storage.enabled:
-            # Read both active and completed rows so a terminal DB update can replace a stale local ACTIVE row.
-            stored = await self.storage.list_trades(symbol, timeframe, min(max(limit, 1), 500), active_only=False)
-            for row in stored:
-                try:
-                    trade = Trade.from_dict(row)
-                except (KeyError, TypeError, ValueError):
-                    continue
-                existing = local_by_id.get(trade.id)
-                if existing is None or (trade.status in COMPLETED_STATUSES and existing.status not in COMPLETED_STATUSES):
-                    local_by_id[trade.id] = trade
-        rows = list(local_by_id.values())
+            rows = [item for item in rows if item.timeframe == timeframe.lower()]
         if active_only:
             rows = [item for item in rows if item.status in ACTIVE_STATUSES]
-        if completed_only:
-            rows = [item for item in rows if item.status in COMPLETED_STATUSES]
-        rows = sorted(rows, key=lambda item: item.created_at, reverse=True)
-        return [item.to_dict() for item in rows[:min(max(limit, 1), 500)]]
-
-    async def get_active_signal_summary(self) -> list[dict[str, Any]]:
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for signal in self._signals.values():
-            if signal.status in ACTIVE_STATUSES:
-                grouped.setdefault(signal.symbol, []).append(signal.to_dict())
-        return [
-            {"symbol": symbol, "name": SYMBOL_NAMES.get(symbol, symbol), "count": len(items), "signals": sorted(items, key=lambda item: item["created_at"], reverse=True)}
-            for symbol, items in sorted(grouped.items())
-        ]
-
-    async def get_successful_trade_summary(self, limit: int = 500) -> list[dict[str, Any]]:
-        trades = await self.get_trades(limit=limit, completed_only=True)
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for trade in trades:
-            if trade.get("status") == "TP1_HIT":
-                grouped.setdefault(str(trade["symbol"]), []).append(trade)
-        return [
-            {"symbol": symbol, "name": SYMBOL_NAMES.get(symbol, symbol), "count": len(items), "trades": sorted(items, key=lambda item: item["created_at"], reverse=True)}
-            for symbol, items in sorted(grouped.items())
-        ]
+        if rows:
+            return [item.to_dict() for item in sorted(rows, key=lambda item: item.created_at, reverse=True)[:limit]]
+        if self.storage.enabled:
+            return await self.storage.list_trades(symbol, timeframe, limit, active_only)
+        return []
 
     def status(self) -> dict[str, Any]:
-        trading_ready = self._data_fresh()
         return {
-            "status": "ok" if trading_ready else "degraded", "app_version": self.settings.app_version, "config_version": self.settings.config_version,
+            "status": "ok", "app_version": self.settings.app_version, "config_version": self.settings.config_version,
             "started": self.started, "starting": self.starting, "started_at": self.started_at,
             "execution_mode": "paper", "cycle_count": self.cycle_count, "signal_count": self.signal_count,
             "trade_count": len(self._trades), "active_trade_count": sum(item.status in ACTIVE_STATUSES for item in self._trades.values()),
             "last_analysis_at": self.last_analysis_at, "last_signal_at": self.last_signal_at,
             "latest_prices": self._latest_prices, "subscriber_count": len(self._subscribers),
-            "market": self.market.status(), "trading_ready": trading_ready,
-            "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.last_success_at and not self.storage.last_error), "supabase_last_success_at": self.storage.last_success_at, "supabase_last_error": self.storage.last_error, "redis_connected": self.redis.enabled},
+            "market": self.market.status(),
+            "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.enabled and self.storage._client), "redis_connected": self.redis.enabled},
             "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "analysis_timeframes": self.settings.analysis_timeframes, "stream_timeframes": self.settings.stream_timeframes, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},
         }

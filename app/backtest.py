@@ -17,7 +17,7 @@ class BacktestTrade:
     stop_loss: float
     tp1: float
     tp2: float
-    entry_time: int | None
+    entry_time: int
     exit_time: int | None
     outcome: str
     pnl_r: float
@@ -29,14 +29,18 @@ class BacktestTrade:
 def _event_for_candle(signal: Signal, candle: Candle) -> tuple[str, float] | None:
     if signal.direction == "BUY":
         hit_sl = candle.low <= signal.stop_loss
+        hit_tp2 = candle.high >= signal.tp2
         hit_tp1 = candle.high >= signal.tp1
     else:
         hit_sl = candle.high >= signal.stop_loss
+        hit_tp2 = candle.low <= signal.tp2
         hit_tp1 = candle.low <= signal.tp1
-    if hit_sl and hit_tp1:
+    if hit_sl and (hit_tp1 or hit_tp2):
         return "SL_HIT", -1.0
     if hit_sl:
         return "SL_HIT", -1.0
+    if hit_tp2:
+        return "TP2_HIT", signal.risk_reward["tp2"]
     if hit_tp1:
         return "TP1_HIT", signal.risk_reward["tp1"]
     return None
@@ -57,27 +61,14 @@ def run_backtest(candles: list[Candle], settings: Settings) -> dict[str, Any]:
         outcome = "EXPIRED"
         pnl_r = 0.0
         exit_time: int | None = None
-        activated_at: int | None = None
-        for pending_index, future in enumerate(candles[index + 1:], start=1):
-            if activated_at is None:
-                reached_entry = future.low <= result.entry <= future.high
-                if reached_entry:
-                    activated_at = future.open_time
-                elif pending_index >= settings.max_pending_candles:
-                    break
-                else:
-                    continue
+        for future in candles[index + 1:]:
             event = _event_for_candle(result, future)
             if event:
                 outcome, pnl_r = event
                 exit_time = future.close_time
                 break
-            if pending_index >= settings.max_pending_candles and activated_at is None:
-                break
-        if activated_at is not None and outcome == "EXPIRED":
-            outcome = "OPEN"
-        trades.append(BacktestTrade(result.symbol, result.timeframe, result.direction, result.entry, result.stop_loss, result.tp1, result.tp2, activated_at, exit_time, outcome, pnl_r))
-    activated = sum(item.entry_time is not None for item in trades)
+        trades.append(BacktestTrade(result.symbol, result.timeframe, result.direction, result.entry, result.stop_loss, result.tp1, result.tp2, result.metadata.get("entry_open_time", candles[index].open_time), exit_time, outcome, pnl_r))
+    activated = len(trades)
     tp1_hits = sum(item.outcome == "TP1_HIT" for item in trades)
     tp2_hits = sum(item.outcome == "TP2_HIT" for item in trades)
     sl_hits = sum(item.outcome == "SL_HIT" for item in trades)
@@ -106,14 +97,13 @@ def run_backtest(candles: list[Candle], settings: Settings) -> dict[str, Any]:
         "timeframe": candles[-1].timeframe,
         "total_signals": total_signals,
         "activated_trades": activated,
-        "expired_signals": sum(item.outcome == "EXPIRED" for item in trades),
         "tp1_hits": tp1_hits,
-        "tp2_hits": 0,
+        "tp2_hits": tp2_hits,
         "sl_hits": sl_hits,
         "win_rate": wins / activated if activated else 0.0,
         "loss_rate": losses / activated if activated else 0.0,
         "tp1_rate": tp1_hits / activated if activated else 0.0,
-        "tp2_rate": 0.0,
+        "tp2_rate": tp2_hits / activated if activated else 0.0,
         "average_r": total_r / activated if activated else 0.0,
         "total_r": total_r,
         "maximum_drawdown": max_drawdown,

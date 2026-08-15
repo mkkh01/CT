@@ -32,7 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title=app_settings.app_name, version=app_settings.app_version, lifespan=lifespan)
     app.state.settings = app_settings
     app.state.service = service
-    app.add_middleware(CORSMiddleware, allow_origins=app_settings.cors_origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["*"])
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["*"])
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -44,7 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/healthz")
     async def healthz():
         status = service.status()
-        return {"status": status["status"], "service": app_settings.app_name, "integrations": status["integrations"], "market_connected": status["market"]["connected"], "trading_ready": status["trading_ready"], "started": status["started"]}
+        return {"status": "ok", "service": app_settings.app_name, "integrations": status["integrations"], "market_connected": status["market"]["connected"], "started": status["started"]}
 
     @app.get("/api/v1/health")
     async def api_health():
@@ -59,7 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"timeframes": SUPPORTED_TIMEFRAMES, "analysis_timeframes": app_settings.analysis_timeframes, "stream_timeframes": app_settings.stream_timeframes, "entry": app_settings.entry_timeframe, "structure": app_settings.structure_timeframe, "htf": app_settings.htf_timeframe, "mapping": app_settings.mtf_mapping}
 
     @app.get("/api/v1/candles/{symbol}/{timeframe}")
-    async def candles(symbol: str, timeframe: str, limit: int = Query(default=500, ge=1, le=1000)):
+    async def candles(symbol: str, timeframe: str, limit: int = Query(default=300, ge=1, le=1000)):
         if symbol.upper() not in app_settings.symbols:
             raise HTTPException(status_code=404, detail="unsupported_symbol")
         if timeframe.lower() not in SUPPORTED_TIMEFRAMES:
@@ -67,61 +67,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         candles = await service.get_candles(symbol, timeframe, limit)
         return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "candles": candles, "data_status": "OK" if candles else "NO_DATA"}
 
-    def validate_symbol_timeframe(symbol: str, timeframe: str) -> None:
-        if symbol.upper() not in app_settings.symbols:
-            raise HTTPException(status_code=404, detail="unsupported_symbol")
-        if timeframe.lower() not in SUPPORTED_TIMEFRAMES:
-            raise HTTPException(status_code=400, detail="unsupported_timeframe")
-
     @app.get("/api/v1/analysis/{symbol}")
     async def analysis_default(symbol: str):
-        validate_symbol_timeframe(symbol, app_settings.entry_timeframe)
         return await service.get_analysis(symbol, app_settings.entry_timeframe)
 
     @app.get("/api/v1/analysis/{symbol}/{timeframe}")
     async def analysis(symbol: str, timeframe: str):
-        validate_symbol_timeframe(symbol, timeframe)
+        if symbol.upper() not in app_settings.symbols:
+            raise HTTPException(status_code=404, detail="unsupported_symbol")
         return await service.get_analysis(symbol, timeframe)
 
     @app.get("/api/v1/signals/active")
     async def active_signals():
         return {"signals": [item.to_dict() for item in service._signals.values() if item.status in {"SIGNAL_CONFIRMED", "ENTRY_PENDING", "ACTIVE"}]}
 
-    @app.get("/api/v1/signals/active/summary")
-    async def active_signal_summary():
-        groups = await service.get_active_signal_summary()
-        return {"groups": groups, "total": sum(item["count"] for item in groups)}
-
     @app.get("/api/v1/signals/{symbol}/{timeframe}")
     async def signals(symbol: str, timeframe: str, limit: int = Query(default=50, ge=1, le=200)):
-        validate_symbol_timeframe(symbol, timeframe)
         return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "signals": await service.get_signals(symbol, timeframe, limit)}
 
-    def validate_trade_filters(symbol: str | None, timeframe: str | None) -> None:
+    @app.get("/api/v1/trades")
+    async def trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500), active_only: bool = False):
         if symbol and symbol.upper() not in app_settings.symbols:
             raise HTTPException(status_code=404, detail="unsupported_symbol")
         if timeframe and timeframe.lower() not in SUPPORTED_TIMEFRAMES:
             raise HTTPException(status_code=400, detail="unsupported_timeframe")
-
-    @app.get("/api/v1/trades")
-    async def trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500), active_only: bool = False):
-        validate_trade_filters(symbol, timeframe)
-        return {"trades": await service.get_trades(symbol, timeframe, limit, active_only=active_only), "active_only": active_only}
-
-    @app.get("/api/v1/trades/current")
-    async def current_trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500)):
-        validate_trade_filters(symbol, timeframe)
-        return {"trades": await service.get_trades(symbol, timeframe, limit, active_only=True), "active_only": True, "completed_only": False}
-
-    @app.get("/api/v1/trades/completed")
-    async def completed_trades(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(default=100, ge=1, le=500)):
-        validate_trade_filters(symbol, timeframe)
-        return {"trades": await service.get_trades(symbol, timeframe, limit, completed_only=True), "active_only": False, "completed_only": True}
-
-    @app.get("/api/v1/trades/successful/summary")
-    async def successful_trade_summary(limit: int = Query(default=500, ge=1, le=500)):
-        groups = await service.get_successful_trade_summary(limit)
-        return {"groups": groups, "total": sum(item["count"] for item in groups), "definition": "TP1_HIT"}
+        return {"trades": await service.get_trades(symbol, timeframe, limit, active_only), "active_only": active_only}
 
     @app.post("/api/v1/backtests")
     async def backtests(symbol: str, timeframe: str, limit: int = Query(default=500, ge=100, le=1000)):

@@ -8,10 +8,6 @@ DEFAULT_SYMBOLS = [
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
     "TRXUSDT", "LTCUSDT", "BCHUSDT", "NEARUSDT", "UNIUSDT",
     "ATOMUSDT", "ETCUSDT", "FILUSDT", "APTUSDT", "ARBUSDT",
-    "SUIUSDT", "SEIUSDT", "OPUSDT", "INJUSDT", "AAVEUSDT",
-    "MKRUSDT", "RUNEUSDT", "GRTUSDT", "APEUSDT", "LDOUSDT",
-    "IMXUSDT", "POLUSDT", "TIAUSDT", "JUPUSDT", "WIFUSDT",
-    "PEPEUSDT", "SHIBUSDT", "FLOKIUSDT", "TONUSDT", "FETUSDT",
 ]
 SUPPORTED_TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"]
 
@@ -39,12 +35,7 @@ def _float(value: str | None, default: float) -> float:
 def _symbols(value: str | None) -> list[str]:
     raw = [item.strip().upper() for item in (value or "").split(",") if item.strip()]
     result = list(dict.fromkeys(raw or DEFAULT_SYMBOLS))
-    return result[:40]
-
-
-def _origins(value: str | None) -> list[str]:
-    raw = [item.strip() for item in (value or "").split(",") if item.strip()]
-    return raw or ["*"]
+    return result[:20]
 
 
 def _timeframes(value: str | None, default: list[str]) -> list[str]:
@@ -84,7 +75,6 @@ class Settings:
     supabase_url: str = ""
     supabase_key: str = ""
     redis_url: str = ""
-    cors_origins: list[str] = field(default_factory=lambda: ["*"])
     disable_auto_start: bool = False
     log_level: str = "INFO"
     config_version: str = "core_v1"
@@ -129,7 +119,6 @@ class Settings:
             supabase_url=os.getenv("SUPABASE_URL", "").rstrip("/"),
             supabase_key=os.getenv("SUPABASE_KEY", ""),
             redis_url=os.getenv("REDIS_URL", ""),
-            cors_origins=_origins(os.getenv("CORS_ORIGINS")),
             disable_auto_start=_bool(os.getenv("DISABLE_AUTO_START"), False),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             config_version=os.getenv("CONFIG_VERSION", "core_v1"),

@@ -71,11 +71,6 @@ RR_TP2=2.0
 | `GET /api/v1/analysis/{symbol}/{timeframe}` | آخر تحليل وقرار وأسباب |
 | `GET /api/v1/signals/{symbol}/{timeframe}` | سجل الإشارات |
 | `GET /api/v1/signals/active` | الإشارات الحالية |
-| `GET /api/v1/signals/active/summary` | تجميع الإشارات النشطة حسب رمز العملة |
-| `GET /api/v1/trades` | سجل الصفقات مع إمكانية التصفية |
-| `GET /api/v1/trades/current` | الصفقات الحالية: مؤكدة، معلقة، أو نشطة قبل الوصول إلى TP1 |
-| `GET /api/v1/trades/completed` | الصفقات المنجزة: TP1 أو SL أو منتهية أو ملغاة |
-| `GET /api/v1/trades/successful/summary` | تجميع الصفقات الناجحة حسب رمز العملة؛ النجاح الكامل هو `TP1_HIT` |
 | `GET /api/v1/settings` | الإعدادات العامة غير السرية |
 | `WS /ws/market` | تحديثات حالة بيانات السوق |
 | `WS /ws/analysis` | تحديثات حالة التحليل |
@@ -83,9 +78,9 @@ RR_TP2=2.0
 
 ## Supabase وRedis
 
-أُضيفت جداول منفصلة حتى لا تغيّر المواصفة الجديدة الجداول القديمة في مشروع `Trading_bot`: `indicator_symbols` و`indicator_candles` و`indicator_analysis_snapshots` و`indicator_signals` و`indicator_trades` و`indicator_runtime_state` و`indicator_settings`. جميعها مفعّل عليها RLS، ويُمنح الوصول للخادم عبر دور الخدمة فقط. تعرض الواجهة الآن الصفقات الحالية والمنجزة في جدولين منفصلين. في وضع TP1 الحالي، تُغلق الصفقة وتُسجل كناجحة عند الوصول إلى `TP1_HIT`.
+أُضيفت جداول منفصلة حتى لا تغيّر المواصفة الجديدة الجداول القديمة في مشروع `Trading_bot`: `indicator_symbols` و`indicator_candles` و`indicator_analysis_snapshots` و`indicator_signals` و`indicator_runtime_state` و`indicator_settings`. جميعها مفعّل عليها RLS، ويُمنح الوصول للخادم عبر دور الخدمة فقط.
 
-Redis ليس مصدراً للتاريخ الدائم. يستخدمه النظام للحالة الحية والكاش ومفاتيح التحليل والإشارة. يبدأ النظام بجلب 500 شمعة تاريخية افتراضيًا لكل رمز وفريم، ويحفظ دفعة التاريخ الأولية في `indicator_candles` عبر upsert دفعي. بعد ذلك يواصل تحديث الشمعة الحالية وإضافة الشمعة الجديدة عند إغلاقها عبر WebSocket، مع مفتاح فريد `(symbol, timeframe, open_time)` لمنع التكرار. إذا فشل حفظ التاريخ أو أصبحت البيانات ناقصة، لا يسمح النظام بقرار إشارة جديد حتى تكتمل البيانات والاتصال.
+Redis ليس مصدراً للتاريخ الدائم. يستخدمه النظام للحالة الحية والكاش ومفاتيح التحليل والإشارة. بعد إعادة التشغيل يجب أن يستطيع النظام إعادة بناء الحالة من الشموع التاريخية وقاعدة Supabase.
 
 ## Render
 
