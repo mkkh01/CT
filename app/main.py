@@ -44,7 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/healthz")
     async def healthz():
         status = service.status()
-        return {"status": "ok", "service": app_settings.app_name, "integrations": status["integrations"], "market_connected": status["market"]["connected"], "started": status["started"]}
+        return {"status": status["status"], "service": app_settings.app_name, "integrations": status["integrations"], "market_connected": status["market"]["connected"], "trading_ready": status["trading_ready"], "started": status["started"]}
 
     @app.get("/api/v1/health")
     async def api_health():
