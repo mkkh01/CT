@@ -37,7 +37,7 @@
 </div>
 <script>
 const state={chart:null,candleSeries:null,lines:[],currentPriceLine:null,marketSocket:null,analysisSocket:null,signalsSocket:null,lastClose:null,refreshSequence:0,socketGeneration:0,activeSummary:[],successfulSummary:[],summaryMode:'active'};
-const COIN_NAMES={BTCUSDT:'Bitcoin',ETHUSDT:'Ethereum',BNBUSDT:'BNB',SOLUSDT:'Solana',XRPUSDT:'XRP',ADAUSDT:'Cardano',DOGEUSDT:'Dogecoin',AVAXUSDT:'Avalanche',LINKUSDT:'Chainlink',DOTUSDT:'Polkadot',TRXUSDT:'TRON',LTCUSDT:'Litecoin',BCHUSDT:'Bitcoin Cash',NEARUSDT:'NEAR Protocol',UNIUSDT:'Uniswap',ATOMUSDT:'Cosmos',ETCUSDT:'Ethereum Classic',FILUSDT:'Filecoin',APTUSDT:'Aptos',ARBUSDT:'Arbitrum'};
+const COIN_NAMES={BTCUSDT:'Bitcoin',ETHUSDT:'Ethereum',BNBUSDT:'BNB',SOLUSDT:'Solana',XRPUSDT:'XRP',ADAUSDT:'Cardano',DOGEUSDT:'Dogecoin',AVAXUSDT:'Avalanche',LINKUSDT:'Chainlink',DOTUSDT:'Polkadot',TRXUSDT:'TRON',LTCUSDT:'Litecoin',BCHUSDT:'Bitcoin Cash',NEARUSDT:'NEAR Protocol',UNIUSDT:'Uniswap',ATOMUSDT:'Cosmos',ETCUSDT:'Ethereum Classic',FILUSDT:'Filecoin',APTUSDT:'Aptos',ARBUSDT:'Arbitrum',SUIUSDT:'Sui',SEIUSDT:'Sei',OPUSDT:'Optimism',INJUSDT:'Injective',AAVEUSDT:'Aave',MKRUSDT:'Maker',RUNEUSDT:'THORChain',GRTUSDT:'The Graph',APEUSDT:'ApeCoin',LDOUSDT:'Lido DAO',IMXUSDT:'Immutable',POLUSDT:'Polygon',TIAUSDT:'Celestia',JUPUSDT:'Jupiter',WIFUSDT:'dogwifhat',PEPEUSDT:'Pepe',SHIBUSDT:'Shiba Inu',FLOKIUSDT:'Floki',TONUSDT:'Toncoin',FETUSDT:'Artificial Superintelligence Alliance'};
 const $=id=>document.getElementById(id);
 const api=async path=>{const r=await fetch(path,{cache:'no-store'});if(!r.ok)throw new Error(await r.text());return r.json();};
 const escapeHtml=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));

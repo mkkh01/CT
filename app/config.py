@@ -8,6 +8,10 @@ DEFAULT_SYMBOLS = [
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
     "TRXUSDT", "LTCUSDT", "BCHUSDT", "NEARUSDT", "UNIUSDT",
     "ATOMUSDT", "ETCUSDT", "FILUSDT", "APTUSDT", "ARBUSDT",
+    "SUIUSDT", "SEIUSDT", "OPUSDT", "INJUSDT", "AAVEUSDT",
+    "MKRUSDT", "RUNEUSDT", "GRTUSDT", "APEUSDT", "LDOUSDT",
+    "IMXUSDT", "POLUSDT", "TIAUSDT", "JUPUSDT", "WIFUSDT",
+    "PEPEUSDT", "SHIBUSDT", "FLOKIUSDT", "TONUSDT", "FETUSDT",
 ]
 SUPPORTED_TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"]
 
@@ -35,7 +39,7 @@ def _float(value: str | None, default: float) -> float:
 def _symbols(value: str | None) -> list[str]:
     raw = [item.strip().upper() for item in (value or "").split(",") if item.strip()]
     result = list(dict.fromkeys(raw or DEFAULT_SYMBOLS))
-    return result[:20]
+    return result[:40]
 
 
 def _origins(value: str | None) -> list[str]:
