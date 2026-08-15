@@ -346,18 +346,22 @@ class IndicatorService:
             local = [item for item in local if item.status in COMPLETED_STATUSES]
         local_by_id = {item.id: item for item in local}
         if self.storage.enabled:
-            stored = await self.storage.list_trades(symbol, timeframe, limit, active_only=active_only)
+            # Read both active and completed rows so a terminal DB update can replace a stale local ACTIVE row.
+            stored = await self.storage.list_trades(symbol, timeframe, min(max(limit, 1), 500), active_only=False)
             for row in stored:
                 try:
                     trade = Trade.from_dict(row)
                 except (KeyError, TypeError, ValueError):
                     continue
-                if active_only and trade.status not in ACTIVE_STATUSES:
-                    continue
-                if completed_only and trade.status not in COMPLETED_STATUSES:
-                    continue
-                local_by_id.setdefault(trade.id, trade)
-        rows = sorted(local_by_id.values(), key=lambda item: item.created_at, reverse=True)
+                existing = local_by_id.get(trade.id)
+                if existing is None or (trade.status in COMPLETED_STATUSES and existing.status not in COMPLETED_STATUSES):
+                    local_by_id[trade.id] = trade
+        rows = list(local_by_id.values())
+        if active_only:
+            rows = [item for item in rows if item.status in ACTIVE_STATUSES]
+        if completed_only:
+            rows = [item for item in rows if item.status in COMPLETED_STATUSES]
+        rows = sorted(rows, key=lambda item: item.created_at, reverse=True)
         return [item.to_dict() for item in rows[:min(max(limit, 1), 500)]]
 
     async def get_active_signal_summary(self) -> list[dict[str, Any]]:

@@ -223,3 +223,36 @@ def test_trade_lifecycle_activates_sell_at_entry():
 
     import asyncio
     asyncio.run(scenario())
+
+
+def test_completed_storage_state_replaces_stale_local_active_state():
+    from app.models import Trade
+
+    class FakeStorage:
+        enabled = True
+
+        async def list_trades(self, symbol=None, timeframe=None, limit=100, active_only=False):
+            return [
+                Trade(
+                    id="stale-trade", signal_id="stale-signal", symbol="BTCUSDT", timeframe="15m", direction="BUY",
+                    status="TP1_HIT", score=90, entry=100, stop_loss=95, tp1=105, tp2=110,
+                    created_at="2026-01-01T00:00:00+00:00", exit_at="2026-01-01T01:00:00+00:00",
+                    exit_price=105, close_reason="TP1_REACHED",
+                ).to_dict()
+            ]
+
+    async def scenario():
+        service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+        service.storage = FakeStorage()
+        service._trades["stale-trade"] = Trade(
+            id="stale-trade", signal_id="stale-signal", symbol="BTCUSDT", timeframe="15m", direction="BUY",
+            status="ACTIVE", score=90, entry=100, stop_loss=95, tp1=105, tp2=110,
+            created_at="2026-01-01T00:00:00+00:00", last_price=105,
+        )
+        current = await service.get_trades(symbol="BTCUSDT", timeframe="15m", active_only=True)
+        completed = await service.get_trades(symbol="BTCUSDT", timeframe="15m", completed_only=True)
+        assert current == []
+        assert [row["status"] for row in completed] == ["TP1_HIT"]
+
+    import asyncio
+    asyncio.run(scenario())
