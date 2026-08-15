@@ -149,11 +149,12 @@ class IndicatorService:
             if trade.symbol == candle.symbol and trade.timeframe == candle.timeframe and trade.status in ACTIVE_STATUSES:
                 trade.last_price = candle.close
                 await self._broadcast({"type": "trade", "payload": trade.to_dict()})
+        await self._update_signal_lifecycle(candle, intrabar=True)
 
     async def on_candle_closed(self, candle: Candle) -> None:
         if self.storage.enabled:
             await self.storage.upsert_candle(candle)
-        await self._update_signal_lifecycle(candle)
+        await self._update_signal_lifecycle(candle, intrabar=False)
         if candle.timeframe not in self.settings.analysis_timeframes:
             return
         self.cycle_count += 1
@@ -182,7 +183,7 @@ class IndicatorService:
             "CANCELLED": "SIGNAL_CANCELLED",
         }.get(status, status)
 
-    async def _update_signal_lifecycle(self, candle: Candle) -> None:
+    async def _update_signal_lifecycle(self, candle: Candle, intrabar: bool = False) -> None:
         changed_signals: list[Signal] = []
         changed_trades: list[Trade] = []
         for signal in list(self._signals.values()):
@@ -229,7 +230,7 @@ class IndicatorService:
                     trade.tp1_hit_at = trade.tp1_hit_at or trade.exit_at
                     trade.close_reason = self._close_reason("TP1_HIT")
 
-            if status_before != trade.status or trade.status in ACTIVE_STATUSES or trade.status in TERMINAL_STATUSES:
+            if status_before != trade.status or (not intrabar and (trade.status in ACTIVE_STATUSES or trade.status in TERMINAL_STATUSES)):
                 signal.metadata.update({
                     "last_price": trade.last_price, "last_candle_open_time": trade.last_candle_open_time,
                     "exit_price": trade.exit_price, "exit_at": trade.exit_at, "close_reason": trade.close_reason,

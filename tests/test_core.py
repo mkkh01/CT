@@ -175,3 +175,33 @@ def test_summary_endpoints_group_active_signals_and_successful_trades_by_symbol(
         assert successful.json()["total"] == 1
         assert successful.json()["groups"][0]["symbol"] == "BTCUSDT"
         assert successful.json()["definition"] == "TP1_HIT"
+
+
+def test_live_candle_closes_buy_and_sell_at_tp1():
+    async def scenario():
+        buy_service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+        buy_signal = Signal(
+            id="live-buy", symbol="BTCUSDT", timeframe="5m", direction="BUY", status="ACTIVE",
+            score=80, entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:00:00+00:00",
+            signal_version="test", risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=[], structure={}, liquidity={},
+            fvg={}, order_block={}, volume={}, momentum={}, trend={}, data_health={}, metadata={"entry_open_time": 0},
+        )
+        buy_service._signals[buy_signal.id] = buy_signal
+        buy_service._trades[buy_signal.id] = buy_service._trade_from_signal(buy_signal)
+        await buy_service.on_candle(Candle("BTCUSDT", "5m", 0, 299999, 100, 106, 99, 104, 10, False))
+        assert buy_service._trades[buy_signal.id].status == "TP1_HIT"
+
+        sell_service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+        sell_signal = Signal(
+            id="live-sell", symbol="BTCUSDT", timeframe="5m", direction="SELL", status="ACTIVE",
+            score=80, entry=100, stop_loss=105, tp1=95, tp2=90, created_at="2026-01-01T00:00:00+00:00",
+            signal_version="test", risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=[], structure={}, liquidity={},
+            fvg={}, order_block={}, volume={}, momentum={}, trend={}, data_health={}, metadata={"entry_open_time": 0},
+        )
+        sell_service._signals[sell_signal.id] = sell_signal
+        sell_service._trades[sell_signal.id] = sell_service._trade_from_signal(sell_signal)
+        await sell_service.on_candle(Candle("BTCUSDT", "5m", 0, 299999, 100, 101, 94, 96, 10, False))
+        assert sell_service._trades[sell_signal.id].status == "TP1_HIT"
+
+    import asyncio
+    asyncio.run(scenario())
