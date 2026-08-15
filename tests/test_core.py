@@ -321,3 +321,12 @@ def test_candle_validation_rejects_non_finite_values():
         assert str(exc) == "non_finite_high"
     else:
         raise AssertionError("non-finite candle accepted")
+
+
+def test_analysis_rejects_gap_in_closed_history():
+    candles = make_candles(500)
+    candles[40].open_time += 900000
+    candles[40].close_time += 900000
+    snapshot, result = AnalysisEngine(Settings()).analyze("BTCUSDT", "15m", candles, candles, candles, data_fresh=True)
+    assert snapshot.data_health["reason"] == "HISTORY_GAP:entry"
+    assert result.decision == "NO TRADE"

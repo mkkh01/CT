@@ -9,6 +9,14 @@ from .indicators import atr, detect_swings, ema, momentum_context, relative_volu
 from .models import AnalysisSnapshot, Candle, NoTrade, Signal, StructureSnapshot
 
 
+TIMEFRAME_MS = {
+    "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
+    "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000,
+    "4h": 14_400_000, "6h": 21_600_000, "12h": 43_200_000,
+    "1d": 86_400_000,
+}
+
+
 class AnalysisEngine:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -91,6 +99,10 @@ class AnalysisEngine:
                 candle.validate()
         except ValueError as exc:
             return {"healthy": False, "reason": f"INVALID_CANDLE:{exc}", "fresh": fresh}
+        for series_name, series in (("entry", entry), ("structure", structure), ("htf", htf)):
+            expected = TIMEFRAME_MS.get(series[-1].timeframe.lower()) if series else None
+            if expected and any(curr.open_time - prev.open_time != expected for prev, curr in zip(series[-minimum:], series[-minimum + 1:])):
+                return {"healthy": False, "reason": f"HISTORY_GAP:{series_name}", "fresh": fresh}
         if self.settings.require_closed_candle and not entry[-1].is_closed:
             return {"healthy": False, "reason": "CANDLE_NOT_CLOSED", "fresh": fresh}
         if not fresh:
