@@ -58,7 +58,9 @@ class CandleStore:
 class BinanceMarketData:
     def __init__(self, settings: Settings, on_candle: CandleCallback | None = None, on_candle_closed: CandleClosedCallback | None = None):
         self.settings = settings
-        self.store = CandleStore(settings.history_limit)
+        # Keep one extra candle because Binance history includes the current open candle.
+        # The analysis engine requires history_limit closed candles.
+        self.store = CandleStore(settings.history_limit + 1)
         self.on_candle = on_candle
         self.on_candle_closed = on_candle_closed
         self.started = False
@@ -101,7 +103,7 @@ class BinanceMarketData:
         async def load(symbol: str, timeframe: str) -> None:
             async with sem:
                 try:
-                    response = await self._client.get(f"{self.settings.binance_rest_url}/klines", params={"symbol": symbol, "interval": timeframe, "limit": self.settings.history_limit})
+                    response = await self._client.get(f"{self.settings.binance_rest_url}/klines", params={"symbol": symbol, "interval": timeframe, "limit": self.settings.history_limit + 1})
                     response.raise_for_status()
                     candles = [self._from_rest(symbol, timeframe, row) for row in response.json()]
                     for candle in candles:
@@ -116,12 +118,12 @@ class BinanceMarketData:
 
     async def ensure_history(self, symbol: str, timeframe: str) -> None:
         symbol, timeframe = symbol.upper(), timeframe.lower()
-        if await self.store.count(symbol, timeframe) >= self.settings.history_limit:
+        if await self.store.count(symbol, timeframe) >= self.settings.history_limit + 1:
             return
         if not self._client:
             return
         try:
-            response = await self._client.get(f"{self.settings.binance_rest_url}/klines", params={"symbol": symbol, "interval": timeframe, "limit": self.settings.history_limit})
+            response = await self._client.get(f"{self.settings.binance_rest_url}/klines", params={"symbol": symbol, "interval": timeframe, "limit": self.settings.history_limit + 1})
             response.raise_for_status()
             candles = [self._from_rest(symbol, timeframe, row) for row in response.json()]
             for candle in candles:

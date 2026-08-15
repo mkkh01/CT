@@ -26,3 +26,23 @@ async def test_candle_store_deduplicates_and_bounds_history():
     assert len(snapshot) == 2
     assert snapshot[-1].open_time == 2
     assert snapshot[-1].close == 20.5
+
+
+def test_market_keeps_one_open_candle_beyond_closed_history_limit():
+    settings = Settings(history_limit=500)
+    market = BinanceMarketData(settings)
+    assert market.store.limit == 501
+
+    market = None
+    settings = None
+
+
+@pytest.mark.asyncio
+async def test_closed_history_can_reach_configured_limit_with_open_candle():
+    store = CandleStore(limit=501)
+    for index in range(501):
+        await store.upsert(Candle("BTCUSDT", "15m", index, index + 1, 10 + index, 12 + index, 9 + index, 11 + index, 1, index < 500))
+    snapshot = await store.snapshot("BTCUSDT", "15m")
+    assert len(snapshot) == 501
+    assert sum(item.is_closed for item in snapshot) == 500
+    assert snapshot[-1].is_closed is False
