@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -52,21 +53,30 @@ class SupabaseStore:
         if not self.enabled or not self._client:
             return None
         headers = {"Prefer": prefer} if prefer else {}
-        try:
-            response = await self._client.request(method, f"{self.base_url}/rest/v1/{table}", params=params, json=payload, headers=headers)
-            if response.is_error:
-                self.last_error = f"{method}_{table}_http_{response.status_code}"
-                logger.error("supabase_request_failed table=%s method=%s status=%s body=%s", table, method, response.status_code, response.text[:240])
+        for attempt in range(2):
+            try:
+                response = await self._client.request(method, f"{self.base_url}/rest/v1/{table}", params=params, json=payload, headers=headers)
+                if response.is_error:
+                    retryable = response.status_code in {408, 429} or response.status_code >= 500
+                    if retryable and attempt == 0:
+                        await asyncio.sleep(0.25)
+                        continue
+                    self.last_error = f"{method}_{table}_http_{response.status_code}"
+                    logger.error("supabase_request_failed table=%s method=%s status=%s body=%s", table, method, response.status_code, response.text[:240])
+                    return None
+                self.last_success_at = datetime.now(timezone.utc).isoformat()
+                self.last_error = None
+                if not response.content:
+                    return None
+                return response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                if attempt == 0:
+                    await asyncio.sleep(0.25)
+                    continue
+                self.last_error = f"{method}_{table}_{type(exc).__name__}"
+                logger.error("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
                 return None
-            self.last_success_at = datetime.now(timezone.utc).isoformat()
-            self.last_error = None
-            if not response.content:
-                return None
-            return response.json()
-        except httpx.HTTPError as exc:
-            self.last_error = f"{method}_{table}_{type(exc).__name__}"
-            logger.error("supabase_request_failed table=%s method=%s error=%s", table, method, exc)
-            return None
+        return None
 
     @staticmethod
     def _candle_row(candle: Candle) -> dict[str, Any]:

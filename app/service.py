@@ -123,6 +123,20 @@ class IndicatorService:
                 signal_payload = trade.payload.get("signal") if isinstance(trade.payload, dict) else None
                 if isinstance(signal_payload, dict):
                     self._signals[trade.signal_id] = Signal.from_dict(signal_payload)
+                else:
+                    # Older or partially persisted trades may not contain the
+                    # embedded signal payload. Rebuild the minimum signal
+                    # needed for lifecycle monitoring after a restart.
+                    self._signals[trade.signal_id] = Signal(
+                        id=trade.signal_id, symbol=trade.symbol, timeframe=trade.timeframe,
+                        direction=trade.direction, status=trade.status, score=trade.score,
+                        entry=trade.entry, stop_loss=trade.stop_loss, tp1=trade.tp1, tp2=trade.tp2,
+                        created_at=trade.created_at, signal_version="restored",
+                        risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=list(trade.reasons),
+                        structure={}, liquidity={}, fvg={}, order_block={}, volume={}, momentum={}, trend={},
+                        data_health={"healthy": True, "reason": "RESTORED_FROM_TRADE"},
+                        metadata={"entry_open_time": trade.last_candle_open_time or 0},
+                    )
             self.signal_count = len(self._signals)
             logger.info("active_trades_restored count=%s", len(self._trades))
         except Exception as exc:
@@ -211,6 +225,8 @@ class IndicatorService:
                 continue
             trade = self._trades.get(signal.id)
             if not trade:
+                trade = next((item for item in self._trades.values() if item.signal_id == signal.id), None)
+            if not trade:
                 trade = self._trade_from_signal(signal)
                 self._trades[trade.id] = trade
             trade.last_price = candle.close
@@ -295,14 +311,16 @@ class IndicatorService:
             await self.storage.upsert_analysis(snapshot)
         if isinstance(result, Signal) and create_signal:
             async with self._analysis_lock:
-                conflicting = any(
-                    item.symbol == result.symbol and item.timeframe == result.timeframe and item.direction != result.direction and item.status in ACTIVE_STATUSES
-                    for item in self._signals.values()
-                )
-                if conflicting:
+                active_existing = [
+                    item for item in self._signals.values()
+                    if item.symbol == result.symbol and item.timeframe == result.timeframe and item.status in ACTIVE_STATUSES
+                ]
+                if active_existing:
+                    has_opposite = any(item.direction != result.direction for item in active_existing)
+                    reason = "CONFLICTING ACTIVE SIGNAL" if has_opposite else "ACTIVE SIGNAL ALREADY EXISTS"
                     snapshot.decision = "NO TRADE"
-                    snapshot.reasons.append("CONFLICTING ACTIVE SIGNAL")
-                    result = NoTrade(result.symbol, result.timeframe, reasons=["CONFLICTING ACTIVE SIGNAL"], score=result.score)
+                    snapshot.reasons.append(reason)
+                    result = NoTrade(result.symbol, result.timeframe, reasons=[reason], score=result.score)
                 elif result.id not in self._signals:
                     self._signals[result.id] = result
                     trade = self._trade_from_signal(result)

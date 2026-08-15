@@ -68,6 +68,8 @@ class BinanceMarketData:
         self.last_message_at: str | None = None
         self.last_error: str | None = None
         self._ws_task: asyncio.Task | None = None
+        self._callback_tasks: set[asyncio.Task] = set()
+        self._callback_locks: dict[str, asyncio.Lock] = {}
         self._stop = asyncio.Event()
         self._client: httpx.AsyncClient | None = None
 
@@ -91,6 +93,12 @@ class BinanceMarketData:
             except asyncio.CancelledError:
                 pass
             self._ws_task = None
+        pending = list(self._callback_tasks)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._callback_tasks.clear()
         if self._client:
             await self._client.aclose()
             self._client = None
@@ -157,6 +165,30 @@ class BinanceMarketData:
         streams = "/".join(f"{symbol.lower()}@kline_{timeframe}" for symbol in self.settings.symbols for timeframe in self.settings.stream_timeframes)
         return f"{self.settings.binance_ws_url}?streams={streams}"
 
+    async def _dispatch_callbacks(self, candle: Candle) -> None:
+        key = f"{candle.symbol}:{candle.timeframe}"
+        lock = self._callback_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if self.on_candle:
+                try:
+                    await self.on_candle(candle)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("candle_callback_failed symbol=%s timeframe=%s error=%s", candle.symbol, candle.timeframe, exc)
+            if candle.is_closed and self.on_candle_closed:
+                try:
+                    await self.on_candle_closed(candle)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("closed_candle_callback_failed symbol=%s timeframe=%s error=%s", candle.symbol, candle.timeframe, exc)
+
+    def _schedule_callbacks(self, candle: Candle) -> None:
+        task = asyncio.create_task(self._dispatch_callbacks(candle), name=f"candle-callback:{candle.symbol}:{candle.timeframe}")
+        self._callback_tasks.add(task)
+        task.add_done_callback(self._callback_tasks.discard)
+
     async def _websocket_loop(self) -> None:
         backoff = 1
         while not self._stop.is_set():
@@ -169,7 +201,6 @@ class BinanceMarketData:
                     async for raw in websocket:
                         if self._stop.is_set():
                             break
-                        self.last_message_at = datetime.now(timezone.utc).isoformat()
                         payload = json.loads(raw)
                         candle = self._from_ws(payload)
                         if candle is None:
@@ -179,10 +210,9 @@ class BinanceMarketData:
                         except ValueError as exc:
                             self.last_error = f"invalid_candle:{exc}"
                             continue
-                        if self.on_candle:
-                            await self.on_candle(candle)
-                        if candle.is_closed and self.on_candle_closed:
-                            await self.on_candle_closed(candle)
+                        self.last_message_at = datetime.now(timezone.utc).isoformat()
+                        self._schedule_callbacks(candle)
+                    self.connected = False
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -202,5 +232,6 @@ class BinanceMarketData:
             "connected": self.connected,
             "last_message_at": self.last_message_at,
             "last_error": self.last_error,
+            "pending_callbacks": len(self._callback_tasks),
             "symbols": self.settings.symbols,
         }

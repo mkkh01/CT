@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -32,6 +33,9 @@ class Candle:
     received_at: str = field(default_factory=utc_now)
 
     def validate(self) -> None:
+        for name in ("open", "high", "low", "close", "volume"):
+            if not math.isfinite(getattr(self, name)):
+                raise ValueError(f"non_finite_{name}")
         if self.high < max(self.open, self.close): raise ValueError("high_below_open_or_close")
         if self.low > min(self.open, self.close): raise ValueError("low_above_open_or_close")
         if self.high < self.low: raise ValueError("high_below_low")

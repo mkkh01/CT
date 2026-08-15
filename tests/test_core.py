@@ -277,3 +277,47 @@ def test_analysis_and_signal_routes_validate_symbol_and_timeframe():
         assert client.get("/api/v1/analysis/BTCUSDT/unsupported").status_code == 400
         assert client.get("/api/v1/signals/UNKNOWN/15m").status_code == 404
         assert client.get("/api/v1/signals/BTCUSDT/unsupported").status_code == 400
+
+
+def test_same_direction_active_signal_blocks_duplicate_entry():
+    import asyncio
+    from app.models import AnalysisSnapshot, StructureSnapshot
+
+    async def scenario():
+        service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+        existing = Signal(
+            id="existing-active", symbol="BTCUSDT", timeframe="15m", direction="BUY", status="ACTIVE", score=85,
+            entry=100, stop_loss=95, tp1=105, tp2=110, created_at="2026-01-01T00:00:00+00:00", signal_version="test",
+            risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=[], structure={}, liquidity={}, fvg={}, order_block={},
+            volume={}, momentum={}, trend={}, data_health={}, metadata={},
+        )
+        service._signals[existing.id] = existing
+        candidate = Signal(
+            id="candidate-buy", symbol="BTCUSDT", timeframe="15m", direction="BUY", status="SIGNAL_CONFIRMED", score=86,
+            entry=101, stop_loss=96, tp1=106, tp2=111, created_at="2026-01-01T00:15:00+00:00", signal_version="test",
+            risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=[], structure={}, liquidity={}, fvg={}, order_block={},
+            volume={}, momentum={}, trend={}, data_health={}, metadata={},
+        )
+        snapshot = AnalysisSnapshot(
+            symbol="BTCUSDT", timeframe="15m", generated_at="2026-01-01T00:15:00+00:00",
+            data_health={"healthy": True}, htf_trend="BULLISH", structure=StructureSnapshot(),
+        )
+        service.analysis_engine.analyze = lambda *args, **kwargs: (snapshot, candidate)
+        _, result = await service.analyze("BTCUSDT", "15m", create_signal=True)
+        assert result.decision == "NO TRADE"
+        assert result.reasons == ["ACTIVE SIGNAL ALREADY EXISTS"]
+        assert "candidate-buy" not in service._signals
+
+    asyncio.run(scenario())
+
+
+def test_candle_validation_rejects_non_finite_values():
+    import math
+
+    bad = Candle("BTCUSDT", "15m", 0, 1, 10, math.nan, 8, 9, 1)
+    try:
+        bad.validate()
+    except ValueError as exc:
+        assert str(exc) == "non_finite_high"
+    else:
+        raise AssertionError("non-finite candle accepted")
