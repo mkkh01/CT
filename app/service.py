@@ -317,7 +317,10 @@ class IndicatorService:
         return snapshot, result
 
     def _data_fresh(self) -> bool:
-        if not self.market.last_message_at:
+        # A recent message alone is insufficient: a disconnected stream can
+        # leave a stale timestamp within the grace window.  Trading decisions
+        # require an actively connected WebSocket and fresh market data.
+        if not self.market.connected or not self.market.last_message_at:
             return False
         if self.storage.enabled and (not self.storage.last_success_at or self.storage.last_error):
             return False
@@ -406,14 +409,15 @@ class IndicatorService:
         ]
 
     def status(self) -> dict[str, Any]:
+        trading_ready = self._data_fresh()
         return {
-            "status": "ok", "app_version": self.settings.app_version, "config_version": self.settings.config_version,
+            "status": "ok" if trading_ready else "degraded", "app_version": self.settings.app_version, "config_version": self.settings.config_version,
             "started": self.started, "starting": self.starting, "started_at": self.started_at,
             "execution_mode": "paper", "cycle_count": self.cycle_count, "signal_count": self.signal_count,
             "trade_count": len(self._trades), "active_trade_count": sum(item.status in ACTIVE_STATUSES for item in self._trades.values()),
             "last_analysis_at": self.last_analysis_at, "last_signal_at": self.last_signal_at,
             "latest_prices": self._latest_prices, "subscriber_count": len(self._subscribers),
-            "market": self.market.status(),
+            "market": self.market.status(), "trading_ready": trading_ready,
             "integrations": {"supabase_configured": self.storage.enabled, "redis_configured": bool(self.redis.url), "supabase_connected": bool(self.storage.last_success_at and not self.storage.last_error), "supabase_last_success_at": self.storage.last_success_at, "supabase_last_error": self.storage.last_error, "redis_connected": self.redis.enabled},
             "settings": {"symbols": self.settings.symbols, "entry_timeframe": self.settings.entry_timeframe, "analysis_timeframes": self.settings.analysis_timeframes, "stream_timeframes": self.settings.stream_timeframes, "structure_timeframe": self.settings.structure_timeframe, "htf_timeframe": self.settings.htf_timeframe, "min_signal_score": self.settings.min_signal_score},
         }

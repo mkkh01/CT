@@ -257,3 +257,23 @@ def test_completed_storage_state_replaces_stale_local_active_state():
 
     import asyncio
     asyncio.run(scenario())
+
+
+def test_data_fresh_requires_active_market_connection():
+    from datetime import datetime, timezone
+
+    service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+    service.market.last_message_at = datetime.now(timezone.utc).isoformat()
+    service.market.connected = False
+    assert service._data_fresh() is False
+    service.market.connected = True
+    assert service._data_fresh() is True
+
+
+def test_analysis_and_signal_routes_validate_symbol_and_timeframe():
+    settings = Settings(symbols=["BTCUSDT"], disable_auto_start=True)
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/v1/analysis/UNKNOWN").status_code == 404
+        assert client.get("/api/v1/analysis/BTCUSDT/unsupported").status_code == 400
+        assert client.get("/api/v1/signals/UNKNOWN/15m").status_code == 404
+        assert client.get("/api/v1/signals/BTCUSDT/unsupported").status_code == 400

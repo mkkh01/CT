@@ -67,14 +67,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         candles = await service.get_candles(symbol, timeframe, limit)
         return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "candles": candles, "data_status": "OK" if candles else "NO_DATA"}
 
+    def validate_symbol_timeframe(symbol: str, timeframe: str) -> None:
+        if symbol.upper() not in app_settings.symbols:
+            raise HTTPException(status_code=404, detail="unsupported_symbol")
+        if timeframe.lower() not in SUPPORTED_TIMEFRAMES:
+            raise HTTPException(status_code=400, detail="unsupported_timeframe")
+
     @app.get("/api/v1/analysis/{symbol}")
     async def analysis_default(symbol: str):
+        validate_symbol_timeframe(symbol, app_settings.entry_timeframe)
         return await service.get_analysis(symbol, app_settings.entry_timeframe)
 
     @app.get("/api/v1/analysis/{symbol}/{timeframe}")
     async def analysis(symbol: str, timeframe: str):
-        if symbol.upper() not in app_settings.symbols:
-            raise HTTPException(status_code=404, detail="unsupported_symbol")
+        validate_symbol_timeframe(symbol, timeframe)
         return await service.get_analysis(symbol, timeframe)
 
     @app.get("/api/v1/signals/active")
@@ -88,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/signals/{symbol}/{timeframe}")
     async def signals(symbol: str, timeframe: str, limit: int = Query(default=50, ge=1, le=200)):
+        validate_symbol_timeframe(symbol, timeframe)
         return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "signals": await service.get_signals(symbol, timeframe, limit)}
 
     def validate_trade_filters(symbol: str | None, timeframe: str | None) -> None:
