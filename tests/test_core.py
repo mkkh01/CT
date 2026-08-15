@@ -205,3 +205,21 @@ def test_live_candle_closes_buy_and_sell_at_tp1():
 
     import asyncio
     asyncio.run(scenario())
+
+
+def test_trade_lifecycle_activates_sell_at_entry():
+    async def scenario():
+        service = IndicatorService(Settings(symbols=["BTCUSDT"], disable_auto_start=True))
+        signal = Signal(
+            id="sell-entry-test", symbol="BTCUSDT", timeframe="5m", direction="SELL", status="SIGNAL_CONFIRMED",
+            score=80, entry=100, stop_loss=105, tp1=95, tp2=90, created_at="2026-01-01T00:00:00+00:00",
+            signal_version="test", risk_reward={"tp1": 1.0, "tp2": 2.0}, reasons=["test reason"], structure={},
+            liquidity={}, fvg={}, order_block={}, volume={}, momentum={}, trend={}, data_health={}, metadata={"entry_open_time": 0},
+        )
+        service._signals[signal.id] = signal
+        await service._update_signal_lifecycle(Candle("BTCUSDT", "5m", 0, 299999, 101, 102, 99, 101, 10, True))
+        assert service._trades[signal.id].status == "ACTIVE"
+        assert service._trades[signal.id].activated_at is not None
+
+    import asyncio
+    asyncio.run(scenario())
