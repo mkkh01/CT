@@ -163,7 +163,7 @@ def _current_errors(c, health, stale=False):
 
 
 def render_perf():
-    """أداء حي محسوب عند الضغط، مع الحالة الحالية لا سجل تاريخي."""
+    """أداء حي مختصر محسوب عند الضغط."""
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     health = _live_health()
@@ -173,28 +173,28 @@ def render_perf():
     eq = db.realized_equity()
     totals = db.system_totals(today)
     c = db.last_cycle()
-    ref = config.BACKTEST_REF
-    lines = ["📊 أداء النظام — لقطة حية محسوبة الآن:",
-             f"🕐 {now.strftime('%H:%M:%S')} UTC | 💓 {_health_line(health)}",
-             f"⚙️ الجدولة: {'تعمل كل ' + str(config.SCAN_INTERVAL_SEC) + 'ث' if config.RUN_SCHEDULER else 'متوقفة'}",
-             f"📦 الصفقات المفتوحة: {totals['open_n']} | الصفقات المغلقة: {totals['closed_n']}",
-             f"💰 الرصيد: ${eq:,.1f} | P&L الحالي: {(eq - config.PAPER_EQUITY):+.2f}$ | صفقات اليوم: {totals['today_n']}",
-             f"🛡️ المخاطر: حد متزامن {config.RISK['max_concurrent']} | خسارة يومية {config.RISK['daily_loss_halt'] * 100:.0f}% | تراجع كلي {config.RISK['max_drawdown_halt'] * 100:.0f}% | الإيقاف: {db.get_state('halted', '') or 'لا'}",
-             "",
-             f"⚡ DAY حي: فوز {d['wins']} | خسارة {d['losses']} | WR {d['wr']}% | PF {d['pf']} | PnL {d['net']:+.2f}$",
-             f"   ↩️ مرجع DAY: {ref['DAY']['n']} | WR {ref['DAY']['wr']}% | PF {ref['DAY']['pf']} | +{ref['DAY']['net']:,.0f}$",
-             f"🦅 FALCON حي: فوز {f['wins']} | خسارة {f['losses']} | WR {f['wr']}% | PF {f['pf']} | PnL {f['net']:+.2f}$",
-             f"   ↩️ مرجع FALCON: {ref['FALCON']['n']} | WR {ref['FALCON']['wr']}% | PF {ref['FALCON']['pf']} | +{ref['FALCON']['net']:,.0f}$",
-             f"📊 الإجمالي الحي: فوز {t['wins']} | خسارة {t['losses']} | WR {t['wr']}% | PF {t['pf']} | PnL {t['net']:+.2f}$",
-             f"🗄️ التخزين: PostgreSQL | 📡 التغذية الحية: مفعّلة | 🔁 الفحص الآلي: {'مفعّل' if config.RUN_SCHEDULER else 'متوقف'}"]
-    stale = True
+    stale = not c
     if c:
-        age = max(0, (now - c["ended_at"]).total_seconds())
-        stale = age > config.SCAN_INTERVAL_SEC * 2.5
-        lines.append(f"🔄 آخر دورة #{c['id']}: منذ {age:.0f}ث | {c['duration_ms'] / 1000:.1f}ث | إشارات {c['signals']} | فتح {c['opened']} | إغلاق {c['closed']}")
-        lines.append(f"   مسح DAY {c['scanned_day']} + FALCON {c['scanned_falcon']} | رفض DAY {c['reject_day']} | رفض FALCON {c['reject_falcon']}")
+        stale = (now - c["ended_at"]).total_seconds() > config.SCAN_INTERVAL_SEC * 2.5
     errors = _current_errors(c, health, stale)
-    lines.append("⚠️ الأخطاء الحالية: " + " | ".join(errors[:6]) if errors else "✅ لا أخطاء حالية")
+    system_ok = config.RUN_SCHEDULER and not any(value not in ("ok", "no-token") for value in health.values()) and not stale
+    status = "يعمل ✅" if system_ok else "يحتاج مراجعة ⚠️"
+    halted = db.get_state("halted", "")
+    signals_today = c["signals"] if c and c["ended_at"].strftime("%Y-%m-%d") == today else 0
+    lines = ["📊 أداء النظام", "",
+             f"الحالة: {status}",
+             f"الجدولة: {'كل ' + str(config.SCAN_INTERVAL_SEC) + ' ثانية ✅' if config.RUN_SCHEDULER else 'متوقفة ⚠️'}",
+             f"آخر تحديث: {now.strftime('%H:%M')} UTC", "",
+             f"💰 الرصيد: ${eq:,.0f}",
+             f"📈 P&L المحقق: ${(eq - config.PAPER_EQUITY):.2f}",
+             f"📦 مفتوحة: {totals['open_n']} | مغلقة: {totals['closed_n']}",
+             f"🎯 إشارات اليوم: {signals_today}", "",
+             f"⚡ DAY",
+             f"فوز: {d['wins']} | خسارة: {d['losses']} | WR: {d['wr']}% | PnL: ${d['net']:.2f}", "",
+             f"🦅 FALCON",
+             f"فوز: {f['wins']} | خسارة: {f['losses']} | WR: {f['wr']}% | PnL: ${f['net']:.2f}", "",
+             f"🛡️ الحماية: {halted or 'غير مفعلة'}",
+             f"❌ الأخطاء الحالية: {'لا يوجد' if not errors else ' | '.join(str(e)[:100] for e in errors[:4])}"]
     return "\n".join(lines)[:3800]
 
 
