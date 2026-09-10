@@ -9,7 +9,9 @@ _CLOSED_AR = {"TP": "🎯", "SL": "🛑", "TSL": "🔒", "TIME": "⏱️"}
 
 
 def admin_id():
-    return config.ADMIN_CHAT_ID or db.get_state("admin_chat_id", "")
+    # Chat ID الذي سجله المستخدم عبر /start هو المرجع الفعلي؛
+    # قيمة البيئة تبقى fallback فقط إذا لم يوجد تسجيل في قاعدة البيانات.
+    return db.get_state("admin_chat_id", "") or config.ADMIN_CHAT_ID
 
 
 def handle_update(up):
@@ -22,8 +24,10 @@ def handle_update(up):
         if text.startswith("/start"):
             return _on_start(chat)
         if chat and chat == str(admin_id()):
-            notify.send_text(chat, "اختر من الأزرار 👇", KEYBOARD)
+            ok, result = notify.send_text(chat, "اختر من الأزرار 👇", KEYBOARD)
+            print(f"[telegram-message] chat={chat} ok={ok} result={str(result)[:240]}", flush=True)
     except Exception as e:
+        print(f"[telegram-update-error] {e}", flush=True)
         db.log_event("ERR", f"bot update: {e}")
     return True
 
@@ -33,11 +37,12 @@ def _on_start(chat):
     if not adm:
         db.set_state("admin_chat_id", chat)
         db.log_event("INFO", f"admin registered: {chat}")
-        notify.send_text(chat, "🦅 أهلاً بك في نظام FALCON!\nتم تسجيلك كمدير. اختر من الأزرار 👇", KEYBOARD)
+        ok, result = notify.send_text(chat, "🦅 أهلاً بك في نظام FALCON!\nتم تسجيلك كمدير. اختر من الأزرار 👇", KEYBOARD)
     elif chat == adm:
-        notify.send_text(chat, "🦅 نظام FALCON — اختر 👇", KEYBOARD)
+        ok, result = notify.send_text(chat, "🦅 نظام FALCON — اختر 👇", KEYBOARD)
     else:
-        notify.send_text(chat, "⛔ هذا البوت خاص.", None)
+        ok, result = notify.send_text(chat, "⛔ هذا البوت خاص.", None)
+    print(f"[telegram-start] chat={chat} admin={adm or 'registered'} ok={ok} result={str(result)[:240]}", flush=True)
     return True
 
 
