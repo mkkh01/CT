@@ -69,14 +69,14 @@ def recent_closed(limit=10):
 def get_stats(system=None):
     where = "status='CLOSED'" + (" AND system=%s" if system else "")
     p = (system,) if system else ()
-    rows = q_all(f"SELECT net FROM trades WHERE {where}", p)
+    rows = q_all("SELECT net FROM trades WHERE " + where, p)
     n = len(rows)
     if n == 0:
-        return dict(n=0, wr=0.0, pf=0.0, net=0.0)
+        return dict(n=0, wins=0, losses=0, wr=0.0, pf=0.0, net=0.0)
     wins = [x["net"] for x in rows if x["net"] > 0]
     loss = [-x["net"] for x in rows if x["net"] <= 0]
     g, l = sum(wins), sum(loss)
-    return dict(n=n, wr=round(len(wins) / n * 100, 1),
+    return dict(n=n, wins=len(wins), losses=len(loss), wr=round(len(wins) / n * 100, 1),
                 pf=round(g / l, 2) if l > 0 else 0.0,
                 net=round(sum(x["net"] for x in rows), 2))
 

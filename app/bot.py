@@ -49,7 +49,7 @@ def _on_callback(cb):
         return True
     key = cb.get("data", "")
     render = {"open": render_open, "closed": render_closed, "perf": render_perf,
-              "prices": render_prices, "cycle": render_cycle}.get(key)
+              "prices": render_prices, "cycle": render_cycle, "home": render_home}.get(key)
     if render:
         try:
             text = render()
@@ -61,6 +61,13 @@ def _on_callback(cb):
 
 
 # ═══════════════ العروض الخمسة ═══════════════
+def render_home():
+    return ("🦅 CT — FALCON Paper Trading\n"
+            "لوحة التحكم الحية\n\n"
+            "اختر القسم المطلوب من الأزرار أدناه.\n"
+            "كل عرض يُحسب عند الضغط ويعكس الحالة الحالية للنظام.")
+
+
 def render_open():
     pos = db.open_positions()
     if not pos:
@@ -163,14 +170,16 @@ def render_perf():
     lines = ["📊 أداء النظام — لقطة حية محسوبة الآن:",
              f"🕐 {now.strftime('%H:%M:%S')} UTC | 💓 {_health_line(health)}",
              f"⚙️ الجدولة: {'تعمل كل ' + str(config.SCAN_INTERVAL_SEC) + 'ث' if config.RUN_SCHEDULER else 'متوقفة'}",
-             f"💰 الرصيد: ${eq:,.1f} ({(eq / config.PAPER_EQUITY - 1) * 100:+.2f}%) | مفتوحة: {totals['open_n']} | اليوم: {totals['today_n']}",
+             f"📦 الصفقات المفتوحة: {totals['open_n']} | الصفقات المغلقة: {totals['closed_n']}",
+             f"💰 الرصيد: ${eq:,.1f} | P&L الحالي: {(eq - config.PAPER_EQUITY):+.2f}$ | صفقات اليوم: {totals['today_n']}",
              f"🛡️ المخاطر: حد متزامن {config.RISK['max_concurrent']} | خسارة يومية {config.RISK['daily_loss_halt'] * 100:.0f}% | تراجع كلي {config.RISK['max_drawdown_halt'] * 100:.0f}% | الإيقاف: {db.get_state('halted', '') or 'لا'}",
              "",
-             f"⚡ DAY حي: n={d['n']} | WR {d['wr']}% | PF {d['pf']} | {d['net']:+.1f}$",
+             f"⚡ DAY حي: فوز {d['wins']} | خسارة {d['losses']} | WR {d['wr']}% | PF {d['pf']} | PnL {d['net']:+.2f}$",
              f"   ↩️ مرجع DAY: {ref['DAY']['n']} | WR {ref['DAY']['wr']}% | PF {ref['DAY']['pf']} | +{ref['DAY']['net']:,.0f}$",
-             f"🦅 FALCON حي: n={f['n']} | WR {f['wr']}% | PF {f['pf']} | {f['net']:+.1f}$",
+             f"🦅 FALCON حي: فوز {f['wins']} | خسارة {f['losses']} | WR {f['wr']}% | PF {f['pf']} | PnL {f['net']:+.2f}$",
              f"   ↩️ مرجع FALCON: {ref['FALCON']['n']} | WR {ref['FALCON']['wr']}% | PF {ref['FALCON']['pf']} | +{ref['FALCON']['net']:,.0f}$",
-             f"📦 الإجمالي الحي: n={t['n']} | WR {t['wr']}% | PF {t['pf']} | {t['net']:+.1f}$"]
+             f"📊 الإجمالي الحي: فوز {t['wins']} | خسارة {t['losses']} | WR {t['wr']}% | PF {t['pf']} | PnL {t['net']:+.2f}$",
+             f"🗄️ التخزين: PostgreSQL | 📡 التغذية الحية: مفعّلة | 🔁 الفحص الآلي: {'مفعّل' if config.RUN_SCHEDULER else 'متوقف'}"]
     stale = True
     if c:
         age = max(0, (now - c["ended_at"]).total_seconds())

@@ -8,11 +8,12 @@ AR_SYS = {"DAY": "FALCON-DAY ⚡", "FALCON": "FALCON 🦅"}
 AR_EXIT = {"TP": "تحقق الهدف 🎯", "SL": "ضرب الوقف 🛑", "TSL": "الوقف المتحرك 🔒", "TIME": "انتهاء الوقت ⏱️"}
 
 KEYBOARD = {"inline_keyboard": [
-    [{"text": "📌 المفتوحة", "callback_data": "open"},
-     {"text": "📋 المغلقة", "callback_data": "closed"}],
-    [{"text": "📊 الأداء", "callback_data": "perf"},
-     {"text": "💰 الأسعار", "callback_data": "prices"}],
-    [{"text": "🔄 Samurai Cycle", "callback_data": "cycle"}],
+    [{"text": "الصفقات المفتوحة", "callback_data": "open"},
+     {"text": "الصفقات المغلقة", "callback_data": "closed"}],
+    [{"text": "الأسعار الحالية", "callback_data": "prices"},
+     {"text": "🔄 Samurai Cycle", "callback_data": "cycle"}],
+    [{"text": "أداء النظام", "callback_data": "perf"}],
+    [{"text": "القائمة الرئيسية", "callback_data": "home"}],
 ]}
 
 
