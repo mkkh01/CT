@@ -98,21 +98,88 @@ def render_closed():
     return "\n".join(lines)[:3800]
 
 
+def _live_health():
+    """فحوصات حقيقية لحظة الضغط، لا تعتمد على لقطة محفوظة."""
+    health = {}
+    try:
+        VisionMarket().price("BTCUSDT")
+        health["Binance"] = "ok"
+    except Exception as e:
+        health["Binance"] = f"ERR {str(e)[:80]}"
+    try:
+        health["Supabase"] = "ok" if db.health() else "ERR"
+    except Exception as e:
+        health["Supabase"] = f"ERR {str(e)[:80]}"
+    try:
+        health["Redis"] = "ok" if cache.ping() else "ERR"
+    except Exception as e:
+        health["Redis"] = f"ERR {str(e)[:80]}"
+    if not config.BOT_TOKEN:
+        health["Telegram"] = "no-token"
+    else:
+        try:
+            health["Telegram"] = "ok" if notify.get_me() else "ERR"
+        except Exception as e:
+            health["Telegram"] = f"ERR {str(e)[:80]}"
+    return health
+
+
+def _health_line(health):
+    def mark(value):
+        return "✅" if value == "ok" else ("⏭️" if value == "no-token" else "❌")
+    return " ".join(f"{key}{mark(value)}" for key, value in health.items())
+
+
+def _current_errors(c, health, stale=False):
+    """الأخطاء الحالية فقط: فحص الآن + آخر دورة + توقف الجدولة الآن."""
+    errors = [f"{key}: {value}" for key, value in health.items()
+              if value not in ("ok", "no-token")]
+    if c:
+        raw = c.get("errors") or []
+        if isinstance(raw, str):
+            try:
+                import json
+                raw = json.loads(raw)
+            except Exception:
+                raw = [raw]
+        errors.extend(str(error) for error in raw if error)
+    if stale:
+        errors.append("scheduler: لا توجد دورة حديثة ضمن المهلة")
+    return errors
+
+
 def render_perf():
+    """أداء حي محسوب عند الضغط، مع الحالة الحالية لا سجل تاريخي."""
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    health = _live_health()
     d = db.get_stats("DAY")
     f = db.get_stats("FALCON")
     t = db.get_stats()
     eq = db.realized_equity()
+    totals = db.system_totals(today)
+    c = db.last_cycle()
     ref = config.BACKTEST_REF
-    return ("📊 أداء النظام (ورقي حي):\n"
-            f"💰 الرصيد: ${eq:,.1f} ({(eq / config.PAPER_EQUITY - 1) * 100:+.2f}%)\n\n"
-            f"⚡ DAY (الحي): n={d['n']} | WR {d['wr']}% | PF {d['pf']} | {d['net']:+.1f}$\n"
-            f"   ↩️ باك تست DAY: {ref['DAY']['n']} صفقة | WR {ref['DAY']['wr']}% | PF {ref['DAY']['pf']} | +{ref['DAY']['net']:,.0f}$\n"
-            f"🦅 FALCON (الحي): n={f['n']} | WR {f['wr']}% | PF {f['pf']} | {f['net']:+.1f}$\n"
-            f"   ↩️ باك تست FALCON: {ref['FALCON']['n']} صفقة | WR {ref['FALCON']['wr']}% | PF {ref['FALCON']['pf']} | +{ref['FALCON']['net']:,.0f}$\n\n"
-            f"📦 الإجمالي الحي: n={t['n']} | WR {t['wr']}% | PF {t['pf']} | {t['net']:+.1f}$\n"
-            "ℹ️ ملاحظة: كل نظام له مرجع باك تست مختلف — DAY سكالبينج فوزه عالٍ (77%)، "
-            "FALCON تتبّع اتجاه فوزه أقل (49%) لكن أرباح صفقاته أكبر.")
+    lines = ["📊 أداء النظام — لقطة حية محسوبة الآن:",
+             f"🕐 {now.strftime('%H:%M:%S')} UTC | 💓 {_health_line(health)}",
+             f"⚙️ الجدولة: {'تعمل كل ' + str(config.SCAN_INTERVAL_SEC) + 'ث' if config.RUN_SCHEDULER else 'متوقفة'}",
+             f"💰 الرصيد: ${eq:,.1f} ({(eq / config.PAPER_EQUITY - 1) * 100:+.2f}%) | مفتوحة: {totals['open_n']} | اليوم: {totals['today_n']}",
+             f"🛡️ المخاطر: حد متزامن {config.RISK['max_concurrent']} | خسارة يومية {config.RISK['daily_loss_halt'] * 100:.0f}% | تراجع كلي {config.RISK['max_drawdown_halt'] * 100:.0f}% | الإيقاف: {db.get_state('halted', '') or 'لا'}",
+             "",
+             f"⚡ DAY حي: n={d['n']} | WR {d['wr']}% | PF {d['pf']} | {d['net']:+.1f}$",
+             f"   ↩️ مرجع DAY: {ref['DAY']['n']} | WR {ref['DAY']['wr']}% | PF {ref['DAY']['pf']} | +{ref['DAY']['net']:,.0f}$",
+             f"🦅 FALCON حي: n={f['n']} | WR {f['wr']}% | PF {f['pf']} | {f['net']:+.1f}$",
+             f"   ↩️ مرجع FALCON: {ref['FALCON']['n']} | WR {ref['FALCON']['wr']}% | PF {ref['FALCON']['pf']} | +{ref['FALCON']['net']:,.0f}$",
+             f"📦 الإجمالي الحي: n={t['n']} | WR {t['wr']}% | PF {t['pf']} | {t['net']:+.1f}$"]
+    stale = True
+    if c:
+        age = max(0, (now - c["ended_at"]).total_seconds())
+        stale = age > config.SCAN_INTERVAL_SEC * 2.5
+        lines.append(f"🔄 آخر دورة #{c['id']}: منذ {age:.0f}ث | {c['duration_ms'] / 1000:.1f}ث | إشارات {c['signals']} | فتح {c['opened']} | إغلاق {c['closed']}")
+        lines.append(f"   مسح DAY {c['scanned_day']} + FALCON {c['scanned_falcon']} | رفض DAY {c['reject_day']} | رفض FALCON {c['reject_falcon']}")
+    errors = _current_errors(c, health, stale)
+    lines.append("⚠️ الأخطاء الحالية: " + " | ".join(errors[:6]) if errors else "✅ لا أخطاء حالية")
+    return "\n".join(lines)[:3800]
 
 
 def render_prices():
@@ -187,6 +254,7 @@ def render_cycle():
     # ── آخر دورة مسجلة + هل الجدولة حية؟ ──
     c = db.last_cycle()
     lines.append("────────────")
+    stale = True
     if c:
         ended = c["ended_at"]
         ago_min = (now - ended).total_seconds() / 60
@@ -209,14 +277,14 @@ def render_cycle():
     else:
         lines.append("⚠️ لا دورات مسجلة إطلاقاً — السيرفر لم يبدأ بعد")
 
-    # ── الأخطاء الداخلية المسجلة ──
-    errs = db.recent_errors(3)
+    # ── الأخطاء الحالية فقط، لا نعرض أحداثًا تاريخية محفوظة ──
+    current_errors = _current_errors(c, health, stale)
     lines.append("────────────")
-    if errs:
-        lines.append("🧾 آخر الأخطاء الداخلية:")
-        for e in errs:
-            lines.append(f"• {e['ts'].strftime('%H:%M')} — {str(e['msg'])[:110]}")
+    if current_errors:
+        lines.append("🧾 الأخطاء الداخلية الحالية:")
+        for error in current_errors[:8]:
+            lines.append(f"• {str(error)[:150]}")
     else:
-        lines.append("✨ لا أخطاء داخلية مسجلة")
+        lines.append("✨ لا أخطاء داخلية حالية")
     lines.append(f"⚙️ ورقي | حد يومي {config.DAY['max_per_day']}×/عملة | إيقاف {config.RISK['daily_loss_halt'] * 100:.0f}% يومي / {config.RISK['max_drawdown_halt'] * 100:.0f}% كلي")
     return "\n".join(lines)[:3800]

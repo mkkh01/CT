@@ -12,7 +12,7 @@ KEYBOARD = {"inline_keyboard": [
      {"text": "📋 المغلقة", "callback_data": "closed"}],
     [{"text": "📊 الأداء", "callback_data": "perf"},
      {"text": "💰 الأسعار", "callback_data": "prices"}],
-    [{"text": "🔄 Summary Cycle", "callback_data": "cycle"}],
+    [{"text": "🔄 Samurai Cycle", "callback_data": "cycle"}],
 ]}
 
 
