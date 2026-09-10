@@ -50,7 +50,8 @@ def get_me():
 
 
 def set_webhook(url):
-    return _api("setWebhook", {"url": url, "drop_pending_updates": True})
+    # لا نحذف /start أو الأزرار المعلقة أثناء إعادة نشر Render.
+    return _api("setWebhook", {"url": url, "drop_pending_updates": False})
 
 
 def fmt_px(x):

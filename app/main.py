@@ -61,8 +61,12 @@ def api_summary():
 
 @app.post("/webhook/telegram")
 def webhook():
+    update = request.get_json(force=True, silent=True) or {}
     try:
-        bot.handle_update(request.get_json(force=True, silent=True) or {})
+        # Telegram ينتظر ردًا سريعًا؛ لا نربط استجابة webhook باتصالات DB/API.
+        threading.Thread(target=bot.handle_update, args=(update,), daemon=True).start()
+        msg = update.get("message", {}) if isinstance(update, dict) else {}
+        print(f"[telegram-webhook] update={update.get('update_id')} text={msg.get('text', '')!r}", flush=True)
     except Exception as e:
         try:
             db.log_event("ERR", f"webhook: {e}")
