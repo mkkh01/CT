@@ -211,89 +211,113 @@ def render_prices():
     return f"💰 الأسعار الحية ({now} UTC):\n" + "\n".join(sorted(out)[:40]) if out else "⚠️ لا أسعار متاحة الآن."
 
 
+def _reason_label(key):
+    return {
+        "vol": "حجم التداول غير كافٍ",
+        "adx": "قوة الاتجاه غير مناسبة",
+        "no-trigger": "لم يتحقق محفز الدخول",
+        "no-breakout": "لا يوجد اختراق",
+        "regime-bear": "السوق في اتجاه هابط",
+        "risk-size": "حجم المخاطرة غير مناسب",
+        "risk-max-concurrent": "تم بلوغ الحد الأقصى للمراكز",
+        "anti-double": "توجد صفقة للنظام والعملة نفسها",
+    }.get(key, key)
+
+
+def _reason_lines(title, reasons):
+    lines = [title]
+    if not reasons:
+        lines.append("• لا توجد حالات رفض")
+        return lines
+    for key, count in sorted(reasons.items(), key=lambda item: -item[1]):
+        lines.append(f"• {_reason_label(key)}: {count}")
+    return lines
+
+
 def render_cycle():
-    """لقطة حية محسوبة عند الضغط: نبض محركات حقيقي الآن + عدادات الآن + تشخيص آخر دورة."""
+    """Samurai Cycle: تقرير حي واضح، بلا سجل أخطاء تاريخي."""
     import json
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     interval = config.SCAN_INTERVAL_SEC
-
-    # ── نبض حي الآن (فحص حقيقي لحظة الضغط — ليس سجلاً محفوظاً) ──
-    health = {}
-    try:
-        VisionMarket().price("BTCUSDT")
-        health["binance"] = "ok"
-    except Exception as e:
-        health["binance"] = f"ERR {str(e)[:50]}"
-    try:
-        health["supabase"] = "ok" if db.health() else "ERR"
-    except Exception as e:
-        health["supabase"] = f"ERR {str(e)[:50]}"
-    try:
-        health["redis"] = "ok" if cache.ping() else "ERR"
-    except Exception as e:
-        health["redis"] = f"ERR {str(e)[:50]}"
-    health["telegram"] = "no-token"
-    if config.BOT_TOKEN:
-        try:
-            health["telegram"] = "ok" if notify.get_me() else "ERR"
-        except Exception as e:
-            health["telegram"] = f"ERR {str(e)[:50]}"
-    hb = lambda k: "✅" if health[k] == "ok" else ("⏭️" if health[k] == "no-token" else "❌")
-
-    lines = ["🔄 لقطة النظام الحية (محسوبة الآن عند الضغط):",
-             f"🕐 {now.strftime('%H:%M:%S')} UTC",
-             f"💓 المحركات الآن: Binance{hb('binance')} Supabase{hb('supabase')} Redis{hb('redis')} Telegram{hb('telegram')}"]
-    bad = {k: v for k, v in health.items() if v not in ("ok", "no-token")}
-    if bad:
-        lines.append("🔴 تفاصيل الأعطال: " + " | ".join(f"{k}: {v}" for k, v in bad.items()))
-
-    # ── عدادات حية الآن ──
-    try:
-        t = db.system_totals(today)
-        eq = db.realized_equity()
-        day_start = float(db.get_state("day_start", str(eq)) or eq)
-        lines += [f"📦 الآن: مفتوحة {t['open_n']} | مغلقة {t['closed_n']} | صفقات اليوم {t['today_n']} | دورات مسجلة {t['cycles']}",
-                  f"💰 الرصيد: ${eq:,.1f} | بدأ اليوم ${day_start:,.0f} | P&L اليوم: {eq - day_start:+.1f}$"]
-        h = db.get_state("halted", "")
-        lines.append(f"🛑 الإيقاف: {'⚠️ نشط (' + h + ')' if h else 'لا'}")
-    except Exception as e:
-        lines.append(f"⚠️ تعذر حساب العدادات الآن: {str(e)[:90]}")
-
-    # ── آخر دورة مسجلة + هل الجدولة حية؟ ──
+    health = _live_health()
     c = db.last_cycle()
-    lines.append("────────────")
-    stale = True
+    lines = ["🔄 Samurai Cycle — الحالة الحية", ""]
+
     if c:
+        cycle_health = c.get("health") if isinstance(c.get("health"), dict) else json.loads(c.get("health") or "{}")
+        metrics = {key: int(cycle_health.get(key, 0) or 0) for key in (
+            "signals_day", "signals_falcon", "opened_day", "opened_falcon",
+            "closed_day", "closed_falcon")}
         ended = c["ended_at"]
-        ago_min = (now - ended).total_seconds() / 60
-        stale = ago_min * 60 > interval * 2.5
-        ago_txt = f"منذ {ago_min:.0f} دقيقة" if ago_min >= 1 else f"منذ {ago_min * 60:.0f} ثانية"
-        sched = f"✅ تعمل كل {interval}ث بنظامية" if not stale else "⚠️ الدورات متوقفة عن الجدول! (السيرفر؟)"
-        lines += [f"⏰ آخر دورة: #{c['id']} @ {ended.strftime('%H:%M:%S')} UTC ({ago_txt})",
-                  f"📅 الجدولة: {sched}",
-                  f"⏱️ مدتها {c['duration_ms'] / 1000:.1f}ث | مسح DAY {c['scanned_day']} + FALCON {c['scanned_falcon']} | "
-                  f"إشارات {c['signals']} | فتح {c['opened']} | إغلاق {c['closed']}"]
+        age = max(0, (now - ended).total_seconds())
+        stale = age > interval * 2.5
+        if not config.RUN_SCHEDULER:
+            status = "🔴 متوقفة — الفحص الآلي معطل"
+        elif stale:
+            status = "🟠 متأخرة — آخر دورة تجاوزت الموعد المتوقع"
+        else:
+            status = "🟢 تعمل بشكل طبيعي"
+        next_in = max(0, interval - age)
+        next_text = "خلال أقل من دقيقة" if next_in < 60 else f"خلال {next_in / 60:.0f} دقيقة"
+        ago = "لحظات" if age < 5 else f"{age:.0f} ثانية"
+        lines.extend([
+            f"{status}",
+            f"🕐 آخر تحديث: {now.strftime('%H:%M:%S')} UTC",
+            f"⏱️ آخر دورة: #{c['id']}",
+            f"⌛ انتهت منذ: {ago}",
+            f"⚡ مدة التنفيذ: {c['duration_ms'] / 1000:.1f} ثانية",
+            f"⏰ الجدولة التالية: {next_text}",
+            "",
+            "━━━━━━━━━━━━━━",
+            "🔍 نتيجة الفحص الأخير",
+            "",
+            "⚡ FALCON-DAY",
+            f"• العملات المفحوصة: {c['scanned_day']}",
+            f"• الإشارات: {metrics['signals_day']}",
+            f"• الصفقات المفتوحة: {metrics['opened_day']}",
+            f"• الصفقات المغلقة: {metrics['closed_day']}",
+            "",
+            "🦅 FALCON",
+            f"• العملات المفحوصة: {c['scanned_falcon']}",
+            f"• الإشارات: {metrics['signals_falcon']}",
+            f"• الصفقات المفتوحة: {metrics['opened_falcon']}",
+            f"• الصفقات المغلقة: {metrics['closed_falcon']}",
+            "",
+            "📊 إجمالي نتيجة الدورة",
+            f"• الإشارات: {c['signals']}",
+            f"• الصفقات المفتوحة: {c['opened']}",
+            f"• الصفقات المغلقة: {c['closed']}",
+            "",
+            "━━━━━━━━━━━━━━",
+            "📌 لماذا لم تُفتح صفقة؟",
+        ])
         rjd = c["reject_day"] if isinstance(c.get("reject_day"), dict) else json.loads(c.get("reject_day") or "{}")
         rjf = c["reject_falcon"] if isinstance(c.get("reject_falcon"), dict) else json.loads(c.get("reject_falcon") or "{}")
-        errors = c["errors"] if isinstance(c.get("errors"), list) else json.loads(c.get("errors") or "[]")
-        if rjd:
-            lines.append("🚫 رفض DAY: " + "، ".join(f"{k}×{v}" for k, v in sorted(rjd.items(), key=lambda x: -x[1])[:4]))
-        if rjf:
-            lines.append("🚫 رفض FALCON: " + "، ".join(f"{k}×{v}" for k, v in sorted(rjf.items(), key=lambda x: -x[1])[:4]))
-        if errors:
-            lines.append("⚠️ أخطاء آخر دورة: " + " | ".join(str(e)[:90] for e in errors[:3]))
+        lines.extend(_reason_lines("⚡ FALCON-DAY", rjd))
+        lines.append("")
+        lines.extend(_reason_lines("🦅 FALCON", rjf))
+        raw_errors = c.get("errors") or []
+        if isinstance(raw_errors, str):
+            try:
+                raw_errors = json.loads(raw_errors)
+            except Exception:
+                raw_errors = [raw_errors]
     else:
-        lines.append("⚠️ لا دورات مسجلة إطلاقاً — السيرفر لم يبدأ بعد")
+        stale = True
+        raw_errors = ["لا توجد دورة مسجلة بعد"]
+        lines.extend(["🟠 في انتظار أول دورة", f"🕐 آخر تحديث: {now.strftime('%H:%M:%S')} UTC"])
 
-    # ── الأخطاء الحالية فقط، لا نعرض أحداثًا تاريخية محفوظة ──
+    lines.extend(["", "━━━━━━━━━━━━━━", "💓 حالة المحركات",
+                  f"Binance {'✅' if health['Binance'] == 'ok' else '❌'}   Supabase {'✅' if health['Supabase'] == 'ok' else '❌'}",
+                  f"Redis {'✅' if health['Redis'] == 'ok' else '❌'}     Telegram {'✅' if health['Telegram'] == 'ok' else '❌'}",
+                  "", "🧾 الأخطاء الحالية"])
     current_errors = _current_errors(c, health, stale)
-    lines.append("────────────")
+    # لا نكرر تنبيه stale كخطأ إذا كانت الجدولة متوقفة عمدًا.
+    if not config.RUN_SCHEDULER:
+        current_errors = [e for e in current_errors if "لا توجد دورة حديثة" not in e]
     if current_errors:
-        lines.append("🧾 الأخطاء الداخلية الحالية:")
-        for error in current_errors[:8]:
-            lines.append(f"• {str(error)[:150]}")
+        lines.extend(f"❌ {str(error)[:150]}" for error in current_errors[:8])
     else:
-        lines.append("✨ لا أخطاء داخلية حالية")
-    lines.append(f"⚙️ ورقي | حد يومي {config.DAY['max_per_day']}×/عملة | إيقاف {config.RISK['daily_loss_halt'] * 100:.0f}% يومي / {config.RISK['max_drawdown_halt'] * 100:.0f}% كلي")
-    return "\n".join(lines)[:3800]
+        lines.append("✅ لا توجد أخطاء حالية")
+    return "\n".join(lines)[:3900]

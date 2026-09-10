@@ -25,6 +25,8 @@ def run_cycle(note=""):
     t0 = time.time()
     started = datetime.now(timezone.utc)
     summ = dict(scanned_day=0, scanned_falcon=0, signals=0, opened=0, closed=0,
+                signals_day=0, signals_falcon=0, opened_day=0, opened_falcon=0,
+                closed_day=0, closed_falcon=0,
                 health={}, errors=[], reject_day={}, reject_falcon={})
     if not cache.acquire("ct:cycle:lock", ttl=180):
         summ["errors"].append("lock-busy: دورة سابقة ما زالت تعمل")
@@ -93,6 +95,7 @@ def run_cycle(note=""):
         # ── 5) إدارة (تعمل دائماً حتى في الإيقاف) ──
         for tr in trader.manage_all(md):
             summ["closed"] += 1
+            summ["closed_day" if tr.get("system") == "DAY" else "closed_falcon"] += 1
             _send(notify.t_close(tr))
 
         # ── 6) رصيد + إيقاف ──
@@ -119,13 +122,20 @@ def _finish(summ, started, note):
     ended = datetime.now(timezone.utc)
     summ["duration_ms"] = int((time.time() - started.timestamp()) * 1000)
     try:
+        cycle_health = dict(summ["health"],
+                           signals_day=summ.get("signals_day", 0),
+                           signals_falcon=summ.get("signals_falcon", 0),
+                           opened_day=summ.get("opened_day", 0),
+                           opened_falcon=summ.get("opened_falcon", 0),
+                           closed_day=summ.get("closed_day", 0),
+                           closed_falcon=summ.get("closed_falcon", 0))
         db.save_cycle(dict(started_at=started, ended_at=ended,
                            duration_ms=summ["duration_ms"],
                            scanned_day=summ["scanned_day"],
                            scanned_falcon=summ["scanned_falcon"],
                            reject_day=summ["reject_day"], reject_falcon=summ["reject_falcon"],
                            signals=summ["signals"], opened=summ["opened"],
-                           closed=summ["closed"], health=summ["health"],
+                           closed=summ["closed"], health=cycle_health,
                            errors=summ["errors"][:10],
                            equity=summ.get("equity", db.realized_equity()), note=note))
     except Exception:
@@ -153,6 +163,7 @@ def _scan_day(md, today, equity, summ, send):
             if side == 0:
                 continue
             summ["signals"] += 1
+            summ["signals_day"] += 1
             ok, why = trader.can_open(today, "DAY", sym_)
             if not ok:
                 rej[f"risk-{why}"] += 1
@@ -167,6 +178,7 @@ def _scan_day(md, today, equity, summ, send):
                                     today, p["max_hold_bars"] * 0.25,
                                     reason_ar=DAY_AR[side])
             summ["opened"] += 1
+            summ["opened_day"] += 1
             send(notify.t_open(tr))
         except Exception as e:
             summ["errors"].append(f"DAY-{sym_}: {e}"[:120])
@@ -188,6 +200,7 @@ def _scan_falcon(md, today, equity, summ, send):
             if side == 0:
                 continue
             summ["signals"] += 1
+            summ["signals_falcon"] += 1
             ok, why = trader.can_open(today, "FALCON", sym_)
             if not ok:
                 rej[f"risk-{why}"] += 1
@@ -206,6 +219,7 @@ def _scan_falcon(md, today, equity, summ, send):
                                         trail_atr=p["trail_atr"] if leg == "B" else 0,
                                         atr_now=a, reason_ar=FALCON_AR, bump=(leg == "A"))
                 summ["opened"] += 1
+                summ["opened_falcon"] += 1
                 send(notify.t_open(tr))
         except Exception as e:
             summ["errors"].append(f"FALCON-{sym_}: {e}"[:120])
