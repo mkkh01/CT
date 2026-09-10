@@ -9,9 +9,8 @@ _CLOSED_AR = {"TP": "🎯", "SL": "🛑", "TSL": "🔒", "TIME": "⏱️"}
 
 
 def admin_id():
-    # Chat ID الذي سجله المستخدم عبر /start هو المرجع الفعلي؛
-    # قيمة البيئة تبقى fallback فقط إذا لم يوجد تسجيل في قاعدة البيانات.
-    return db.get_state("admin_chat_id", "") or config.ADMIN_CHAT_ID
+    # لا ننتظر PostgreSQL أثناء webhook؛ قيمة البيئة هي المسار السريع.
+    return config.ADMIN_CHAT_ID or db.get_state("admin_chat_id", "")
 
 
 def handle_update(up):
@@ -33,15 +32,18 @@ def handle_update(up):
 
 
 def _on_start(chat):
-    adm = str(admin_id())
-    if not adm:
-        db.set_state("admin_chat_id", chat)
-        db.log_event("INFO", f"admin registered: {chat}")
-        ok, result = notify.send_text(chat, "🦅 أهلاً بك في نظام FALCON!\nتم تسجيلك كمدير. اختر من الأزرار 👇", KEYBOARD)
-    elif chat == adm:
-        ok, result = notify.send_text(chat, "🦅 نظام FALCON — اختر 👇", KEYBOARD)
-    else:
+    # أرسل أولًا؛ لا نجعل قاعدة البيانات شرطًا لعمل أمر /start.
+    adm = str(config.ADMIN_CHAT_ID or "")
+    if adm and chat != adm:
         ok, result = notify.send_text(chat, "⛔ هذا البوت خاص.", None)
+    else:
+        ok, result = notify.send_text(chat, "🦅 أهلاً بك في نظام FALCON!\nتم تسجيلك كمدير. اختر من الأزرار 👇", KEYBOARD)
+        if ok and not adm:
+            try:
+                db.set_state("admin_chat_id", chat)
+                db.log_event("INFO", f"admin registered: {chat}")
+            except Exception as e:
+                print(f"[telegram-admin-save-error] {e}", flush=True)
     print(f"[telegram-start] chat={chat} admin={adm or 'registered'} ok={ok} result={str(result)[:240]}", flush=True)
     return True
 
