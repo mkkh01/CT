@@ -1,5 +1,5 @@
 """معالج بوت تيليغرام: /start + الأزرار الخمسة."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from . import config, db, notify
 from .cache import cache
 from .market import VisionMarket
@@ -275,6 +275,9 @@ def render_cycle():
             f"⌛ انتهت منذ: {ago}",
             f"⚡ مدة التنفيذ: {c['duration_ms'] / 1000:.1f} ثانية",
             f"⏰ الجدولة التالية: {next_text}",
+            "🧭 مصدر القرار: آخر شمعة مكتملة فقط",
+            f"   DAY: شمعة 15m المكتملة حتى {(c['ended_at'].replace(minute=(c['ended_at'].minute // 15) * 15, second=0, microsecond=0) - timedelta(minutes=15)).strftime('%H:%M')} UTC",
+            f"   FALCON: شمعة 4h المكتملة حتى {(c['ended_at'].replace(hour=(c['ended_at'].hour // 4) * 4, minute=0, second=0, microsecond=0) - timedelta(hours=4)).strftime('%H:%M')} UTC",
             "",
             "━━━━━━━━━━━━━━",
             "🔍 نتيجة الفحص الأخير",
