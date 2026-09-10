@@ -83,7 +83,10 @@ def run_cycle(note=""):
             db.set_state("halted", "")
             db.log_event("INFO", f"new day {today} eq={equity:.1f}")
         day_start = float(db.get_state("day_start", str(equity)) or equity)
-        halted = db.get_state("halted", "") or None
+        # حدود الخسارة اليومية والتراجع الكلي ملغاة؛ امسح أي حالة قديمة.
+        halted = None
+        if db.get_state("halted", ""):
+            db.set_state("halted", "")
 
         # ── 4) مسح + فتح (يُمنع في الإيقاف) ──
         if not halted:

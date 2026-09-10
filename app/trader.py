@@ -28,9 +28,9 @@ def can_open(day, system, symbol):
 
 
 def check_halts(equity, day_start_equity, peak):
-    if day_start_equity and (equity / day_start_equity - 1) <= -RISK["daily_loss_halt"]:
+    if RISK.get("daily_loss_halt", 0) > 0 and day_start_equity and (equity / day_start_equity - 1) <= -RISK["daily_loss_halt"]:
         return "daily-loss-halt"
-    if peak and (equity / peak - 1) <= -RISK["max_drawdown_halt"]:
+    if RISK.get("max_drawdown_halt", 0) > 0 and peak and (equity / peak - 1) <= -RISK["max_drawdown_halt"]:
         return "max-drawdown-halt"
     return None
 

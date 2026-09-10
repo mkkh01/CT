@@ -37,7 +37,7 @@ FALCON = dict(don=20, vol_mult=1.5, adx_min=18, mom_mult=0.8, sl_atr=3.0,
               risk_per_trade=0.01)
 
 # ── المخاطر ──
-RISK = dict(max_concurrent=6, daily_loss_halt=0.03, max_drawdown_halt=0.10,
+RISK = dict(max_concurrent=6, daily_loss_halt=0.0, max_drawdown_halt=0.0,
             max_notional_pct=0.95, min_notional_usd=10.0,
             fee_side=0.0002, slip_side=0.0002)
 
