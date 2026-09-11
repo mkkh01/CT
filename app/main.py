@@ -25,7 +25,7 @@ def index():
 
 @app.get("/health")
 def health():
-    ok = {"binance": "?", "supabase": "?", "redis": "?", "telegram": "?"}
+    ok = {"binance": "?", "supabase": "?", "redis": "?", "telegram": "?", "schema": "?"}
     try:
         from .market import VisionMarket
         VisionMarket().price("BTCUSDT")
@@ -36,6 +36,10 @@ def health():
         ok["supabase"] = "ok" if db.health() else "ERR"
     except Exception as e:
         ok["supabase"] = str(e)[:100]
+    try:
+        ok["schema"] = "ok" if db.schema_ok() else "missing-columns"
+    except Exception as e:
+        ok["schema"] = str(e)[:100]
     try:
         from .cache import cache
         ok["redis"] = "ok" if cache.ping() else "ERR"
@@ -96,6 +100,12 @@ def _scheduler():
 
 
 def boot():
+    # ── 0) مخطط القاعدة: طبّق أي مايجريشن ناقص قبل أي شيء (يُصلح قاعدة حية قديمة) ──
+    try:
+        errs = db.ensure_schema()
+        print(f"[schema] {'FAILED: ' + '; '.join(errs) if errs else 'ok'}", flush=True)
+    except Exception as e:
+        print(f"[schema] ERR {e}", flush=True)
     if config.PUBLIC_URL and config.BOT_TOKEN:
         try:
             ok, d = notify.set_webhook(f"{config.PUBLIC_URL}/webhook/telegram")
