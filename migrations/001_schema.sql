@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS trades (
     r DOUBLE PRECISION,
     fee DOUBLE PRECISION,
     day DATE,
-    reason_ar TEXT DEFAULT ''
+    reason_ar TEXT DEFAULT '',
+    signal_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_day ON trades(day);

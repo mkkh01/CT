@@ -167,6 +167,10 @@ def _scan_day(md, today, equity, summ, send):
                 continue
             summ["signals"] += 1
             summ["signals_day"] += 1
+            signal_key = f"DAY:{sym_}:{side}:{df.iloc[-1]['open_time'].isoformat()}"
+            if [x for x in db.open_positions("DAY") if x["symbol"] == sym_]:
+                rej["anti-double"] += 1
+                continue
             ok, why = trader.can_open(today, "DAY", sym_)
             if not ok:
                 rej[f"risk-{why}"] += 1
@@ -179,7 +183,10 @@ def _scan_day(md, today, equity, summ, send):
             tr = trader.place_entry("DAY", sym_, side, qty, px,
                                     px + side * p["tp_atr"] * a, px - side * sl_d,
                                     today, p["max_hold_bars"] * 0.25,
-                                    reason_ar=DAY_AR[side])
+                                    reason_ar=DAY_AR[side], signal_key=signal_key)
+            if tr is None:
+                rej["duplicate-signal"] += 1
+                continue
             summ["opened"] += 1
             summ["opened_day"] += 1
             send(notify.t_open(tr))
@@ -211,6 +218,7 @@ def _scan_falcon(md, today, equity, summ, send):
             if [x for x in db.open_positions("FALCON") if x["symbol"] == sym_]:
                 rej["anti-double"] += 1
                 continue
+            signal_key = f"FALCON:{sym_}:{side}:{df.iloc[-1]['open_time'].isoformat()}"
             sl_d = p["sl_atr"] * a
             for leg, frac, tp in (("A", 0.5, px + p["tp_atr"] * a), ("B", 0.5, None)):
                 qty = trader.position_size(equity, p["risk_per_trade"] * frac, sl_d, px)
@@ -220,7 +228,11 @@ def _scan_falcon(md, today, equity, summ, send):
                 tr = trader.place_entry("FALCON", sym_, side, qty, px, tp or 0, px - sl_d,
                                         today, p["max_hold_bars"] * 4, leg=leg,
                                         trail_atr=p["trail_atr"] if leg == "B" else 0,
-                                        atr_now=a, reason_ar=FALCON_AR, bump=(leg == "A"))
+                                        atr_now=a, reason_ar=FALCON_AR, bump=(leg == "A"),
+                                        signal_key=signal_key)
+                if tr is None:
+                    rej["duplicate-signal"] += 1
+                    continue
                 summ["opened"] += 1
                 summ["opened_falcon"] += 1
                 send(notify.t_open(tr))

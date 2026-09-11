@@ -228,6 +228,7 @@ def _reason_label(key):
         "risk-size": "حجم المخاطرة غير مناسب",
         "risk-max-concurrent": "تم بلوغ الحد الأقصى للمراكز",
         "anti-double": "توجد صفقة للنظام والعملة نفسها",
+        "duplicate-signal": "تم استخدام إشارة الشمعة نفسها سابقًا",
     }.get(key, key)
 
 

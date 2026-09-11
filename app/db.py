@@ -40,14 +40,19 @@ def health():
 
 # ── الصفقات ──
 def open_trade(system, symbol, side, entry, qty, tp, sl, leg="", trail_atr=0.0,
-               atr0=0.0, hold_hours=24.0, day=None, reason_ar=""):
-    r = q_one(
-        """INSERT INTO trades (system,symbol,side,entry,qty,tp,sl,leg,trail_atr,atr0,
-                               hold_hours,day,reason_ar,status)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN') RETURNING id""",
-        (system, symbol, side, entry, qty, tp or 0, sl, leg, trail_atr, atr0,
-         hold_hours, day, reason_ar))
-    return r["id"] if r else None
+               atr0=0.0, hold_hours=24.0, day=None, reason_ar="", signal_key=""):
+    try:
+        r = q_one(
+            """INSERT INTO trades (system,symbol,side,entry,qty,tp,sl,leg,trail_atr,atr0,
+                                   hold_hours,day,reason_ar,status,signal_key)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s)
+               RETURNING id""",
+            (system, symbol, side, entry, qty, tp or 0, sl, leg, trail_atr, atr0,
+             hold_hours, day, reason_ar, signal_key))
+        return r["id"] if r else None
+    except psycopg2.errors.UniqueViolation:
+        # Race-safe deduplication: another cycle already inserted this position.
+        return None
 
 
 def open_positions(system=None):

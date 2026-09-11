@@ -36,9 +36,11 @@ def check_halts(equity, day_start_equity, peak):
 
 
 def place_entry(system, sym, side, qty, px, tp, sl, day, hold_hours, leg="",
-                trail_atr=0.0, atr_now=0.0, reason_ar="", bump=True):
+                trail_atr=0.0, atr_now=0.0, reason_ar="", bump=True, signal_key=""):
     tid = db.open_trade(system, sym, side, px, qty, tp or 0, sl, leg,
-                        trail_atr, atr_now, hold_hours, day, reason_ar)
+                        trail_atr, atr_now, hold_hours, day, reason_ar, signal_key)
+    if tid is None:
+        return None
     if bump:
         db.bump_day(day, system, sym)
     db.log_event("ORDER",
