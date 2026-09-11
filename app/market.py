@@ -5,16 +5,30 @@ import pandas as pd
 
 
 class VisionMarket:
-    BASE = "https://data-api.binance.vision"
+    BASES = ("https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com")
 
     def __init__(self):
         self.sess = requests.Session()
+        self.sess.headers.update({"User-Agent": "CT-FALCON/1.0"})
+
+    def _get(self, path, **kwargs):
+        last = None
+        for base in self.BASES:
+            try:
+                r = self.sess.get(f"{base}{path}", **kwargs)
+                if r.status_code in (418, 429, 451, 500, 502, 503, 504):
+                    last = requests.HTTPError(f"{r.status_code} from {base}")
+                    continue
+                r.raise_for_status()
+                return r
+            except requests.RequestException as e:
+                last = e
+        raise last or requests.RequestException("Binance endpoints unavailable")
 
     def klines(self, symbol, interval, limit=300):
-        r = self.sess.get(f"{self.BASE}/api/v3/klines",
-                          params={"symbol": symbol, "interval": interval, "limit": limit},
-                          timeout=20)
-        r.raise_for_status()
+        r = self._get("/api/v3/klines",
+                       params={"symbol": symbol, "interval": interval, "limit": limit},
+                       timeout=20)
         df = pd.DataFrame(r.json(),
                           columns=["open_time", "open", "high", "low", "close", "volume",
                                    "ct", "qv", "tr", "tb", "tq", "ig"])
@@ -23,17 +37,14 @@ class VisionMarket:
         return df
 
     def price(self, symbol):
-        r = self.sess.get(f"{self.BASE}/api/v3/ticker/price",
-                          params={"symbol": symbol}, timeout=10)
-        r.raise_for_status()
+        r = self._get("/api/v3/ticker/price", params={"symbol": symbol}, timeout=10)
         return float(r.json()["price"])
 
     def prices(self, symbols):
         """أسعار دفعة واحدة (مع fallback فردي)."""
         try:
-            r = self.sess.get(f"{self.BASE}/api/v3/ticker/price",
-                              params={"symbols": json.dumps(list(symbols))}, timeout=15)
-            r.raise_for_status()
+            r = self._get("/api/v3/ticker/price",
+                          params={"symbols": json.dumps(list(symbols))}, timeout=15)
             return {x["symbol"]: float(x["price"]) for x in r.json()}
         except Exception:
             out = {}
