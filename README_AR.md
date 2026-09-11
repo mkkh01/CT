@@ -14,7 +14,9 @@ Redis: أسعار حية + قفل الدورات (سقوط ناعم لذاكرة
 
 ## النشر على Render (خطوات)
 
-1. **قاعدة البيانات**: نفّذ ملف `migrations/001_schema.sql` في Supabase (SQL Editor) — مرة واحدة.
+1. **قاعدة البيانات**: لا تحتاج خطوة يدوية — التطبيق يبني/يُصلح المخطط تلقائيًا عند الإقلاع
+   (يطبّق ملفات `migrations/*.sql` غير المطبَّقة + يضمن أعمدة `trades` كلها، مع تتبّع ما طُبِّق في جدول `state`).
+   لتنفيذ يدوي اختياري: نفّذ `migrations/001_schema.sql` ثم `002_trade_dedup.sql` في Supabase SQL Editor.
 2. **خدمة جديدة**: New → Web Service → اربط مستودع `CT` (أو Blueprint عبر `render.yaml`).
    - Build: `pip install -r requirements.txt`
    - Start: `gunicorn app.main:app --workers 1 --bind 0.0.0.0:$PORT --timeout 180`
@@ -48,3 +50,28 @@ Redis: أسعار حية + قفل الدورات (سقوط ناعم لذاكرة
 - البوت خاص بالمدير فقط (أول من يرسل `/start`).
 - الإيقاف (3% يومي / 10% كلي) يمنع **الفتح الجديد** فقط — إدارة المراكز المفتوحة تستمر دائماً.
 - بعد انتهاء الإعداد: **دوّر (غيّر) كل الأسرار** التي شاركتها في أي محادثة.
+
+## استكشاف الأخطاء
+
+**❌ `column "signal_key" of relation "trades" does not exist` (وإشارات تضيع بصمت)**
+
+- **السبب**: قاعدة Supabase الحية أقدم من الكود — جدول `trades` أُنشئ من مخطط قديم
+  قبل إضافة `signal_key`، ومايجريشن `002_trade_dedup.sql` لم يُطبَّق (لم يكن يوجد
+  أي آلية تطبّق المايجريشنز تلقائياً). كل إشارة تُكتشف ثم تفشل عند الإدراج
+  (`FALCON-XXX: column "signal_key" ...`) ولا تُفتح صفقة.
+- **الإصلاح الجذري (في الكود)**: التطبيق الآن "شفاء ذاتي" — عند كل إقلاع يطبّق
+  `db.ensure_schema()` المايجريشنز الناقصة + يضمن أعمدة/فهارس `trades` كلها،
+  وعند أي `UndefinedColumn` أثناء الإدراج يُصلح المخطط ويعيد المحاولة مرة واحدة.
+  راقب `/health` — يجب أن ترى `"schema": "ok"`.
+- **إصلاح فوري بدون إعادة نشر**: نفّذ في Supabase SQL Editor:
+  ```sql
+  ALTER TABLE trades ADD COLUMN IF NOT EXISTS signal_key TEXT NOT NULL DEFAULT '';
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_open_day_symbol
+      ON trades (system, symbol) WHERE status = 'OPEN' AND system = 'DAY';
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_signal_leg
+      ON trades (system, symbol, signal_key, leg) WHERE signal_key <> '';
+  ```
+  (هذا محتوى `migrations/002_trade_dedup.sql` حرفياً.)
+
+**قاعدة عامة**: عند إضافة أعمدة جديدة مستقبلاً — أضف مايجريشن `00N_xxx.sql`
+(idempotent: `IF NOT EXISTS`) وسيتطبَّق تلقائياً عند النشر التالي.

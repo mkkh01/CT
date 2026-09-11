@@ -1,9 +1,17 @@
 """طبقة Supabase Postgres — اتصالات قصيرة (صديقة للـ pooler)."""
 import contextlib
 import json
+from pathlib import Path
+
 import psycopg2
 import psycopg2.extras
+
 from . import config
+
+# مايجريشنز المخطط — تُطبَّق تلقائيًا عند الإقلاع (انظر ensure_schema)
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
+STATE_KEY_MIGRATIONS = "schema_migrations"
+_schema_healed = False  # حتى لا نعيد محاولة الإصلاح الذاتي في كل دورة
 
 
 @contextlib.contextmanager
@@ -38,21 +46,193 @@ def health():
     return bool(r and r["ok"] == 1)
 
 
+# ── المخطط: مايجريشنز تلقائية + فحص سلامة ──
+REQUIRED_TRADE_COLS = {
+    "system", "symbol", "side", "leg", "entry", "qty", "tp", "sl",
+    "trail_atr", "atr0", "hold_hours", "day", "reason_ar", "status",
+    "signal_key", "exit_time", "exit_price", "reason", "net", "r", "fee",
+}
+
+# أعمدة/فهارس trades التي يكتبها الكود — ALTER صريح يشفي أي جدول قديم مهما كان
+# شكله (CREATE TABLE IF NOT EXISTS لا يضيف أعمدة لجدول موجود، لذا نحتاج هذه القائمة)
+CORE_TRADES_ALTER = [
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS leg TEXT DEFAULT ''",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS tp DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS sl DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS trail_atr DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS atr0 DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS hold_hours DOUBLE PRECISION DEFAULT 24",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'OPEN'",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_time TIMESTAMPTZ",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS reason TEXT",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS net DOUBLE PRECISION",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS r DOUBLE PRECISION",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS day DATE",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS reason_ar TEXT DEFAULT ''",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS signal_key TEXT NOT NULL DEFAULT ''",
+    "CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)",
+    "CREATE INDEX IF NOT EXISTS idx_trades_day ON trades(day)",
+]
+
+
+def schema_ok():
+    """هل يملك جدول trades كل الأعمدة التي يكتبها الكود؟"""
+    try:
+        rows = q_all("SELECT column_name FROM information_schema.columns "
+                     "WHERE table_name='trades'")
+        names = {r["column_name"] for r in rows}
+        return REQUIRED_TRADE_COLS <= names
+    except Exception:
+        return False
+
+
+def _split_sql_statements(sql):
+    """تقسيم ملف SQL بسيط إلى عبارات — يتجاهل التعليقات ولا ينقسم داخل النصوص."""
+    out, buf, in_str = [], [], False
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if in_str:
+            buf.append(ch)
+            if ch == "'":
+                in_str = False
+        elif ch == "'":
+            buf.append(ch)
+            in_str = True
+        elif ch == "-" and sql[i:i + 2] == "--":
+            while i < n and sql[i] != "\n":
+                i += 1
+            continue
+        elif ch == ";":
+            stmt = "".join(buf).strip()
+            if stmt:
+                out.append(stmt)
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    stmt = "".join(buf).strip()
+    if stmt:
+        out.append(stmt)
+    return out
+
+
+def ensure_schema():
+    """يبني/يُصلح مخطط القاعدة تلقائيًا ليطابق الكود.
+
+    1) يطبّق ملفات migrations/*.sql غير المطبَّقة بعد (كلها idempotent) —
+       العبارات تُنفَّذ واحدة واحدة حتى لا يمنع فشل عبارة (مثل فهرس فريد فوق
+       بيانات مكررة) بقية الإصلاحات، ويُعلَّم الملف مطبَّقًا في جدول state
+       فقط إذا نجحت كل عباراته.
+    2) ثم يشغّل ALTER صريحًا لكل عمود يكتبه الكود — يشفي جدول trades القديم
+       مهما كان شكله (مثل غياب signal_key الذي أوقف فتح الصفقات).
+    3) يعيد الملفات التي فشلت بعد شفاء الأعمدة (تبعيات ترتيب: فهرس في الملف
+       على عمود يُضاف لاحقًا).
+    يعيد قائمة أخطاء فارغة عند النجاح الكامل.
+    """
+    applied = set()
+    try:
+        applied = set(json.loads(get_state(STATE_KEY_MIGRATIONS, "[]")))
+    except Exception:
+        applied = set()
+
+    def _apply(path):
+        errs = []
+        try:
+            stmts = _split_sql_statements(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return [str(e)]
+        with conn() as c, c.cursor() as cur:
+            for stmt in stmts:
+                try:
+                    cur.execute(stmt)
+                except Exception as e:
+                    errs.append(str(e).strip().splitlines()[0])
+                    try:
+                        log_event("ERR", f"migration {path.name}: {e}")
+                    except Exception:
+                        pass
+        return errs
+
+    def _mark(path):
+        applied.add(path.name)
+        set_state(STATE_KEY_MIGRATIONS, json.dumps(sorted(applied)))
+        print(f"[schema] applied {path.name}", flush=True)
+
+    def _core_alters():
+        errs = []
+        try:
+            with conn() as c, c.cursor() as cur:
+                for stmt in CORE_TRADES_ALTER:
+                    try:
+                        cur.execute(stmt)
+                    except Exception as e:
+                        errs.append(f"core-alter: {str(e).strip().splitlines()[0]}")
+        except Exception as e:
+            errs.append(f"core-alter: {e}")
+        return errs
+
+    errors = []
+    failed = []
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if path.name in applied:
+            continue
+        ferr = _apply(path)
+        if ferr:
+            failed.append(path)
+            errors.append(f"{path.name}: " + " | ".join(ferr[:3]))
+        else:
+            _mark(path)
+    if failed:
+        # شفاء الأعمدة الناقصة ثم جولة أخيرة على الملفات التي فشلت
+        _core_alters()
+        retry_errors = []
+        for path in failed:
+            ferr = _apply(path)
+            if ferr:
+                retry_errors.append(f"{path.name}: " + " | ".join(ferr[:3]))
+            else:
+                _mark(path)
+        errors = retry_errors  # أخطاء الجولة الأولى أصبحت مهملة إن نجحت الإعادة
+    # الخطوة الشافية النهائية: تأكيد كل أعمدة/فهارس trades مهما كانت الحالة
+    errors.extend(_core_alters())
+    if not errors and not schema_ok():
+        errors.append("schema still incomplete after ensure")
+    return errors
+
+
 # ── الصفقات ──
 def open_trade(system, symbol, side, entry, qty, tp, sl, leg="", trail_atr=0.0,
                atr0=0.0, hold_hours=24.0, day=None, reason_ar="", signal_key=""):
+    global _schema_healed
+    sql = """INSERT INTO trades (system,symbol,side,entry,qty,tp,sl,leg,trail_atr,atr0,
+                                 hold_hours,day,reason_ar,status,signal_key)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s)
+             RETURNING id"""
+    params = (system, symbol, side, entry, qty, tp or 0, sl, leg, trail_atr, atr0,
+              hold_hours, day, reason_ar, signal_key)
     try:
-        r = q_one(
-            """INSERT INTO trades (system,symbol,side,entry,qty,tp,sl,leg,trail_atr,atr0,
-                                   hold_hours,day,reason_ar,status,signal_key)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s)
-               RETURNING id""",
-            (system, symbol, side, entry, qty, tp or 0, sl, leg, trail_atr, atr0,
-             hold_hours, day, reason_ar, signal_key))
-        return r["id"] if r else None
+        r = q_one(sql, params)
+    except psycopg2.errors.UndefinedColumn as e:
+        # انجراف المخطط: قاعدة حية أقدم من الكود (مثل غياب signal_key) —
+        # أعد بناء/إصلاح المخطط مرة واحدة ثم أعد المحاولة إن اكتملت الأعمدة.
+        if _schema_healed:
+            raise
+        _schema_healed = True
+        try:
+            log_event("ERR", f"schema drift on insert: {str(e)[:150]} — re-applying migrations")
+        except Exception:
+            pass
+        errs = ensure_schema()
+        if errs and not schema_ok():
+            raise
+        r = q_one(sql, params)
     except psycopg2.errors.UniqueViolation:
         # Race-safe deduplication: another cycle already inserted this position.
         return None
+    return r["id"] if r else None
 
 
 def open_positions(system=None):
