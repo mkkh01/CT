@@ -16,7 +16,8 @@ Redis: أسعار حية + قفل الدورات (سقوط ناعم لذاكرة
 
 1. **قاعدة البيانات**: لا تحتاج خطوة يدوية — التطبيق يبني/يُصلح المخطط تلقائيًا عند الإقلاع
    (يطبّق ملفات `migrations/*.sql` غير المطبَّقة + يضمن أعمدة `trades` كلها، مع تتبّع ما طُبِّق في جدول `state`).
-   لتنفيذ يدوي اختياري: نفّذ `migrations/001_schema.sql` ثم `002_trade_dedup.sql` في Supabase SQL Editor.
+   لبناء قاعدة جديدة من الصفر (أو إصلاح شامل يدوي): نفّذ **`supabase_full_schema.sql`** كاملاً في Supabase SQL Editor —
+   ملف واحد يبني كل الجداول والفهارس، آمن للتنفيذ المتكرر، ولا يمس البيانات الموجودة.
 2. **خدمة جديدة**: New → Web Service → اربط مستودع `CT` (أو Blueprint عبر `render.yaml`).
    - Build: `pip install -r requirements.txt`
    - Start: `gunicorn app.main:app --workers 1 --bind 0.0.0.0:$PORT --timeout 180`
