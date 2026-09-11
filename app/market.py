@@ -5,7 +5,8 @@ import pandas as pd
 
 
 class VisionMarket:
-    BASES = ("https://api-gcp.binance.com", "https://www.binance.com",
+    BASES = ("https://api.binance.us", "https://api.binance.me",
+             "https://api-gcp.binance.com", "https://www.binance.com",
              "https://api2.binance.com", "https://api3.binance.com",
              "https://api4.binance.com", "https://data-api.binance.vision",
              "https://api.binance.com", "https://api1.binance.com")
@@ -19,10 +20,9 @@ class VisionMarket:
         for base in self.BASES:
             try:
                 r = self.sess.get(f"{base}{path}", **kwargs)
-                if r.status_code in (418, 429, 451, 500, 502, 503, 504):
+                if r.status_code != 200:
                     last = requests.HTTPError(f"{r.status_code} from {base}")
                     continue
-                r.raise_for_status()
                 return r
             except requests.RequestException as e:
                 last = e
