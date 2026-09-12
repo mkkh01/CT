@@ -51,6 +51,23 @@ class Cache:
                 pass
         self.mem[k] = (v, time.time() + ex if ex else None)
 
+    def set_many(self, values, ex=None):
+        """اكتب عدة قيم في رحلة Redis واحدة لتقليل الاتصالات."""
+        if not values:
+            return
+        if self.r:
+            try:
+                pipe = self.r.pipeline(transaction=False)
+                for key, value in values.items():
+                    pipe.set(key, value, ex=ex)
+                pipe.execute()
+                return
+            except Exception:
+                pass
+        expires = time.time() + ex if ex else None
+        for key, value in values.items():
+            self.mem[key] = (value, expires)
+
     def acquire(self, name, ttl=120):
         """قفل لمنع تداخل الدورات."""
         if self.r:

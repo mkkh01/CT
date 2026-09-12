@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS equity_marks (
     ts     TIMESTAMPTZ DEFAULT now(),
     equity DOUBLE PRECISION NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_equity_marks_ts ON equity_marks(ts DESC);
 
 
 -- ─────────────────────────────────────────────
@@ -124,6 +125,7 @@ CREATE TABLE IF NOT EXISTS ct_cycles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ct_cycles_started ON ct_cycles(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ct_cycles_ended ON ct_cycles(ended_at DESC);
 
 
 -- ─────────────────────────────────────────────
@@ -137,6 +139,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_level ON events(level, id DESC);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
 
 
 -- ─────────────────────────────────────────────
@@ -152,7 +155,7 @@ CREATE TABLE IF NOT EXISTS state (
 -- 7) تسجيل المايجريشنز كمطبَّقة (يتطابق مع متتبّع التطبيق ensure_schema)
 -- ─────────────────────────────────────────────
 INSERT INTO state (key, value)
-VALUES ('schema_migrations', '["001_schema.sql", "002_trade_dedup.sql"]')
+VALUES ('schema_migrations', '["001_schema.sql", "002_trade_dedup.sql", "003_telemetry_indexes.sql"]')
 ON CONFLICT (key) DO NOTHING;
 
 

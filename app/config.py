@@ -19,6 +19,14 @@ SCAN_INTERVAL_SEC = int(_env("SCAN_INTERVAL_SEC", "60") or 60)
 PAPER_EQUITY = float(_env("PAPER_EQUITY", "10000") or 10000)
 RUN_SCHEDULER = _env("RUN_SCHEDULER", "1") == "1"
 
+# ── التحكم في استهلاك الشبكة وتخزين السجلات ──
+# الشموع لا تتغير بين إغلاقين، لذلك تُخزّن في الذاكرة حتى الإطار التالي.
+# يمكن تعديلها من Render عند الحاجة دون تغيير منطق الاستراتيجية.
+CYCLE_RETENTION_DAYS = max(1, int(_env("CYCLE_RETENTION_DAYS", "30") or 30))
+EVENT_RETENTION_DAYS = max(1, int(_env("EVENT_RETENTION_DAYS", "30") or 30))
+EQUITY_RETENTION_DAYS = max(1, int(_env("EQUITY_RETENTION_DAYS", "90") or 90))
+EQUITY_MARK_INTERVAL_SEC = max(60, int(_env("EQUITY_MARK_INTERVAL_SEC", "900") or 900))
+
 # ── العوالم ──
 DAY_SYMBOLS = ["SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "NEARUSDT",
                "DOTUSDT", "UNIUSDT", "ETCUSDT", "FILUSDT", "ICPUSDT", "VETUSDT", "ALGOUSDT"]

@@ -24,3 +24,11 @@ services:
         value: 10000
       - key: RUN_SCHEDULER
         value: 1
+      - key: CYCLE_RETENTION_DAYS
+        value: 30
+      - key: EVENT_RETENTION_DAYS
+        value: 30
+      - key: EQUITY_RETENTION_DAYS
+        value: 90
+      - key: EQUITY_MARK_INTERVAL_SEC
+        value: 900

@@ -1,6 +1,7 @@
 """طبقة Supabase Postgres — اتصالات قصيرة (صديقة للـ pooler)."""
 import contextlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
@@ -252,18 +253,25 @@ def recent_closed(limit=10):
 
 
 def get_stats(system=None):
+    """احسب الإحصاءات داخل Postgres بدلاً من سحب كل الصفقات إلى التطبيق."""
     where = "status='CLOSED'" + (" AND system=%s" if system else "")
     p = (system,) if system else ()
-    rows = q_all("SELECT net FROM trades WHERE " + where, p)
-    n = len(rows)
-    if n == 0:
-        return dict(n=0, wins=0, losses=0, wr=0.0, pf=0.0, net=0.0)
-    wins = [x["net"] for x in rows if x["net"] > 0]
-    loss = [-x["net"] for x in rows if x["net"] <= 0]
-    g, l = sum(wins), sum(loss)
-    return dict(n=n, wins=len(wins), losses=len(loss), wr=round(len(wins) / n * 100, 1),
-                pf=round(g / l, 2) if l > 0 else 0.0,
-                net=round(sum(x["net"] for x in rows), 2))
+    row = q_one("""SELECT COUNT(*) AS n,
+                         COUNT(*) FILTER (WHERE net > 0) AS wins,
+                         COUNT(*) FILTER (WHERE net <= 0) AS losses,
+                         COALESCE(SUM(net) FILTER (WHERE net > 0), 0) AS gross_profit,
+                         COALESCE(-SUM(net) FILTER (WHERE net <= 0), 0) AS gross_loss,
+                         COALESCE(SUM(net), 0) AS net
+                  FROM trades WHERE """ + where, p)
+    n = int(row["n"] or 0)
+    wins = int(row["wins"] or 0)
+    losses = int(row["losses"] or 0)
+    gross_profit = float(row["gross_profit"] or 0)
+    gross_loss = float(row["gross_loss"] or 0)
+    return dict(n=n, wins=wins, losses=losses,
+                wr=round(wins / n * 100, 1) if n else 0.0,
+                pf=round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0,
+                net=round(float(row["net"] or 0), 2))
 
 
 # ── حدود اليوم ──
@@ -286,9 +294,41 @@ def realized_equity():
 
 
 def mark_equity(equity):
-    exec("INSERT INTO equity_marks (equity) VALUES (%s)", (equity,))
+    """سجّل نبضة الرصيد دورياً، لا في كل دورة تداول.
+
+    الدورة تعمل كل دقيقة، لكن كتابة 1,440 صفاً يومياً لا تضيف معلومات مفيدة
+    للتراجع. نحتفظ بعينة كل 15 دقيقة افتراضياً، مع إبقاء حساب القمة كما هو.
+    """
+    now = datetime.now(timezone.utc)
+    last = q_one("SELECT ts, equity FROM equity_marks ORDER BY ts DESC LIMIT 1")
+    should_insert = True
+    if last and last.get("ts"):
+        ts = last["ts"]
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        # سجّل تغيّر الرصيد فوراً (بعد إغلاق صفقة)، وإلا خذ عينة زمنية.
+        changed = float(last.get("equity") or equity) != float(equity)
+        should_insert = changed or (now - ts).total_seconds() >= config.EQUITY_MARK_INTERVAL_SEC
+    if should_insert:
+        exec("INSERT INTO equity_marks (equity) VALUES (%s)", (equity,))
     r = q_one("SELECT MAX(equity) AS peak FROM equity_marks")
     return float(r["peak"]) if r and r["peak"] else equity
+
+
+# ── تنظيف السجلات غير المحدودة ──
+def prune_telemetry():
+    """احذف السجلات التشغيلية القديمة حتى لا تنمو قاعدة Supabase بلا حد.
+
+    لا تُحذف الصفقات من هنا؛ الحذف يطال فقط سجل الدورات/الأحداث ولقطات الرصيد.
+    تُستدعى مرة عند بداية اليوم من الحلقة الرئيسية.
+    """
+    now = datetime.now(timezone.utc)
+    exec("DELETE FROM ct_cycles WHERE ended_at < %s",
+         (now - timedelta(days=config.CYCLE_RETENTION_DAYS),))
+    exec("DELETE FROM events WHERE ts < %s",
+         (now - timedelta(days=config.EVENT_RETENTION_DAYS),))
+    exec("DELETE FROM equity_marks WHERE ts < %s",
+         (now - timedelta(days=config.EQUITY_RETENTION_DAYS),))
 
 
 # ── الأحداث ──

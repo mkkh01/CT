@@ -35,9 +35,14 @@ def run_cycle(note=""):
     try:
         md = VisionMarket()
         # ── 1) نبض المحركات ──
+        # طلب الأسعار الجماعي يثبت اتصال Binance ويملأ الكاش في نفس الوقت؛
+        # سابقاً كان BTC يُطلب منفرداً ثم تُطلب كل الأسعار مرة ثانية.
         try:
-            md.price("BTCUSDT")
+            price_map = md.prices(config.ALL_SYMBOLS)
+            if "BTCUSDT" not in price_map:
+                raise RuntimeError("BTCUSDT price unavailable")
             summ["health"]["binance"] = "ok"
+            cache.set_many({f"ct:px:{s}": v for s, v in price_map.items()}, ex=300)
         except Exception as e:
             summ["health"]["binance"] = f"ERR {e}"[:120]
             summ["errors"].append(f"binance: {e}"[:150])
@@ -67,41 +72,39 @@ def run_cycle(note=""):
             elif adm or config.BOT_TOKEN:
                 summ["errors"].append("telegram: token/admin missing")
 
-        # ── 2) أسعار → Redis ──
-        try:
-            for s, v in md.prices(config.ALL_SYMBOLS).items():
-                cache.set(f"ct:px:{s}", v, ex=300)
-        except Exception as e:
-            summ["errors"].append(f"prices-cache: {e}"[:120])
-
-        # ── 3) يوم جديد؟ ──
+        # ── 2) يوم جديد؟ ──
         today = _today()
         equity = db.realized_equity()
-        if db.get_state("day", "") != today:
+        is_new_day = db.get_state("day", "") != today
+        if is_new_day:
             db.set_state("day", today)
             db.set_state("day_start", str(equity))
             db.set_state("halted", "")
             db.log_event("INFO", f"new day {today} eq={equity:.1f}")
+            try:
+                db.prune_telemetry()
+            except Exception as e:
+                summ["errors"].append(f"telemetry-prune: {e}"[:120])
         day_start = float(db.get_state("day_start", str(equity)) or equity)
         # حدود الخسارة اليومية والتراجع الكلي ملغاة؛ امسح أي حالة قديمة.
         halted = None
         if db.get_state("halted", ""):
             db.set_state("halted", "")
 
-        # ── 4) مسح + فتح (يُمنع في الإيقاف) ──
+        # ── 3) مسح + فتح (يُمنع في الإيقاف) ──
         if not halted:
             _scan_day(md, today, equity, summ, _send)
             _scan_falcon(md, today, equity, summ, _send)
         else:
             summ["errors"].append(f"halted: {halted} (الفتح متوقف)")
 
-        # ── 5) إدارة (تعمل دائماً حتى في الإيقاف) ──
+        # ── 4) إدارة (تعمل دائماً حتى في الإيقاف) ──
         for tr in trader.manage_all(md):
             summ["closed"] += 1
             summ["closed_day" if tr.get("system") == "DAY" else "closed_falcon"] += 1
             _send(notify.t_close(tr))
 
-        # ── 6) رصيد + إيقاف ──
+        # ── 5) رصيد + إيقاف ──
         equity = db.realized_equity()
         peak = db.mark_equity(equity)
         h = trader.check_halts(equity, day_start, peak)
