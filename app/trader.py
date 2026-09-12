@@ -76,6 +76,15 @@ def manage_one(market, t):
     entry_t = t["entry_time"]
     if entry_t.tzinfo is None:
         entry_t = entry_t.replace(tzinfo=timezone.utc)
+    # لا نستخدم High/Low لشمعة بدأت قبل الدخول. سابقاً كانت الصفقة تُفتح
+    # بسعر إغلاق الشمعة ثم تُفحص نفس الشمعة فوراً، فتصل TP/SL في نفس الدقيقة.
+    bar_open = last["open_time"]
+    if hasattr(bar_open, "to_pydatetime"):
+        bar_open = bar_open.to_pydatetime()
+    if bar_open.tzinfo is None:
+        bar_open = bar_open.replace(tzinfo=timezone.utc)
+    if bar_open <= entry_t:
+        return None
     age_h = (datetime.now(timezone.utc) - entry_t).total_seconds() / 3600
     leg = t.get("leg") or ""
     trail_atr = float(t.get("trail_atr") or 0)

@@ -118,47 +118,53 @@ class VisionMarket:
                 df = current[1]
         return df.tail(limit).copy()
 
-    def price(self, symbol):
+    def price(self, symbol, fresh=False):
         now = time.time()
-        with _CACHE_LOCK:
-            cached = _PRICE_CACHE.get(symbol)
-            if cached and cached[0] > now:
-                return float(cached[1])
+        if not fresh:
+            with _CACHE_LOCK:
+                cached = _PRICE_CACHE.get(symbol)
+                if cached and cached[0] > now:
+                    return float(cached[1])
         r = self._get("/api/v3/ticker/price", params={"symbol": symbol}, timeout=10)
         value = float(r.json()["price"])
         with _CACHE_LOCK:
             _PRICE_CACHE[symbol] = (time.time() + _PRICE_CACHE_TTL, value)
         return value
 
-    def prices(self, symbols):
-        """أسعار دفعة واحدة، مع كاش قصير وfallback فردي عند الحاجة."""
+    def prices(self, symbols, fresh=False):
+        """أسعار دفعة واحدة، مع كاش قصير وfallback فردي عند الحاجة.
+
+        ``fresh=True`` مخصص لسعر الدخول: يجلب دفعة جديدة في بداية الدورة،
+        بينما شاشات المتابعة تستخدم الكاش لتقليل الطلبات.
+        """
         requested = list(dict.fromkeys(symbols))
         now = time.time()
         out = {}
-        missing = []
-        with _CACHE_LOCK:
-            for symbol in requested:
-                cached = _PRICE_CACHE.get(symbol)
-                if cached and cached[0] > now:
-                    out[symbol] = float(cached[1])
-                else:
-                    missing.append(symbol)
+        missing = list(requested) if fresh else []
+        if not fresh:
+            with _CACHE_LOCK:
+                for symbol in requested:
+                    cached = _PRICE_CACHE.get(symbol)
+                    if cached and cached[0] > now:
+                        out[symbol] = float(cached[1])
+                    else:
+                        missing.append(symbol)
 
         if missing:
             try:
                 r = self._get("/api/v3/ticker/price",
                               params={"symbols": json.dumps(missing)}, timeout=15)
-                fresh = {x["symbol"]: float(x["price"]) for x in r.json()}
+                fresh_prices = {x["symbol"]: float(x["price"]) for x in r.json()}
                 with _CACHE_LOCK:
                     expiry = time.time() + _PRICE_CACHE_TTL
-                    for symbol, value in fresh.items():
+                    for symbol, value in fresh_prices.items():
                         _PRICE_CACHE[symbol] = (expiry, value)
-                out.update(fresh)
+                out.update(fresh_prices)
             except Exception:
                 # لا نعيد ضرب كل endpoint بلا داعٍ؛ price() يشارك نفس الكاش.
                 for symbol in missing:
                     try:
-                        out[symbol] = self.price(symbol)
+                        out[symbol] = self.price(symbol, fresh=True)
                     except Exception:
                         pass
         return {symbol: out[symbol] for symbol in requested if symbol in out}

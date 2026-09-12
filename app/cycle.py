@@ -38,7 +38,9 @@ def run_cycle(note=""):
         # طلب الأسعار الجماعي يثبت اتصال Binance ويملأ الكاش في نفس الوقت؛
         # سابقاً كان BTC يُطلب منفرداً ثم تُطلب كل الأسعار مرة ثانية.
         try:
-            price_map = md.prices(config.ALL_SYMBOLS)
+            # سعر الدخول يجب أن يكون جديداً في كل دورة؛ شاشات المتابعة
+            # تستطيع استخدام الكاش، لكن فتح التوصية لا يستخدم سعراً قديماً.
+            price_map = md.prices(config.ALL_SYMBOLS, fresh=True)
             if "BTCUSDT" not in price_map:
                 raise RuntimeError("BTCUSDT price unavailable")
             summ["health"]["binance"] = "ok"
@@ -178,13 +180,17 @@ def _scan_day(md, today, equity, summ, send):
             if not ok:
                 rej[f"risk-{why}"] += 1
                 continue
+            # الإشارة من إغلاق الشمعة المكتملة، لكن سعر التوصية هو السعر
+            # الحالي وقت الفتح وليس إغلاق الشمعة القديمة.
+            entry_px = md.price(sym_)
             sl_d = p["sl_atr"] * a
-            qty = trader.position_size(equity, p["risk_per_trade"], sl_d, px)
+            qty = trader.position_size(equity, p["risk_per_trade"], sl_d, entry_px)
             if qty <= 0:
                 rej["risk-size"] += 1
                 continue
-            tr = trader.place_entry("DAY", sym_, side, qty, px,
-                                    px + side * p["tp_atr"] * a, px - side * sl_d,
+            tr = trader.place_entry("DAY", sym_, side, qty, entry_px,
+                                    entry_px + side * p["tp_atr"] * a,
+                                    entry_px - side * sl_d,
                                     today, p["max_hold_bars"] * 0.25,
                                     reason_ar=DAY_AR[side], signal_key=signal_key)
             if tr is None:
@@ -222,13 +228,17 @@ def _scan_falcon(md, today, equity, summ, send):
                 rej["anti-double"] += 1
                 continue
             signal_key = f"FALCON:{sym_}:{side}:{df.iloc[-1]['open_time'].isoformat()}"
+            # استخدم سعر السوق الحالي للتوصية، مع إبقاء الإشارة وATR من
+            # آخر شمعة 4h مكتملة.
+            entry_px = md.price(sym_)
             sl_d = p["sl_atr"] * a
-            for leg, frac, tp in (("A", 0.5, px + p["tp_atr"] * a), ("B", 0.5, None)):
-                qty = trader.position_size(equity, p["risk_per_trade"] * frac, sl_d, px)
+            for leg, frac, tp in (("A", 0.5, entry_px + p["tp_atr"] * a), ("B", 0.5, None)):
+                qty = trader.position_size(equity, p["risk_per_trade"] * frac, sl_d, entry_px)
                 if qty <= 0:
                     rej["risk-size"] += 1
                     continue
-                tr = trader.place_entry("FALCON", sym_, side, qty, px, tp or 0, px - sl_d,
+                tr = trader.place_entry("FALCON", sym_, side, qty, entry_px,
+                                        tp or 0, entry_px - sl_d,
                                         today, p["max_hold_bars"] * 4, leg=leg,
                                         trail_atr=p["trail_atr"] if leg == "B" else 0,
                                         atr_now=a, reason_ar=FALCON_AR, bump=(leg == "A"),
